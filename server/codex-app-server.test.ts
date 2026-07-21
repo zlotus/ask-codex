@@ -1,0 +1,189 @@
+// @vitest-environment node
+
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  CodexAppServer,
+  type CodexProcess,
+  type SpawnCodex,
+} from "./codex-app-server.js";
+
+class FakeCodexProcess extends EventEmitter implements CodexProcess {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  killed = false;
+
+  kill(): boolean {
+    this.killed = true;
+    return true;
+  }
+
+  send(message: unknown): void {
+    this.stdout.write(`${JSON.stringify(message)}\n`);
+  }
+}
+
+function captureJsonLines(stream: PassThrough): unknown[] {
+  const messages: unknown[] = [];
+  let buffered = "";
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk: string) => {
+    buffered += chunk;
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line) {
+        messages.push(JSON.parse(line) as unknown);
+      }
+    }
+  });
+  return messages;
+}
+
+describe("CodexAppServer", () => {
+  it("initializes once and maps JSONL requests, notifications, and server requests", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const spawnCodex = vi.fn<SpawnCodex>(() => fakeProcess);
+    const client = new CodexAppServer({ spawnCodex, clientVersion: "test-version" });
+    const notification = vi.fn();
+    const serverRequest = vi.fn();
+    client.on("notification", notification);
+    client.on("request", serverRequest);
+
+    const starting = client.start();
+    expect(spawnCodex).toHaveBeenCalledWith(
+      "codex",
+      ["app-server", "--listen", "stdio://"],
+      expect.objectContaining({ env: expect.any(Object) }),
+    );
+    expect(output[0]).toEqual({
+      method: "initialize",
+      id: 1,
+      params: {
+        clientInfo: {
+          name: "ask_agent",
+          title: "Ask Agent",
+          version: "test-version",
+        },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+        },
+      },
+    });
+
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+    expect(output[1]).toEqual({ method: "initialized" });
+    expect(client.status).toBe("ready");
+    expect(client.version).toBe("codex-cli/test");
+
+    const rpc = client.request("thread/list", { limit: 20 });
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    expect(output[2]).toEqual({ method: "thread/list", id: 2, params: { limit: 20 } });
+    fakeProcess.send({ id: 2, result: { data: [] } });
+    await expect(rpc).resolves.toEqual({ data: [] });
+
+    fakeProcess.send({ method: "turn/started", params: { threadId: "thread-1" } });
+    fakeProcess.send({
+      id: "approval-1",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1" },
+    });
+    expect(notification).toHaveBeenCalledWith(
+      "turn/started",
+      { threadId: "thread-1" },
+    );
+    expect(serverRequest).toHaveBeenCalledWith(
+      "approval-1",
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-1" },
+    );
+
+    await client.respond("approval-1", { decision: "accept" });
+    expect(output[3]).toEqual({
+      id: "approval-1",
+      result: { decision: "accept" },
+    });
+    client.close();
+  });
+
+  it("does not pass the web access token to the Codex process", async () => {
+    const previousToken = process.env.ASK_AGENT_TOKEN;
+    process.env.ASK_AGENT_TOKEN = "gateway-secret";
+    const fakeProcess = new FakeCodexProcess();
+    const spawnCodex = vi.fn<SpawnCodex>(() => fakeProcess);
+    const client = new CodexAppServer({ spawnCodex });
+
+    try {
+      const starting = client.start();
+      const spawnOptions = spawnCodex.mock.calls[0]?.[2];
+      expect(spawnOptions?.env?.ASK_AGENT_TOKEN).toBeUndefined();
+      fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+      await starting;
+    } finally {
+      client.close();
+      if (previousToken === undefined) {
+        delete process.env.ASK_AGENT_TOKEN;
+      } else {
+        process.env.ASK_AGENT_TOKEN = previousToken;
+      }
+    }
+  });
+
+  it("rejects pending requests and reports error when the child exits", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const replacementProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const replacementOutput = captureJsonLines(replacementProcess.stdin);
+    const spawnCodex = vi.fn<SpawnCodex>()
+      .mockReturnValueOnce(fakeProcess)
+      .mockReturnValueOnce(replacementProcess);
+    const client = new CodexAppServer({ spawnCodex });
+    const statuses: string[] = [];
+    client.on("status", ({ status }) => statuses.push(status));
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+    const pending = client.request("model/list", {});
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+
+    fakeProcess.emit("exit", 1, null);
+    await expect(pending).rejects.toThrow("exited with code 1");
+    expect(client.status).toBe("error");
+    expect(client.error).toEqual({ message: "Codex app-server exited with code 1" });
+    expect(statuses).toContain("error");
+
+    const retried = client.request("model/list", {});
+    await vi.waitFor(() => expect(replacementOutput).toHaveLength(1));
+    expect(replacementOutput[0]).toMatchObject({ method: "initialize", id: 3 });
+    replacementProcess.send({ id: 3, result: { userAgent: "codex-cli/restarted" } });
+    await vi.waitFor(() => expect(replacementOutput).toHaveLength(3));
+    expect(replacementOutput[2]).toEqual({ method: "model/list", id: 4, params: {} });
+    replacementProcess.send({ id: 4, result: { data: ["model"] } });
+    await expect(retried).resolves.toEqual({ data: ["model"] });
+    expect(spawnCodex).toHaveBeenCalledTimes(2);
+    client.close();
+  });
+
+  it("times out initialization and exposes a cleaned status error", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const client = new CodexAppServer({
+      spawnCodex: () => fakeProcess,
+      initializeTimeoutMs: 5,
+    });
+
+    await expect(client.start()).rejects.toThrow("initialize timed out after 5ms");
+    expect(client.status).toBe("error");
+    expect(client.error).toEqual({
+      message: "Codex RPC initialize timed out after 5ms",
+    });
+    expect(fakeProcess.killed).toBe(true);
+    client.close();
+  });
+});
