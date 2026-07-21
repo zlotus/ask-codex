@@ -97,14 +97,19 @@ ASK_CODEX_WORKSPACE=/项目的绝对路径 npm start
 
 ### Cloudflare Tunnel
 
+完整的端到端配置，包括 Cloudflare Access、MFA 首次注册、App Launcher 引导、
+验证和故障排查，请参阅
+[Cloudflare Tunnel 私有部署指南](docs/cloudflare-tunnel.zh-CN.md)。
+
 使用 Cloudflare Tunnel 时，Ask Codex 仍可只监听回环地址，无需监听
 `0.0.0.0`，也无需在路由器上开放端口：
 
 ```bash
+# 请先从密码管理器或受保护文件加载强随机 ASK_CODEX_TOKEN。
 ASK_CODEX_HOST=127.0.0.1 \
 ASK_CODEX_PORT=4173 \
 ASK_CODEX_PUBLIC_ORIGIN=https://codex.example.com \
-ASK_CODEX_TOKEN='请替换为足够长的随机密钥' \
+ASK_CODEX_TOKEN="$ASK_CODEX_TOKEN" \
 npm start
 ```
 

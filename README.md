@@ -106,14 +106,19 @@ role-based authorization.
 
 ### Cloudflare Tunnel
 
+For the complete end-to-end setup, including Cloudflare Access, MFA enrollment,
+App Launcher bootstrap, validation, and troubleshooting, see the
+[Cloudflare Tunnel deployment guide](docs/cloudflare-tunnel.md).
+
 A Cloudflare Tunnel can publish Ask Codex while the gateway remains bound to
 loopback. You do not need to listen on `0.0.0.0` or open a port on your router:
 
 ```bash
+# Load a strong random value into ASK_CODEX_TOKEN first.
 ASK_CODEX_HOST=127.0.0.1 \
 ASK_CODEX_PORT=4173 \
 ASK_CODEX_PUBLIC_ORIGIN=https://codex.example.com \
-ASK_CODEX_TOKEN='replace-with-a-long-random-secret' \
+ASK_CODEX_TOKEN="$ASK_CODEX_TOKEN" \
 npm start
 ```
 
