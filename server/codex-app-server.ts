@@ -195,7 +195,6 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     try {
       const childEnvironment = { ...process.env };
       delete childEnvironment.ASK_CODEX_TOKEN;
-      delete childEnvironment.ASK_AGENT_TOKEN;
       child = this.spawnCodex(
         this.command,
         ["app-server", "--listen", "stdio://"],

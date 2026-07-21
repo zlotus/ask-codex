@@ -21,8 +21,7 @@ Do not depend on Codex Desktop private IPC or expose the terminal UI.
 - Keep `approvalPolicy: "on-request"` and `approvalsReviewer: "user"` enforced
   at the gateway.
 - Never put `ASK_CODEX_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
-  or commands. Also scrub the deprecated `ASK_AGENT_TOKEN` from the child
-  environment. WebSocket authentication happens in the first message frame.
+  or commands. WebSocket authentication happens in the first message frame.
 - Keep loopback-only defaults, strict Origin/Host checks, connection and request
   limits, and the non-loopback token requirement.
 - Treat `ASK_CODEX_WORKSPACE` as an initial directory, not an access boundary.

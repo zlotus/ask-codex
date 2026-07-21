@@ -24,6 +24,16 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 - 支持桌面端与移动端响应式布局。
 - 支持可选的网页访问令牌、Origin 检查，并默认仅监听回环地址。
 
+## 界面截图
+
+### 桌面端
+
+![Ask Codex 桌面端界面](docs/screenshots/desktop.png)
+
+### 移动端
+
+<img src="docs/screenshots/mobile.jpg" alt="Ask Codex 移动端界面" width="390">
+
 ## 环境要求
 
 - Node.js 22.12 或更高版本。
@@ -63,10 +73,6 @@ ASK_CODEX_WORKSPACE=/项目的绝对路径 npm start
 | `ASK_CODEX_WORKSPACE` | 服务进程的工作目录 | Codex 初始绝对工作目录 |
 | `ASK_CODEX_TOKEN` | 未设置 | 浏览器访问令牌；监听非回环地址时必须设置 |
 | `CODEX_BIN` | `codex` | Codex CLI 可执行文件 |
-
-如果从 Ask Agent 名称迁移，请将已有的 `ASK_AGENT_*` 环境变量改为
-`ASK_CODEX_*`；网关不会读取旧环境变量。旧版页面保存在浏览器中的令牌会执行一次
-自动迁移，随后删除旧的浏览器存储键。
 
 ## 远程访问
 

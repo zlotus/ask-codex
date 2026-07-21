@@ -27,6 +27,16 @@ events, but it does not get a general-purpose file-serving endpoint.
 - Responsive desktop and mobile layouts.
 - Optional web access token, Origin checks, and loopback-only defaults.
 
+## Screenshots
+
+### Desktop
+
+![Ask Codex desktop interface](docs/screenshots/desktop.png)
+
+### Mobile
+
+<img src="docs/screenshots/mobile.jpg" alt="Ask Codex mobile interface" width="390">
+
 ## Requirements
 
 - Node.js 22.12 or newer.
@@ -66,11 +76,6 @@ Configuration:
 | `ASK_CODEX_WORKSPACE` | server working directory | Initial absolute Codex working directory |
 | `ASK_CODEX_TOKEN` | unset | Browser access token; required for non-loopback binds |
 | `CODEX_BIN` | `codex` | Codex CLI executable |
-
-After renaming from Ask Agent, rename any `ASK_AGENT_*` environment variables
-to `ASK_CODEX_*`. The old environment-variable names are not read by the
-gateway. A token stored by the previous browser build is migrated once and the
-old browser-storage key is removed.
 
 ## Remote Access
 
