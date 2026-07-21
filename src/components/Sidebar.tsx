@@ -38,7 +38,7 @@ export function Sidebar(props: SidebarProps) {
       <aside className={`sidebar ${props.open ? "sidebar--open" : ""}`}>
         <div className="sidebar-brand">
           <div className="brand-mark" aria-hidden="true">A</div>
-          <div><strong>Ask Agent</strong><span>Codex workspace</span></div>
+          <div><strong>Ask Codex</strong><span>Codex workspace</span></div>
           <button className="icon-button sidebar-close" type="button" title="Close threads" aria-label="Close threads" onClick={props.onClose}>
             <X size={18} aria-hidden="true" />
           </button>

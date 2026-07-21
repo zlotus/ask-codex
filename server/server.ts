@@ -52,7 +52,7 @@ const MAX_WS_BUFFERED_BYTES = 2 * 1024 * 1024;
 const WS_AUTH_TIMEOUT_MS = 5_000;
 export { ALLOWED_BROWSER_RPC_METHODS } from "./rpc-policy.js";
 
-export interface AskAgentConfig {
+export interface AskCodexConfig {
   host: string;
   port: number;
   defaultCwd: string;
@@ -75,7 +75,7 @@ interface PendingServerRequest {
 function parsePort(value: string | undefined): number {
   const port = value === undefined ? 4173 : Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-    throw new Error("ASK_AGENT_PORT must be an integer between 0 and 65535");
+    throw new Error("ASK_CODEX_PORT must be an integer between 0 and 65535");
   }
   return port;
 }
@@ -98,16 +98,16 @@ function assertDirectory(path: string, label: string): void {
 export function loadConfig(
   environment: NodeJS.ProcessEnv = process.env,
   currentDirectory: string = process.cwd(),
-): AskAgentConfig {
-  const host = environment.ASK_AGENT_HOST?.trim() || "127.0.0.1";
-  const token = environment.ASK_AGENT_TOKEN || undefined;
-  const defaultCwd = environment.ASK_AGENT_WORKSPACE || currentDirectory;
+): AskCodexConfig {
+  const host = environment.ASK_CODEX_HOST?.trim() || "127.0.0.1";
+  const token = environment.ASK_CODEX_TOKEN || undefined;
+  const defaultCwd = environment.ASK_CODEX_WORKSPACE || currentDirectory;
   assertSafeBind(host, token);
-  assertDirectory(defaultCwd, "ASK_AGENT_WORKSPACE");
+  assertDirectory(defaultCwd, "ASK_CODEX_WORKSPACE");
 
   return {
     host,
-    port: parsePort(environment.ASK_AGENT_PORT),
+    port: parsePort(environment.ASK_CODEX_PORT),
     defaultCwd,
     token,
     production: environment.NODE_ENV === "production",
@@ -142,7 +142,7 @@ function rawDataToString(data: RawData): string {
   return data.toString("utf8");
 }
 
-export class AskAgentServer {
+export class AskCodexServer {
   readonly app = express();
   readonly httpServer = createServer(this.app);
   readonly webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
@@ -156,7 +156,7 @@ export class AskAgentServer {
   private started = false;
 
   constructor(
-    readonly config: AskAgentConfig,
+    readonly config: AskCodexConfig,
     readonly codex: CodexGateway = new CodexAppServer({
       command: process.env.CODEX_BIN || "codex",
     }),
@@ -504,7 +504,7 @@ export class AskAgentServer {
     if (!this.pendingServerRequests.has(key) && this.pendingServerRequests.size >= MAX_PENDING_SERVER_REQUESTS) {
       void this.codex.respond(message.id, undefined, {
         code: -32_000,
-        message: "Ask Agent has too many pending server requests",
+        message: "Ask Codex has too many pending server requests",
       }).catch(() => undefined);
       return;
     }
@@ -619,7 +619,7 @@ export class AskAgentServer {
   private address(): StartedServer {
     const address = this.httpServer.address();
     if (!address || typeof address === "string") {
-      throw new Error("Ask Agent server is not listening on a TCP address");
+      throw new Error("Ask Codex server is not listening on a TCP address");
     }
     const port = (address as AddressInfo).port;
     const displayHost = this.config.host.includes(":")

@@ -194,6 +194,7 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     let child: CodexProcess;
     try {
       const childEnvironment = { ...process.env };
+      delete childEnvironment.ASK_CODEX_TOKEN;
       delete childEnvironment.ASK_AGENT_TOKEN;
       child = this.spawnCodex(
         this.command,
@@ -221,8 +222,8 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     try {
       const initialized = await this.sendRequest(child, "initialize", {
         clientInfo: {
-          name: "ask_agent",
-          title: "Ask Agent",
+          name: "ask_codex",
+          title: "Ask Codex",
           version: this.clientVersion,
         },
         capabilities: {

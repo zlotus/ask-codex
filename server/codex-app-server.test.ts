@@ -65,8 +65,8 @@ describe("CodexAppServer", () => {
       id: 1,
       params: {
         clientInfo: {
-          name: "ask_agent",
-          title: "Ask Agent",
+          name: "ask_codex",
+          title: "Ask Codex",
           version: "test-version",
         },
         capabilities: {
@@ -113,8 +113,10 @@ describe("CodexAppServer", () => {
   });
 
   it("does not pass the web access token to the Codex process", async () => {
-    const previousToken = process.env.ASK_AGENT_TOKEN;
-    process.env.ASK_AGENT_TOKEN = "gateway-secret";
+    const previousToken = process.env.ASK_CODEX_TOKEN;
+    const previousLegacyToken = process.env.ASK_AGENT_TOKEN;
+    process.env.ASK_CODEX_TOKEN = "gateway-secret";
+    process.env.ASK_AGENT_TOKEN = "legacy-gateway-secret";
     const fakeProcess = new FakeCodexProcess();
     const spawnCodex = vi.fn<SpawnCodex>(() => fakeProcess);
     const client = new CodexAppServer({ spawnCodex });
@@ -122,15 +124,21 @@ describe("CodexAppServer", () => {
     try {
       const starting = client.start();
       const spawnOptions = spawnCodex.mock.calls[0]?.[2];
+      expect(spawnOptions?.env?.ASK_CODEX_TOKEN).toBeUndefined();
       expect(spawnOptions?.env?.ASK_AGENT_TOKEN).toBeUndefined();
       fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
       await starting;
     } finally {
       client.close();
       if (previousToken === undefined) {
+        delete process.env.ASK_CODEX_TOKEN;
+      } else {
+        process.env.ASK_CODEX_TOKEN = previousToken;
+      }
+      if (previousLegacyToken === undefined) {
         delete process.env.ASK_AGENT_TOKEN;
       } else {
-        process.env.ASK_AGENT_TOKEN = previousToken;
+        process.env.ASK_AGENT_TOKEN = previousLegacyToken;
       }
     }
   });

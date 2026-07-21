@@ -1,13 +1,13 @@
-# Ask Agent
+# Ask Codex
 
 English | [简体中文](README.zh-CN.md)
 
-Ask Agent is a local-first browser client for Codex. It talks to the official
+Ask Codex is a local-first browser client for Codex. It talks to the official
 `codex app-server` protocol instead of wrapping the terminal UI or patching the
 Codex desktop application.
 
 ```text
-Browser UI  <->  Ask Agent gateway  <->  codex app-server  <->  your workspace
+Browser UI  <->  Ask Codex gateway  <->  codex app-server  <->  your workspace
               WebSocket             JSONL over stdio
 ```
 
@@ -33,14 +33,16 @@ events, but it does not get a general-purpose file-serving endpoint.
 - A recent Codex CLI with `codex app-server` support.
 - An existing Codex login. Run `codex login` first if needed.
 
-The app-server WebSocket transport is experimental. Ask Agent uses the more
+The app-server WebSocket transport is experimental. Ask Codex uses the more
 established JSONL-over-stdio transport behind its own browser gateway.
 
 ## Development
 
 ```bash
+git clone https://github.com/zlotus/ask-codex.git
+cd ask-codex
 npm install
-ASK_AGENT_WORKSPACE=/absolute/path/to/project npm run dev
+ASK_CODEX_WORKSPACE=/absolute/path/to/project npm run dev
 ```
 
 Open `http://127.0.0.1:5173`. Vite serves the UI and proxies API and WebSocket
@@ -50,7 +52,7 @@ traffic to the gateway on `127.0.0.1:4173`.
 
 ```bash
 npm run build
-ASK_AGENT_WORKSPACE=/absolute/path/to/project npm start
+ASK_CODEX_WORKSPACE=/absolute/path/to/project npm start
 ```
 
 Open `http://127.0.0.1:4173`.
@@ -59,11 +61,16 @@ Configuration:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ASK_AGENT_HOST` | `127.0.0.1` | HTTP and WebSocket bind address |
-| `ASK_AGENT_PORT` | `4173` | Gateway port |
-| `ASK_AGENT_WORKSPACE` | server working directory | Initial absolute Codex working directory |
-| `ASK_AGENT_TOKEN` | unset | Browser access token; required for non-loopback binds |
+| `ASK_CODEX_HOST` | `127.0.0.1` | HTTP and WebSocket bind address |
+| `ASK_CODEX_PORT` | `4173` | Gateway port |
+| `ASK_CODEX_WORKSPACE` | server working directory | Initial absolute Codex working directory |
+| `ASK_CODEX_TOKEN` | unset | Browser access token; required for non-loopback binds |
 | `CODEX_BIN` | `codex` | Codex CLI executable |
+
+After renaming from Ask Agent, rename any `ASK_AGENT_*` environment variables
+to `ASK_CODEX_*`. The old environment-variable names are not read by the
+gateway. A token stored by the previous browser build is migrated once and the
+old browser-storage key is removed.
 
 ## Remote Access
 
@@ -71,15 +78,15 @@ Do not expose this service directly to the public internet. Anyone who can use
 the UI can instruct Codex to read files, modify the selected workspace, run
 commands, and present requests for broader access.
 
-Treat `ASK_AGENT_TOKEN` like a password for the operating-system account that
-runs Ask Agent. `ASK_AGENT_WORKSPACE` selects the initial directory; it is not
+Treat `ASK_CODEX_TOKEN` like a password for the operating-system account that
+runs Ask Codex. `ASK_CODEX_WORKSPACE` selects the initial directory; it is not
 an access boundary. An authenticated browser can select another absolute
 directory and can choose full-access sandbox mode, subject to Codex approvals.
 
 For access from another device:
 
-1. Set a long random `ASK_AGENT_TOKEN`.
-2. Bind to a private interface with `ASK_AGENT_HOST`.
+1. Set a long random `ASK_CODEX_TOKEN`.
+2. Bind to a private interface with `ASK_CODEX_HOST`.
 3. Put the service behind TLS and an authenticated reverse proxy, VPN, or SSH
    tunnel.
 4. Ensure proxy and application logs do not record authorization headers or
@@ -111,7 +118,7 @@ file approval flows.
 `pi-web` embeds the pi agent SDK and its session model directly, so its backend
 cannot be swapped for Codex without replacing the event and approval layers.
 The current `0xcaff/codex-web` reuses a patched Codex Desktop Electron bundle
-and private IPC. Ask Agent instead targets the documented app-server interface,
+and private IPC. Ask Codex instead targets the documented app-server interface,
 which keeps the integration smaller and avoids redistributing the desktop
 application.
 

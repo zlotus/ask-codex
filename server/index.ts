@@ -1,10 +1,10 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AskAgentServer, loadConfig } from "./server.js";
+import { AskCodexServer, loadConfig } from "./server.js";
 
 export { CodexAppServer, CodexRpcError } from "./codex-app-server.js";
-export { AskAgentServer, loadConfig } from "./server.js";
+export { AskCodexServer, loadConfig } from "./server.js";
 export * from "./rpc-policy.js";
 export * from "./server-request-policy.js";
 export * from "./security.js";
@@ -17,9 +17,9 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-  let service: AskAgentServer;
+  let service: AskCodexServer;
   try {
-    service = new AskAgentServer(loadConfig());
+    service = new AskCodexServer(loadConfig());
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
@@ -27,7 +27,7 @@ if (isEntrypoint()) {
   }
 
   service.start().then(({ url }) => {
-    console.log(`Ask Agent listening at ${url}`);
+    console.log(`Ask Codex listening at ${url}`);
   }).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

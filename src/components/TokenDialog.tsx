@@ -24,7 +24,7 @@ export function TokenDialog({ open, required, token, error, onSave, onClose }: T
       >
         <div className="dialog-heading">
           <KeyRound size={19} aria-hidden="true" />
-          <div><strong>Connection token</strong><span>ASK_AGENT_TOKEN</span></div>
+          <div><strong>Connection token</strong><span>ASK_CODEX_TOKEN</span></div>
           {!required && (
             <button className="icon-button" type="button" title="Close" onClick={onClose}>
               <X size={17} aria-hidden="true" />

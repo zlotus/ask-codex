@@ -30,8 +30,7 @@ import {
   readString,
   sandboxMode,
 } from "./utils/protocol";
-
-const TOKEN_KEY = "ASK_AGENT_TOKEN";
+import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -43,7 +42,7 @@ function paramsRecord(value: unknown): Record<string, unknown> {
 
 export default function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? "");
+  const [token, setToken] = useState(loadStoredToken);
   const [bootstrap, setBootstrap] = useState<BootstrapInfo | null>(null);
   const [bootstrapError, setBootstrapError] = useState("");
   const [tokenOpen, setTokenOpen] = useState(false);
@@ -206,7 +205,7 @@ export default function App() {
       setBootstrapError("");
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) setTokenOpen(true);
-        throw new Error(response.status === 401 ? "A valid ASK_AGENT_TOKEN is required" : `Bootstrap failed (${response.status})`);
+        throw new Error(response.status === 401 ? "A valid ASK_CODEX_TOKEN is required" : `Bootstrap failed (${response.status})`);
       }
       const raw: unknown = await response.json();
       if (!isRecord(raw) || typeof raw.ready !== "boolean" || typeof raw.defaultCwd !== "string" || typeof raw.authRequired !== "boolean") {
@@ -403,14 +402,13 @@ export default function App() {
   }, [respond, showToast]);
 
   const saveToken = useCallback((nextToken: string) => {
-    if (nextToken) sessionStorage.setItem(TOKEN_KEY, nextToken);
-    else sessionStorage.removeItem(TOKEN_KEY);
+    saveStoredToken(nextToken);
     setToken(nextToken);
     setTokenOpen(false);
     setBootstrapError("");
   }, []);
 
-  const requiredToken = Boolean(bootstrap?.authRequired && !token) || bootstrapError.includes("ASK_AGENT_TOKEN");
+  const requiredToken = Boolean(bootstrap?.authRequired && !token) || bootstrapError.includes("ASK_CODEX_TOKEN");
   const title = useMemo(() => threadTitle(state.currentThread), [state.currentThread]);
 
   return (

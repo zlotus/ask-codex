@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-Ask Agent is a single-user, local-first browser client for Codex. Keep the
+Ask Codex is a single-user, local-first browser client for Codex. Keep the
 integration on the documented `codex app-server` JSONL-over-stdio protocol.
 Do not depend on Codex Desktop private IPC or expose the terminal UI.
 
@@ -20,11 +20,12 @@ Do not depend on Codex Desktop private IPC or expose the terminal UI.
   without rebuilding them from an allowlist.
 - Keep `approvalPolicy: "on-request"` and `approvalsReviewer: "user"` enforced
   at the gateway.
-- Never put `ASK_AGENT_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
-  or commands. WebSocket authentication happens in the first message frame.
+- Never put `ASK_CODEX_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
+  or commands. Also scrub the deprecated `ASK_AGENT_TOKEN` from the child
+  environment. WebSocket authentication happens in the first message frame.
 - Keep loopback-only defaults, strict Origin/Host checks, connection and request
   limits, and the non-loopback token requirement.
-- Treat `ASK_AGENT_WORKSPACE` as an initial directory, not an access boundary.
+- Treat `ASK_CODEX_WORKSPACE` as an initial directory, not an access boundary.
 - Unsupported granular permission grants and MCP elicitations must fail closed.
 - Preserve an existing `externalSandbox` instead of overriding it on resume.
 

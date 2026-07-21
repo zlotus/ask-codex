@@ -8,7 +8,7 @@ import type {
   CodexGateway,
   CodexStatusEvent,
 } from "./codex-app-server.js";
-import { AskAgentServer, type AskAgentConfig } from "./server.js";
+import { AskCodexServer, type AskCodexConfig } from "./server.js";
 import type { CodexStatus, RpcId, ServerMessage } from "./types.js";
 
 interface FakeGatewayEvents {
@@ -32,7 +32,7 @@ class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGatewa
   readonly close = vi.fn((): void => undefined);
 }
 
-function config(token?: string): AskAgentConfig {
+function config(token?: string): AskCodexConfig {
   return {
     host: "127.0.0.1",
     port: 0,
@@ -74,8 +74,8 @@ async function waitForMessage(
   return found;
 }
 
-describe("AskAgentServer", () => {
-  const services: AskAgentServer[] = [];
+describe("AskCodexServer", () => {
+  const services: AskCodexServer[] = [];
 
   afterEach(async () => {
     await Promise.all(services.splice(0).map((service) => service.close()));
@@ -83,7 +83,7 @@ describe("AskAgentServer", () => {
 
   it("protects HTTP metadata with token and Origin checks", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
 
@@ -131,7 +131,7 @@ describe("AskAgentServer", () => {
 
   it("requires the first WebSocket frame to authenticate", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
     const messages: ServerMessage[] = [];
@@ -161,7 +161,7 @@ describe("AskAgentServer", () => {
 
   it("routes approvals to the thread owner and broadcasts notifications", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
     const first = connect(url, "test-token");
@@ -219,7 +219,7 @@ describe("AskAgentServer", () => {
 
   it("rejects relative cwd before forwarding an RPC", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
     const client = connect(url, "test-token");
@@ -249,7 +249,7 @@ describe("AskAgentServer", () => {
 
   it("fails closed for granular permissions and MCP elicitations", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
     const client = connect(url, "test-token");
@@ -301,7 +301,7 @@ describe("AskAgentServer", () => {
 
   it("rejects host-level app-server methods without forwarding them", async () => {
     const gateway = new FakeGateway();
-    const service = new AskAgentServer(config("test-token"), gateway);
+    const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
     const { url } = await service.start();
     const client = connect(url, "test-token");
@@ -322,7 +322,7 @@ describe("AskAgentServer", () => {
       id: "dangerous-method",
       error: {
         code: -32601,
-        message: "RPC method is not available in Ask Agent: fs/remove",
+        message: "RPC method is not available in Ask Codex: fs/remove",
       },
     });
     expect(gateway.request).not.toHaveBeenCalled();

@@ -30,7 +30,7 @@ export class ClientInputError extends ClientRpcError {
 
 export class MethodNotAllowedError extends ClientRpcError {
   constructor(method: string) {
-    super(-32601, `RPC method is not available in Ask Agent: ${method}`);
+    super(-32601, `RPC method is not available in Ask Codex: ${method}`);
     this.name = "MethodNotAllowedError";
   }
 }
@@ -61,7 +61,7 @@ export function isLoopbackHost(hostname: string): boolean {
 export function assertSafeBind(host: string, token?: string): void {
   if (!isLoopbackHost(host) && !token) {
     throw new Error(
-      "ASK_AGENT_TOKEN is required when ASK_AGENT_HOST is not a loopback address",
+      "ASK_CODEX_TOKEN is required when ASK_CODEX_HOST is not a loopback address",
     );
   }
 }

@@ -1,9 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
-const url = process.env.ASK_AGENT_VISUAL_URL ?? "http://127.0.0.1:4173";
+const url = process.env.ASK_CODEX_VISUAL_URL ?? "http://127.0.0.1:4173";
 const browserPath = process.env.CHROME_BIN ?? "/usr/bin/chromium";
-const outputDirectory = process.env.ASK_AGENT_VISUAL_OUTPUT ?? "/tmp/ask-agent-visual";
+const outputDirectory = process.env.ASK_CODEX_VISUAL_OUTPUT ?? "/tmp/ask-codex-visual";
 
 await mkdir(outputDirectory, { recursive: true });
 

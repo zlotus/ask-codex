@@ -12,8 +12,8 @@ import {
 
 describe("server security", () => {
   it("requires a token for non-loopback binds", () => {
-    expect(() => assertSafeBind("0.0.0.0")).toThrow("ASK_AGENT_TOKEN");
-    expect(() => assertSafeBind("192.168.1.10")).toThrow("ASK_AGENT_TOKEN");
+    expect(() => assertSafeBind("0.0.0.0")).toThrow("ASK_CODEX_TOKEN");
+    expect(() => assertSafeBind("192.168.1.10")).toThrow("ASK_CODEX_TOKEN");
     expect(() => assertSafeBind("0.0.0.0", "secret")).not.toThrow();
     expect(isLoopbackHost("127.8.9.10")).toBe(true);
     expect(isLoopbackHost("[::1]")).toBe(true);
