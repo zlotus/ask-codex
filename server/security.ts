@@ -58,11 +58,96 @@ export function isLoopbackHost(hostname: string): boolean {
     ipv4.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
 
-export function assertSafeBind(host: string, token?: string): void {
+export function assertSafeBind(
+  host: string,
+  token?: string,
+  publicOrigin?: string,
+): void {
+  if (publicOrigin && !token) {
+    throw new Error(
+      "ASK_CODEX_TOKEN is required when ASK_CODEX_PUBLIC_ORIGIN is configured",
+    );
+  }
   if (!isLoopbackHost(host) && !token) {
     throw new Error(
       "ASK_CODEX_TOKEN is required when ASK_CODEX_HOST is not a loopback address",
     );
+  }
+}
+
+function parseHttpOrigin(value: string): URL | undefined {
+  // URL normalization removes empty query markers and dot segments. Reject
+  // every suffix except one optional trailing slash before parsing.
+  const authority = /^https?:\/\/([^\s/?#\\]+)\/?$/i.exec(value)?.[1];
+  if (!authority || authority.endsWith(":")) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizePublicOrigin(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = parseHttpOrigin(trimmed);
+  if (!parsed) {
+    throw new Error(
+      "ASK_CODEX_PUBLIC_ORIGIN must be an http:// or https:// origin without a path, query, fragment, or credentials",
+    );
+  }
+  return parsed.origin;
+}
+
+function effectivePort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+  return url.protocol === "https:" ? "443" : "80";
+}
+
+function matchesPublicHost(hostHeader: string, publicOrigin: URL): boolean {
+  try {
+    const requestUrl = new URL(`${publicOrigin.protocol}//${hostHeader}`);
+    return !requestUrl.username &&
+      !requestUrl.password &&
+      requestUrl.pathname === "/" &&
+      !requestUrl.search &&
+      !requestUrl.hash &&
+      normalizeHostname(requestUrl.hostname) === normalizeHostname(publicOrigin.hostname) &&
+      effectivePort(requestUrl) === effectivePort(publicOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function hostHeaderIsLoopback(hostHeader: string): boolean {
+  try {
+    const requestUrl = new URL(`http://${hostHeader}`);
+    return !requestUrl.username &&
+      !requestUrl.password &&
+      requestUrl.pathname === "/" &&
+      !requestUrl.search &&
+      !requestUrl.hash &&
+      isLoopbackHost(requestUrl.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -71,13 +156,39 @@ export function isAllowedOrigin(
   hostHeader: string | undefined,
   boundHost?: string,
   production = true,
+  publicOrigin?: string,
 ): boolean {
   if (!hostHeader) {
     return false;
   }
 
   try {
+    if (publicOrigin) {
+      const parsedPublicOrigin = parseHttpOrigin(publicOrigin);
+      if (!parsedPublicOrigin) {
+        return false;
+      }
+      if (matchesPublicHost(hostHeader, parsedPublicOrigin)) {
+        if (!origin) {
+          return true;
+        }
+        return parseHttpOrigin(origin)?.origin === parsedPublicOrigin.origin;
+      }
+      if (!hostHeaderIsLoopback(hostHeader)) {
+        return false;
+      }
+    }
+
     const requestUrl = new URL(`http://${hostHeader}`);
+    if (
+      requestUrl.username ||
+      requestUrl.password ||
+      requestUrl.pathname !== "/" ||
+      requestUrl.search ||
+      requestUrl.hash
+    ) {
+      return false;
+    }
     const requestHostname = requestUrl.hostname;
     if (!requestHostname) {
       return false;
@@ -91,8 +202,8 @@ export function isAllowedOrigin(
       return true;
     }
 
-    const parsedOrigin = new URL(origin);
-    if (parsedOrigin.protocol !== "http:" && parsedOrigin.protocol !== "https:") {
+    const parsedOrigin = parseHttpOrigin(origin);
+    if (!parsedOrigin) {
       return false;
     }
     const originHostname = normalizeHostname(parsedOrigin.hostname);

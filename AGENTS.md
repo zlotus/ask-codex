@@ -24,6 +24,8 @@ Do not depend on Codex Desktop private IPC or expose the terminal UI.
   or commands. WebSocket authentication happens in the first message frame.
 - Keep loopback-only defaults, strict Origin/Host checks, connection and request
   limits, and the non-loopback token requirement.
+- Treat `ASK_CODEX_PUBLIC_ORIGIN` as one exact trusted-proxy origin, require a
+  token whenever it is configured, and preserve the public `Host` at the proxy.
 - Treat `ASK_CODEX_WORKSPACE` as an initial directory, not an access boundary.
 - Unsupported granular permission grants and MCP elicitations must fail closed.
 - Preserve an existing `externalSandbox` instead of overriding it on resume.

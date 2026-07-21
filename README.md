@@ -75,6 +75,7 @@ Configuration:
 | `ASK_CODEX_PORT` | `4173` | Gateway port |
 | `ASK_CODEX_WORKSPACE` | server working directory | Initial absolute Codex working directory |
 | `ASK_CODEX_TOKEN` | unset | Browser access token; required for non-loopback binds |
+| `ASK_CODEX_PUBLIC_ORIGIN` | unset | Exact external origin allowed through a trusted reverse proxy; requires `ASK_CODEX_TOKEN` |
 | `CODEX_BIN` | `codex` | Codex CLI executable |
 
 ## Remote Access
@@ -102,6 +103,38 @@ For access from another device:
 The server refuses a non-loopback bind when no token is configured. This is a
 single-user tool; the token is an access gate, not multi-user isolation or
 role-based authorization.
+
+### Cloudflare Tunnel
+
+A Cloudflare Tunnel can publish Ask Codex while the gateway remains bound to
+loopback. You do not need to listen on `0.0.0.0` or open a port on your router:
+
+```bash
+ASK_CODEX_HOST=127.0.0.1 \
+ASK_CODEX_PORT=4173 \
+ASK_CODEX_PUBLIC_ORIGIN=https://codex.example.com \
+ASK_CODEX_TOKEN='replace-with-a-long-random-secret' \
+npm start
+```
+
+`ASK_CODEX_PUBLIC_ORIGIN` must be one complete `http://` or `https://` origin,
+with no path, query string, fragment, or credentials.
+
+Point the tunnel at that loopback service:
+
+```yaml
+ingress:
+  - hostname: codex.example.com
+    service: http://127.0.0.1:4173
+  - service: http_status:404
+```
+
+Keep the original public `Host` header. In particular, do not configure
+Cloudflare Tunnel's `httpHostHeader` as `localhost` or `127.0.0.1`; Ask Codex
+checks both `Host` and `Origin` against `ASK_CODEX_PUBLIC_ORIGIN`. Configure
+Cloudflare Access so only your identity can reach the hostname, require MFA,
+and still use a strong random `ASK_CODEX_TOKEN` as a separate application-level
+gate.
 
 ## Verification
 

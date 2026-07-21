@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { EventEmitter, once } from "node:events";
+import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,7 +9,7 @@ import type {
   CodexGateway,
   CodexStatusEvent,
 } from "./codex-app-server.js";
-import { AskCodexServer, type AskCodexConfig } from "./server.js";
+import { AskCodexServer, loadConfig, type AskCodexConfig } from "./server.js";
 import type { CodexStatus, RpcId, ServerMessage } from "./types.js";
 
 interface FakeGatewayEvents {
@@ -74,6 +75,21 @@ async function waitForMessage(
   return found;
 }
 
+async function requestStatus(
+  url: string,
+  headers: Record<string, string>,
+): Promise<number> {
+  return await new Promise<number>((resolveRequest, rejectRequest) => {
+    const request = httpRequest(url, { headers }, (response) => {
+      response.resume();
+      response.once("end", () => resolveRequest(response.statusCode ?? 0));
+      response.once("error", rejectRequest);
+    });
+    request.once("error", rejectRequest);
+    request.end();
+  });
+}
+
 describe("AskCodexServer", () => {
   const services: AskCodexServer[] = [];
 
@@ -127,6 +143,90 @@ describe("AskCodexServer", () => {
       },
     });
     expect(badOrigin.status).toBe(403);
+  });
+
+  it("accepts authenticated HTTP requests from the configured public origin", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer({
+      ...config("test-token"),
+      production: true,
+      publicOrigin: "https://codex.example.com",
+    }, gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const publicHeaders = {
+      Authorization: "Bearer test-token",
+      Host: "codex.example.com",
+    };
+
+    const publicStatus = await requestStatus(`${url}/api/health`, {
+      ...publicHeaders,
+      Origin: "https://codex.example.com",
+    });
+    expect(publicStatus).toBe(200);
+
+    const originlessStatus = await requestStatus(`${url}/api/health`, publicHeaders);
+    expect(originlessStatus).toBe(200);
+
+    const badOriginStatus = await requestStatus(`${url}/api/health`, {
+      ...publicHeaders,
+      Origin: "https://evil.example",
+    });
+    expect(badOriginStatus).toBe(403);
+  });
+
+  it("accepts authenticated WebSockets from the configured public origin", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer({
+      ...config("test-token"),
+      production: true,
+      publicOrigin: "https://codex.example.com",
+    }, gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const messages: ServerMessage[] = [];
+    const socket = new WebSocket(`${url.replace("http", "ws")}/ws`, {
+      headers: { Host: "codex.example.com" },
+      origin: "https://codex.example.com",
+    });
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(data.toString()) as ServerMessage);
+    });
+
+    await once(socket, "open");
+    socket.send(JSON.stringify({ type: "auth", token: "test-token" }));
+    await waitForMessage(messages, (message) => message.type === "status");
+    socket.close();
+  });
+
+  it("normalizes and validates ASK_CODEX_PUBLIC_ORIGIN", () => {
+    const loaded = loadConfig({
+      ASK_CODEX_PUBLIC_ORIGIN: "https://codex.example.com/",
+      ASK_CODEX_TOKEN: "test-token",
+    }, process.cwd());
+    expect(loaded.publicOrigin).toBe("https://codex.example.com");
+
+    for (const invalidOrigin of [
+      "not-a-url",
+      "ftp://codex.example.com",
+      "https://codex.example.com/path",
+      "https://codex.example.com/?query=value",
+      "https://codex.example.com/#fragment",
+      "https://codex.example.com?",
+      "https://codex.example.com#",
+      "https://codex.example.com/a/..",
+      "https://codex.example.com/%2e%2e",
+      "https://codex.example.com\\a\\..",
+      "https://codex.exa\nmple.com",
+      "https://codex.exa\tmple.com",
+      "https://codex.example.com:",
+      "https://user:password@codex.example.com",
+    ]) {
+      expect(() => loadConfig({
+        ASK_CODEX_PUBLIC_ORIGIN: invalidOrigin,
+        ASK_CODEX_TOKEN: "test-token",
+      }, process.cwd())).toThrow("ASK_CODEX_PUBLIC_ORIGIN");
+    }
   });
 
   it("requires the first WebSocket frame to authenticate", async () => {

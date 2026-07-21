@@ -19,6 +19,19 @@ describe("server security", () => {
     expect(isLoopbackHost("[::1]")).toBe(true);
   });
 
+  it("requires a token when a public origin is configured", () => {
+    expect(() => assertSafeBind(
+      "127.0.0.1",
+      undefined,
+      "https://codex.example.com",
+    )).toThrow("ASK_CODEX_TOKEN");
+    expect(() => assertSafeBind(
+      "127.0.0.1",
+      "secret",
+      "https://codex.example.com",
+    )).not.toThrow();
+  });
+
   it("allows matching non-loopback hostnames", () => {
     expect(isAllowedOrigin("http://localhost:5173", "localhost:4173")).toBe(true);
     expect(isAllowedOrigin("http://localhost:5173", "127.0.0.1:4173")).toBe(true);
@@ -75,6 +88,99 @@ describe("server security", () => {
       "127.0.0.1",
       false,
     )).toBe(false);
+  });
+
+  it("allows an exact configured public Host and Origin through a loopback bind", () => {
+    const publicOrigin = "https://codex.example.com";
+
+    expect(isAllowedOrigin(
+      publicOrigin,
+      "codex.example.com",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(true);
+    expect(isAllowedOrigin(
+      publicOrigin,
+      "codex.example.com:443",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(true);
+    expect(isAllowedOrigin(
+      undefined,
+      "codex.example.com",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(true);
+  });
+
+  it("rejects public Host, Origin, and port mismatches", () => {
+    const publicOrigin = "https://codex.example.com";
+
+    expect(isAllowedOrigin(
+      "https://evil.example",
+      "codex.example.com",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(false);
+    expect(isAllowedOrigin(
+      publicOrigin,
+      "evil.example",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(false);
+    expect(isAllowedOrigin(
+      publicOrigin,
+      "codex.example.com:444",
+      "127.0.0.1",
+      true,
+      publicOrigin,
+    )).toBe(false);
+
+    const nonDefaultPort = "https://codex.example.com:8443";
+    expect(isAllowedOrigin(
+      nonDefaultPort,
+      "codex.example.com:8443",
+      "127.0.0.1",
+      true,
+      nonDefaultPort,
+    )).toBe(true);
+    expect(isAllowedOrigin(
+      nonDefaultPort,
+      "codex.example.com",
+      "127.0.0.1",
+      true,
+      nonDefaultPort,
+    )).toBe(false);
+
+    expect(isAllowedOrigin(
+      publicOrigin,
+      "codex.example.com:444",
+      "0.0.0.0",
+      true,
+      publicOrigin,
+    )).toBe(false);
+    expect(isAllowedOrigin(
+      "https://evil.example",
+      "evil.example",
+      "0.0.0.0",
+      true,
+      publicOrigin,
+    )).toBe(false);
+  });
+
+  it("preserves direct loopback access when a public origin is configured", () => {
+    expect(isAllowedOrigin(
+      "http://127.0.0.1:4173",
+      "127.0.0.1:4173",
+      "127.0.0.1",
+      true,
+      "https://codex.example.com",
+    )).toBe(true);
   });
 
   it("validates cwd overrides for thread and turn methods", async () => {

@@ -72,6 +72,7 @@ ASK_CODEX_WORKSPACE=/项目的绝对路径 npm start
 | `ASK_CODEX_PORT` | `4173` | 网关端口 |
 | `ASK_CODEX_WORKSPACE` | 服务进程的工作目录 | Codex 初始绝对工作目录 |
 | `ASK_CODEX_TOKEN` | 未设置 | 浏览器访问令牌；监听非回环地址时必须设置 |
+| `ASK_CODEX_PUBLIC_ORIGIN` | 未设置 | 允许可信反向代理转发的唯一外部 Origin；设置后必须同时设置 `ASK_CODEX_TOKEN` |
 | `CODEX_BIN` | `codex` | Codex CLI 可执行文件 |
 
 ## 远程访问
@@ -93,6 +94,37 @@ ASK_CODEX_WORKSPACE=/项目的绝对路径 npm start
 
 未设置令牌时，服务会拒绝监听非回环地址。本工具面向单用户；令牌只是访问门禁，
 不提供多用户隔离或基于角色的权限控制。
+
+### Cloudflare Tunnel
+
+使用 Cloudflare Tunnel 时，Ask Codex 仍可只监听回环地址，无需监听
+`0.0.0.0`，也无需在路由器上开放端口：
+
+```bash
+ASK_CODEX_HOST=127.0.0.1 \
+ASK_CODEX_PORT=4173 \
+ASK_CODEX_PUBLIC_ORIGIN=https://codex.example.com \
+ASK_CODEX_TOKEN='请替换为足够长的随机密钥' \
+npm start
+```
+
+`ASK_CODEX_PUBLIC_ORIGIN` 必须是一个完整的 `http://` 或 `https://`
+Origin，不能包含路径、查询参数、片段或登录凭据。
+
+将 Tunnel 指向这个本机服务：
+
+```yaml
+ingress:
+  - hostname: codex.example.com
+    service: http://127.0.0.1:4173
+  - service: http_status:404
+```
+
+请保留请求原始的公网 `Host`。尤其不要把 Cloudflare Tunnel 的
+`httpHostHeader` 配置成 `localhost` 或 `127.0.0.1`；Ask Codex 会根据
+`ASK_CODEX_PUBLIC_ORIGIN` 同时校验 `Host` 和 `Origin`。请配置 Cloudflare
+Access，仅允许你自己的身份访问该域名并强制 MFA，同时仍使用强随机
+`ASK_CODEX_TOKEN` 作为独立的应用层门禁。
 
 ## 验证
 

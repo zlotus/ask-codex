@@ -19,6 +19,7 @@ import {
   isAllowedOrigin,
   isHttpAuthorized,
   MethodNotAllowedError,
+  normalizePublicOrigin,
   tokenMatches,
   validateRpcCwd,
 } from "./security.js";
@@ -57,6 +58,7 @@ export interface AskCodexConfig {
   port: number;
   defaultCwd: string;
   token?: string;
+  publicOrigin?: string;
   production: boolean;
   distDir: string;
 }
@@ -101,8 +103,9 @@ export function loadConfig(
 ): AskCodexConfig {
   const host = environment.ASK_CODEX_HOST?.trim() || "127.0.0.1";
   const token = environment.ASK_CODEX_TOKEN || undefined;
+  const publicOrigin = normalizePublicOrigin(environment.ASK_CODEX_PUBLIC_ORIGIN);
   const defaultCwd = environment.ASK_CODEX_WORKSPACE || currentDirectory;
-  assertSafeBind(host, token);
+  assertSafeBind(host, token, publicOrigin);
   assertDirectory(defaultCwd, "ASK_CODEX_WORKSPACE");
 
   return {
@@ -110,6 +113,7 @@ export function loadConfig(
     port: parsePort(environment.ASK_CODEX_PORT),
     defaultCwd,
     token,
+    publicOrigin,
     production: environment.NODE_ENV === "production",
     distDir: resolve(moduleDirectory, "../dist"),
   };
@@ -161,7 +165,7 @@ export class AskCodexServer {
       command: process.env.CODEX_BIN || "codex",
     }),
   ) {
-    assertSafeBind(config.host, config.token);
+    assertSafeBind(config.host, config.token, config.publicOrigin);
     assertDirectory(config.defaultCwd, "defaultCwd");
     this.configureHttp();
     this.configureWebSocket();
@@ -234,6 +238,7 @@ export class AskCodexServer {
         request.headers.host,
         this.config.host,
         this.config.production,
+        this.config.publicOrigin,
       )) {
         response.status(403).json({ error: "Origin not allowed" });
         return;
@@ -303,6 +308,7 @@ export class AskCodexServer {
         request.headers.host,
         this.config.host,
         this.config.production,
+        this.config.publicOrigin,
       )) {
         this.rejectUpgrade(socket, 403, "Forbidden");
         return;
