@@ -70,6 +70,7 @@ export interface CodexItem {
   id: string;
   type: string;
   status?: ItemStatus;
+  approvalReasons?: string[];
   streamOmittedCharacters?: Record<string, number>;
   [key: string]: unknown;
 }

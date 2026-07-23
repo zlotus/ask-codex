@@ -6,7 +6,7 @@ interface StatusPillProps {
 
 export function StatusPill({ status = "completed" }: StatusPillProps) {
   const normalized = status.toLowerCase();
-  const isRunning = normalized.includes("progress") || normalized === "running" || normalized === "started";
+  const isRunning = normalized.includes("progress") || normalized.includes("running") || normalized === "started";
   const isFailed = normalized.includes("fail") || normalized.includes("error") || normalized === "declined";
   const isStopped = normalized.includes("interrupt") || normalized.includes("cancel");
   const Icon = isRunning ? LoaderCircle : isFailed ? CircleAlert : isStopped ? X : normalized === "pending" ? Minus : Check;

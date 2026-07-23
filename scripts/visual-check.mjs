@@ -47,7 +47,10 @@ const fixtureTurns = [
         type: "commandExecution",
         status: "completed",
         command: "npm run typecheck && npm test",
-        aggregatedOutput: "TypeScript: passed\nTests: 12 files, 92 passed\nBuild artifacts verified",
+        aggregatedOutput: Array.from(
+          { length: 720 },
+          (_, index) => `Verification step ${String(index + 1).padStart(3, "0")}: passed with bounded output`,
+        ).join("\n"),
         cwd: "/workspace/ask-codex",
         exitCode: 0,
         durationMs: 2840,
@@ -135,6 +138,8 @@ async function installFixture(page) {
           }],
           nextCursor: null,
         };
+      } else if (message.method === "config/read") {
+        result = { model: "gpt-5-codex", effort: "high" };
       } else if (message.method === "thread/resume") {
         result = {
           thread: { ...fixtureThread, turns: [] },
@@ -152,6 +157,31 @@ async function installFixture(page) {
         result = { data: [], nextCursor: null, backwardsCursor: null };
       }
       socket.send(JSON.stringify({ type: "rpcResult", id: message.id, result }));
+      if (message.method === "thread/resume") {
+        globalThis.setTimeout(() => {
+          socket.send(JSON.stringify({
+            type: "request",
+            id: "visual-command-approval",
+            method: "item/commandExecution/requestApproval",
+            params: {
+              threadId: fixtureThread.id,
+              turnId: "turn-newest",
+              itemId: "command",
+              startedAtMs: Date.now(),
+              environmentId: null,
+              command: "npm run typecheck && npm test",
+              cwd: fixtureThread.cwd,
+              reason: "Verify the implementation before reporting completion",
+              availableDecisions: ["accept", "decline"],
+            },
+          }));
+          globalThis.setTimeout(() => socket.send(JSON.stringify({
+            type: "notification",
+            method: "serverRequest/resolved",
+            params: { requestId: "visual-command-approval" },
+          })), 20);
+        }, 20);
+      }
     });
   });
 }
@@ -163,14 +193,22 @@ async function selectFixture(page) {
 }
 
 async function openRichDetails(page) {
-  await page.locator(".command-block, .inline-details, .turn-diff").evaluateAll((elements) => {
-    for (const element of elements) element.open = true;
-  });
+  for (const selector of [".activity-group", ".tool-activity", ".inline-details, .turn-diff"]) {
+    await page.locator(selector).evaluateAll((elements) => {
+      for (const element of elements) {
+        if (!element.open) element.querySelector(":scope > summary")?.click();
+      }
+    });
+    if (selector === ".activity-group") {
+      await page.locator(".tool-reason-preview").first().waitFor();
+    }
+    await page.waitForTimeout(50);
+  }
 }
 
 async function inspectRichLayout(page) {
   return page.evaluate(() => {
-    const selectors = [".code-block", ".diff-viewer", ".command-block"];
+    const selectors = [".code-block", ".diff-viewer", ".command-block", ".activity-group"];
     const clipped = selectors.flatMap((selector) => [...document.querySelectorAll(selector)])
       .filter((element) => {
         const box = element.getBoundingClientRect();
@@ -183,6 +221,31 @@ async function inspectRichLayout(page) {
       codeBlocks: document.querySelectorAll(".code-block").length,
       diffViewers: document.querySelectorAll(".diff-viewer").length,
       commands: document.querySelectorAll(".command-block").length,
+      activityGroups: document.querySelectorAll(".activity-group").length,
+      hiddenActivitySummaries: [...document.querySelectorAll(".command-summary")].filter((element) => {
+        const box = element.getBoundingClientRect();
+        return window.getComputedStyle(element).display === "none" || box.width === 0 || box.height === 0;
+      }).length,
+      reasonBlocks: document.querySelectorAll(".tool-reasons").length,
+      scrollingToolOutputs: [...document.querySelectorAll(".tool-activity .code-block-content")]
+        .filter((element) => element.scrollHeight > element.clientHeight).length,
+      toolOutputTruncations: document.querySelectorAll(".tool-activity .code-block-truncation").length,
+    };
+  });
+}
+
+async function inspectThreadDialog(page) {
+  const dialog = page.locator(".thread-settings-dialog");
+  await dialog.waitFor();
+  return dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const cwd = element.querySelector('[aria-label="Working directory"]');
+    const sandbox = element.querySelector('[aria-label="Sandbox"]');
+    return {
+      fitsViewport: box.left >= 0 && box.top >= 0 && box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      cwdEditable: cwd?.tagName === "INPUT" && !cwd.readOnly,
+      sandboxEnabled: sandbox?.tagName === "SELECT" && !sandbox.disabled,
+      sandbox: sandbox?.tagName === "SELECT" ? sandbox.value : null,
     };
   });
 }
@@ -205,14 +268,25 @@ try {
   const desktop = await page.evaluate(() => {
     const toolbar = document.querySelector(".toolbar")?.getBoundingClientRect();
     const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
+    const textarea = document.querySelector(".composer textarea")?.getBoundingClientRect();
     return {
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       toolbarVisible: Boolean(toolbar && toolbar.top >= 0 && toolbar.right <= window.innerWidth),
+      toolbarHeight: toolbar?.height ?? 0,
       composerVisible: Boolean(composer && composer.bottom <= window.innerHeight && composer.left >= 0),
+      composerTextareaHeight: textarea?.height ?? 0,
+      modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
+      effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
+      defaultLabels: [...document.querySelectorAll(".composer-setting option")]
+        .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
       connection: document.querySelector(".sidebar-footer span:nth-child(2)")?.textContent,
     };
   });
   await page.screenshot({ path: `${outputDirectory}/desktop.png`, fullPage: true });
+  await page.getByRole("button", { name: "New thread", exact: true }).click();
+  const desktopDialog = await inspectThreadDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-new-thread.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await selectFixture(page);
   await page.locator(".conversation-scroll").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: `${outputDirectory}/desktop-code.png`, fullPage: true });
@@ -227,12 +301,26 @@ try {
   const mobileBefore = await page.evaluate(() => ({
     horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
     sidebarHidden: !document.querySelector(".sidebar")?.classList.contains("sidebar--open"),
-    toolbarControlsVisible: [...document.querySelectorAll(".toolbar-control")].every((element) => {
+    toolbarVisible: [...document.querySelectorAll(".toolbar, .toolbar-actions")].every((element) => {
+      const box = element.getBoundingClientRect();
+      return box.left >= 0 && box.right <= window.innerWidth;
+    }),
+    toolbarHeight: document.querySelector(".toolbar")?.getBoundingClientRect().height ?? 0,
+    composerTextareaHeight: document.querySelector(".composer textarea")?.getBoundingClientRect().height ?? 0,
+    modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
+    effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
+    defaultLabels: [...document.querySelectorAll(".composer-setting option")]
+      .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
+    composerSettingsVisible: [...document.querySelectorAll(".composer-setting")].every((element) => {
       const box = element.getBoundingClientRect();
       return box.left >= 0 && box.right <= window.innerWidth;
     }),
   }));
   await page.screenshot({ path: `${outputDirectory}/mobile.png`, fullPage: true });
+  await page.getByRole("button", { name: "Thread settings", exact: true }).click();
+  const mobileDialog = await inspectThreadDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-new-thread.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Open threads" }).click();
   await page.waitForTimeout(250);
   const sidebarBox = await page.locator(".sidebar--open").boundingBox();
@@ -247,9 +335,10 @@ try {
   await page.screenshot({ path: `${outputDirectory}/mobile-rich.png`, fullPage: true });
 
   const result = {
-    desktop: { ...desktop, rich: desktopRich },
+    desktop: { ...desktop, dialog: desktopDialog, rich: desktopRich },
     mobile: {
       ...mobileBefore,
+      dialog: mobileDialog,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
       splitActionHidden,
@@ -263,19 +352,46 @@ try {
   if (
     desktop.horizontalOverflow ||
     !desktop.toolbarVisible ||
+    desktop.toolbarHeight > 46 ||
     !desktop.composerVisible ||
+    desktop.composerTextareaHeight > 34 ||
+    desktop.modelSelection !== "gpt-5-codex" ||
+    desktop.effortSelection !== "high" ||
+    desktop.defaultLabels > 0 ||
     desktop.connection === "error" ||
+    !desktopDialog.fitsViewport ||
+    !desktopDialog.cwdEditable ||
+    !desktopDialog.sandboxEnabled ||
+    desktopDialog.sandbox !== "workspace-write" ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
-    !mobileBefore.toolbarControlsVisible ||
+    !mobileBefore.toolbarVisible ||
+    mobileBefore.toolbarHeight > 46 ||
+    mobileBefore.composerTextareaHeight > 34 ||
+    mobileBefore.modelSelection !== "gpt-5-codex" ||
+    mobileBefore.effortSelection !== "high" ||
+    mobileBefore.defaultLabels > 0 ||
+    !mobileBefore.composerSettingsVisible ||
+    !mobileDialog.fitsViewport ||
+    !mobileDialog.cwdEditable ||
+    !mobileDialog.sandboxEnabled ||
+    mobileDialog.sandbox !== "workspace-write" ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||
     desktopRich.clipped.length > 0 ||
     desktopRich.codeBlocks === 0 ||
     desktopRich.diffViewers === 0 ||
     desktopRich.commands === 0 ||
+    desktopRich.activityGroups === 0 ||
+    desktopRich.hiddenActivitySummaries > 0 ||
+    desktopRich.reasonBlocks === 0 ||
+    desktopRich.scrollingToolOutputs === 0 ||
+    desktopRich.toolOutputTruncations === 0 ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
+    mobileRich.hiddenActivitySummaries > 0 ||
+    mobileRich.scrollingToolOutputs === 0 ||
+    mobileRich.toolOutputTruncations === 0 ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||
     pageErrors.length > 0

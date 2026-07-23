@@ -323,6 +323,44 @@ describe("AskCodexServer", () => {
     );
   });
 
+  it("returns only effective model settings from config/read", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockResolvedValueOnce({
+      config: {
+        model: "gpt-configured",
+        model_reasoning_effort: "max",
+        instructions: "private instructions",
+        mcp_servers: { private: { bearerToken: "secret" } },
+      },
+      origins: { model: { name: "user config" } },
+      layers: [{ name: "user", path: "/private/config.toml" }],
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "configured-model",
+      method: "config/read",
+      params: {},
+    }));
+    const result = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "configured-model",
+    );
+
+    expect(gateway.request).toHaveBeenCalledWith("config/read", { includeLayers: false });
+    expect(result).toEqual({
+      type: "rpcResult",
+      id: "configured-model",
+      result: { model: "gpt-configured", effort: "max" },
+    });
+  });
+
   it("replaces an oversized notification with a bounded resync signal", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);

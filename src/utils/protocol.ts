@@ -19,6 +19,50 @@ export function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+export interface CommandApprovalTarget {
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  reason: string;
+}
+
+const COMMAND_APPROVAL_IDENTIFIER_LIMIT = 512;
+
+function commandApprovalIdentifier(value: unknown): string | undefined {
+  const identifier = readString(value);
+  return identifier && identifier.trim() && identifier.length <= COMMAND_APPROVAL_IDENTIFIER_LIMIT
+    ? identifier
+    : undefined;
+}
+
+export function commandApprovalTarget(method: string, value: unknown): CommandApprovalTarget | null {
+  if (
+    method !== "item/commandExecution/requestApproval" &&
+    method !== "execCommandApproval"
+  ) {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  const itemId = method === "item/commandExecution/requestApproval"
+    ? commandApprovalIdentifier(value.itemId)
+    : commandApprovalIdentifier(value.callId);
+  const threadId = method === "item/commandExecution/requestApproval"
+    ? commandApprovalIdentifier(value.threadId)
+    : commandApprovalIdentifier(value.conversationId);
+  const turnId = method === "item/commandExecution/requestApproval"
+    ? commandApprovalIdentifier(value.turnId)
+    : undefined;
+  const reason = readString(value.reason);
+  if (!threadId || !itemId || !reason?.trim()) return null;
+  if (method === "item/commandExecution/requestApproval" && !turnId) return null;
+  return {
+    threadId,
+    turnId,
+    itemId,
+    reason,
+  };
+}
+
 export function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

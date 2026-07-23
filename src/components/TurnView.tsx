@@ -1,20 +1,105 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
-import type { CodexTurn } from "../types/protocol";
+import { useState } from "react";
+import type { CodexItem, CodexTurn } from "../types/protocol";
 import { errorMessage } from "../utils/protocol";
+import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
 import { ItemRenderer } from "./ItemRenderer";
 import { LazyDetails } from "./LazyDetails";
 import { PlanView } from "./PlanView";
 import { StatusPill } from "./StatusPill";
+import { isToolActivityItem } from "./activityUtils";
 
 interface TurnViewProps {
   turn: CodexTurn;
   onLoadFullDetail?: (turnId: string) => void;
 }
 
+interface ActivityDisclosureState {
+  groupOpenIds: ReadonlySet<string>;
+  itemOpenIds: ReadonlySet<string>;
+  onGroupOpenChange: (groupId: string, open: boolean) => void;
+  onItemOpenChange: (itemId: string, open: boolean) => void;
+  onStandaloneOpenChange: (itemId: string, open: boolean) => void;
+}
+
+function renderItems(items: CodexItem[], disclosure: ActivityDisclosureState) {
+  const rendered = [];
+  let index = 0;
+
+  while (index < items.length) {
+    const item = items[index];
+    if (!isToolActivityItem(item)) {
+      rendered.push(<ItemRenderer key={item.id} item={item} />);
+      index += 1;
+      continue;
+    }
+
+    const activities = [item];
+    let nextIndex = index + 1;
+    while (nextIndex < items.length && isToolActivityItem(items[nextIndex])) {
+      activities.push(items[nextIndex]);
+      nextIndex += 1;
+    }
+
+    if (activities.length >= 2) {
+      // The first item id remains stable as streamed items are appended to this group.
+      const groupId = activities[0].id;
+      rendered.push((
+        <ActivityGroup
+          items={activities}
+          key={`activity-${groupId}`}
+          onItemOpenChange={disclosure.onItemOpenChange}
+          onOpenChange={(open) => disclosure.onGroupOpenChange(groupId, open)}
+          open={disclosure.groupOpenIds.has(groupId)}
+          openItemIds={disclosure.itemOpenIds}
+        />
+      ));
+    } else {
+      rendered.push((
+        <ItemRenderer
+          disclosureOpen={disclosure.itemOpenIds.has(item.id)}
+          key={item.id}
+          item={item}
+          onDisclosureOpenChange={(open) => disclosure.onStandaloneOpenChange(item.id, open)}
+        />
+      ));
+    }
+    index = nextIndex;
+  }
+
+  return rendered;
+}
+
 export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
+  const [groupOpenIds, setGroupOpenIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [itemOpenIds, setItemOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const historyDetail = turn.historyDetail;
   const omissions = turn.recoveryOmissions ?? [];
+
+  const updateOpenIds = (
+    setter: typeof setItemOpenIds,
+    id: string,
+    open: boolean,
+  ) => setter((current) => {
+    if (current.has(id) === open) return current;
+    const next = new Set(current);
+    if (open) next.add(id);
+    else next.delete(id);
+    return next;
+  });
+
+  const disclosure: ActivityDisclosureState = {
+    groupOpenIds,
+    itemOpenIds,
+    onGroupOpenChange: (id, open) => updateOpenIds(setGroupOpenIds, id, open),
+    onItemOpenChange: (id, open) => updateOpenIds(setItemOpenIds, id, open),
+    onStandaloneOpenChange: (id, open) => {
+      updateOpenIds(setItemOpenIds, id, open);
+      // If a following activity arrives, preserve the user's intent by opening the new group too.
+      updateOpenIds(setGroupOpenIds, id, open);
+    },
+  };
   return (
     <section className="turn" data-turn-id={turn.id}>
       {omissions.includes("turn/diff/updated") && (
@@ -49,7 +134,7 @@ export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {turn.items.map((item) => <ItemRenderer key={item.id} item={item} />)}
+      {renderItems(turn.items, disclosure)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />

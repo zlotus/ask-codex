@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALLOWED_BROWSER_RPC_METHODS,
   sanitizeBrowserRpcParams,
+  sanitizeBrowserRpcResult,
 } from "./rpc-policy.js";
 
 describe("browser RPC policy", () => {
@@ -30,6 +31,33 @@ describe("browser RPC policy", () => {
   it("still rejects unrecognized list parameters", () => {
     expect(() => sanitizeBrowserRpcParams("thread/list", { config: {} }))
       .toThrow("does not allow param: config");
+  });
+
+  it("allows a parameter-free effective model settings read", () => {
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("config/read")).toBe(true);
+    expect(sanitizeBrowserRpcParams("config/read", {})).toEqual({ includeLayers: false });
+    expect(() => sanitizeBrowserRpcParams("config/read", { includeLayers: true }))
+      .toThrow("does not allow param: includeLayers");
+    expect(() => sanitizeBrowserRpcParams("config/read", { cwd: "/workspace/project" }))
+      .toThrow("does not allow param: cwd");
+  });
+
+  it("projects config/read results to bounded model settings only", () => {
+    expect(sanitizeBrowserRpcResult("config/read", {
+      config: {
+        model: "gpt-configured",
+        model_reasoning_effort: "max",
+        instructions: "must not reach the browser",
+        mcp_servers: { private: { token: "secret" } },
+      },
+      layers: [{ name: "user" }],
+    })).toEqual({ model: "gpt-configured", effort: "max" });
+    expect(sanitizeBrowserRpcResult("config/read", {
+      config: {
+        model: "x".repeat(513),
+        model_reasoning_effort: false,
+      },
+    })).toEqual({ model: null, effort: null });
   });
 
   it("allows bounded turn pagination with explicit item detail", () => {
@@ -118,5 +146,30 @@ describe("browser RPC policy", () => {
     [{ threadId: "thread-1", initialTurnsPage: {}, history: [] }, "does not allow param: history"],
   ])("rejects invalid resume pagination params %#", (params, message) => {
     expect(() => sanitizeBrowserRpcParams("thread/resume", params)).toThrow(message);
+  });
+
+  it("treats null turn settings as absent rather than a reset", () => {
+    expect(sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      cwd: "/workspace/project",
+      model: null,
+      effort: null,
+    })).toEqual({
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      cwd: "/workspace/project",
+    });
+  });
+
+  it.each([
+    ["model", 7],
+    ["effort", false],
+  ])("rejects a non-string turn %s override", (field, value) => {
+    expect(() => sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      [field]: value,
+    })).toThrow(`turn/start ${field} must be a string`);
   });
 });

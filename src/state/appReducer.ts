@@ -18,6 +18,7 @@ export interface AppState {
   turnHistory: TurnHistoryState;
   activeTurnId: string | null;
   pendingRequests: PendingRequest[];
+  commandApprovalReasons: Record<string, string[]>;
   settings: ThreadSettings;
   toasts: ToastMessage[];
 }
@@ -53,6 +54,7 @@ export type AppAction =
   | { type: "setTurnPlan"; turnId: string; plan: TurnPlan }
   | { type: "recordTurnRecoveryOmission"; threadId?: string; turnId: string; method: string }
   | { type: "addRequest"; request: PendingRequest }
+  | { type: "recordCommandApprovalReason"; threadId: string; turnId?: string; itemId: string; reason: string }
   | { type: "removeRequest"; id: string | number }
   | { type: "clearRequests" }
   | { type: "settings"; settings: Partial<ThreadSettings> }
@@ -75,6 +77,7 @@ export const initialState: AppState = {
   },
   activeTurnId: null,
   pendingRequests: [],
+  commandApprovalReasons: {},
   settings: {
     cwd: "",
     model: "",
@@ -87,6 +90,99 @@ export const initialState: AppState = {
 const DEFAULT_STREAM_FIELD_LIMIT = 400_000;
 const COMMAND_STREAM_FIELD_LIMIT = 300_000;
 const INDEXED_STREAM_PART_LIMIT = 100_000;
+// Completed app-server command items omit approval rationale, so keep a bounded session projection.
+const COMMAND_APPROVAL_REASON_LIMIT = 2_000;
+const COMMAND_APPROVAL_REASONS_PER_ITEM = 4;
+const COMMAND_APPROVAL_ITEM_LIMIT = 256;
+
+function commandApprovalKey(threadId: string, turnId: string | undefined, itemId: string): string {
+  return JSON.stringify([threadId, turnId ?? null, itemId]);
+}
+
+function boundedApprovalReasons(existing: readonly string[], reason: string): string[] {
+  const bounded = reason.trim().slice(0, COMMAND_APPROVAL_REASON_LIMIT);
+  if (!bounded || existing.includes(bounded)) return [...existing];
+  return [...existing, bounded].slice(-COMMAND_APPROVAL_REASONS_PER_ITEM);
+}
+
+function withApprovalReasons(item: CodexItem, reasons: readonly string[] | undefined): CodexItem {
+  if (reasons && reasons.length > 0) return { ...item, approvalReasons: [...reasons] };
+  if (item.approvalReasons === undefined) return item;
+  const next = { ...item };
+  delete next.approvalReasons;
+  return next;
+}
+
+interface ApprovalReasonProjection {
+  thread: CodexThread;
+  reasonsByItem: Record<string, string[]>;
+}
+
+function projectApprovalReasons(
+  thread: CodexThread,
+  reasonsByItem: Readonly<Record<string, string[]>>,
+): ApprovalReasonProjection {
+  if (!thread.turns) return { thread, reasonsByItem: { ...reasonsByItem } };
+
+  let projectedReasons = { ...reasonsByItem };
+  const commandTurns = new Map<string, string[]>();
+  for (const turn of thread.turns) {
+    for (const item of turn.items) {
+      if (item.type !== "commandExecution") continue;
+      const turnIds = commandTurns.get(item.id) ?? [];
+      turnIds.push(turn.id);
+      commandTurns.set(item.id, turnIds);
+    }
+  }
+
+  for (const [itemId, turnIds] of commandTurns) {
+    const legacyKey = commandApprovalKey(thread.id, undefined, itemId);
+    const legacyReasons = projectedReasons[legacyKey];
+    if (!legacyReasons?.length) continue;
+    if (turnIds.length !== 1) {
+      delete projectedReasons[legacyKey];
+      continue;
+    }
+
+    const modernKey = commandApprovalKey(thread.id, turnIds[0], itemId);
+    let reasons = projectedReasons[modernKey] ?? [];
+    for (const reason of legacyReasons) {
+      reasons = boundedApprovalReasons(reasons, reason);
+    }
+    delete projectedReasons[legacyKey];
+    projectedReasons = rememberApprovalReasons(projectedReasons, modernKey, reasons);
+  }
+
+  const projectedThread = {
+    ...thread,
+    turns: thread.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((item) => {
+        if (item.type !== "commandExecution") return withApprovalReasons(item, undefined);
+        return withApprovalReasons(
+          item,
+          projectedReasons[commandApprovalKey(thread.id, turn.id, item.id)],
+        );
+      }),
+    })),
+  };
+  return { thread: projectedThread, reasonsByItem: projectedReasons };
+}
+
+function rememberApprovalReasons(
+  current: Readonly<Record<string, string[]>>,
+  key: string,
+  reasons: string[],
+): Record<string, string[]> {
+  const next = { ...current };
+  delete next[key];
+  next[key] = reasons;
+  const keys = Object.keys(next);
+  for (let index = 0; index < keys.length - COMMAND_APPROVAL_ITEM_LIMIT; index += 1) {
+    delete next[keys[index]];
+  }
+  return next;
+}
 
 interface BoundedText {
   value: string;
@@ -334,14 +430,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           : idleTurnHistory(action.threadId),
       };
     case "setCurrentThread": {
-      const thread = action.thread.turns === undefined
+      const normalizedThread = action.thread.turns === undefined
         ? action.thread
         : { ...action.thread, turns: uniqueTurnsInOrder(action.thread.turns) };
+      const projection = projectApprovalReasons(normalizedThread, state.commandApprovalReasons);
+      const thread = projection.thread;
       const active = [...(thread.turns ?? [])]
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id ?? null;
       return {
         ...state,
+        commandApprovalReasons: projection.reasonsByItem,
         selectedThreadId: thread.id,
         currentThread: thread,
         turnHistory: action.history
@@ -364,12 +463,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         state.currentThread.turns ?? [],
         action.thread.turns ?? [],
       );
-      const thread = { ...state.currentThread, ...action.thread, turns };
+      const projection = projectApprovalReasons(
+        { ...state.currentThread, ...action.thread, turns },
+        state.commandApprovalReasons,
+      );
+      const thread = projection.thread;
       const activeTurnId = [...turns]
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id ?? null;
       return {
         ...state,
+        commandApprovalReasons: projection.reasonsByItem,
         currentThread: thread,
         activeTurnId,
         threads: upsertThread(state.threads, thread),
@@ -401,12 +505,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       ) {
         return state;
       }
+      const projection = projectApprovalReasons({
+        ...state.currentThread,
+        turns: prependUniqueTurns(state.currentThread.turns ?? [], action.turns),
+      }, state.commandApprovalReasons);
       return {
         ...state,
-        currentThread: {
-          ...state.currentThread,
-          turns: prependUniqueTurns(state.currentThread.turns ?? [], action.turns),
-        },
+        commandApprovalReasons: projection.reasonsByItem,
+        currentThread: projection.thread,
         turnHistory: idleTurnHistory(action.threadId, action.nextCursor),
       };
     }
@@ -445,9 +551,8 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     case "loadTurnDetailSucceeded":
       if (state.currentThread?.id !== action.threadId || action.turn.id !== action.turnId) return state;
-      return {
-        ...state,
-        currentThread: updateTurn(state.currentThread, action.turnId, (turn) => {
+      {
+        const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
           if (
             !turn.historyDetail ||
             turn.historyDetail.cursor !== action.cursor ||
@@ -458,8 +563,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           const replacement = { ...turn, ...action.turn, items: action.turn.items };
           delete replacement.historyDetail;
           return replacement;
-        }),
-      };
+        });
+        if (!currentThread) return { ...state, currentThread };
+        const projection = projectApprovalReasons(currentThread, state.commandApprovalReasons);
+        return {
+          ...state,
+          commandApprovalReasons: projection.reasonsByItem,
+          currentThread: projection.thread,
+        };
+      }
     case "loadTurnDetailFailed":
       if (state.currentThread?.id !== action.threadId) return state;
       return {
@@ -496,21 +608,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "upsertTurn": {
       if (action.threadId && action.threadId !== state.selectedThreadId) return state;
       if (!state.currentThread) return state;
+      const incomingTurn = action.turn;
       const turns = state.currentThread.turns ?? [];
-      const index = turns.findIndex((turn) => turn.id === action.turn.id);
+      const index = turns.findIndex((turn) => turn.id === incomingTurn.id);
       const nextTurns = [...turns];
-      if (index < 0) nextTurns.push(action.turn);
+      if (index < 0) nextTurns.push(incomingTurn);
       else nextTurns[index] = {
         ...nextTurns[index],
-        ...action.turn,
-        items: action.turn.items.length > 0 ? action.turn.items : nextTurns[index].items,
+        ...incomingTurn,
+        items: incomingTurn.items.length > 0 ? incomingTurn.items : nextTurns[index].items,
       };
+      const projection = projectApprovalReasons(
+        { ...state.currentThread, turns: nextTurns },
+        state.commandApprovalReasons,
+      );
       return {
         ...state,
-        currentThread: { ...state.currentThread, turns: nextTurns },
-        activeTurnId: action.turn.status === "inProgress"
-          ? action.turn.id
-          : state.activeTurnId === action.turn.id ? null : state.activeTurnId,
+        commandApprovalReasons: projection.reasonsByItem,
+        currentThread: projection.thread,
+        activeTurnId: incomingTurn.status === "inProgress"
+          ? incomingTurn.id
+          : state.activeTurnId === incomingTurn.id ? null : state.activeTurnId,
       };
     }
     case "setTurnStatus": {
@@ -528,16 +646,24 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case "upsertItem": {
+      if (!state.currentThread) return state;
+      const incomingItem = action.item;
       const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
-        const index = turn.items.findIndex((item) => item.id === action.item.id);
-        if (index < 0) return { ...turn, items: [...turn.items, action.item] };
+        const index = turn.items.findIndex((item) => item.id === incomingItem.id);
+        if (index < 0) return { ...turn, items: [...turn.items, incomingItem] };
         const items = [...turn.items];
         items[index] = action.lifecycle === "started"
-          ? mergeStartedItem(items[index], action.item)
-          : mergeCompletedItem(items[index], action.item);
+          ? mergeStartedItem(items[index], incomingItem)
+          : mergeCompletedItem(items[index], incomingItem);
         return { ...turn, items };
       });
-      return { ...state, currentThread };
+      if (!currentThread) return { ...state, currentThread };
+      const projection = projectApprovalReasons(currentThread, state.commandApprovalReasons);
+      return {
+        ...state,
+        commandApprovalReasons: projection.reasonsByItem,
+        currentThread: projection.thread,
+      };
     }
     case "appendItemDelta": {
       const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
@@ -657,6 +783,25 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           action.request,
         ],
       };
+    case "recordCommandApprovalReason": {
+      const key = commandApprovalKey(action.threadId, action.turnId, action.itemId);
+      const reasons = boundedApprovalReasons(state.commandApprovalReasons[key] ?? [], action.reason);
+      if (reasons.length === 0) return state;
+      const commandApprovalReasons = rememberApprovalReasons(
+        state.commandApprovalReasons,
+        key,
+        reasons,
+      );
+      if (state.currentThread?.id !== action.threadId) {
+        return { ...state, commandApprovalReasons };
+      }
+      const projection = projectApprovalReasons(state.currentThread, commandApprovalReasons);
+      return {
+        ...state,
+        commandApprovalReasons: projection.reasonsByItem,
+        currentThread: projection.thread,
+      };
+    }
     case "removeRequest":
       return { ...state, pendingRequests: state.pendingRequests.filter((request) => request.id !== action.id) };
     case "clearRequests":

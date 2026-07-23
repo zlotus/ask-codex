@@ -4,27 +4,36 @@ Last reviewed: 2026-07-23
 
 ## Current Milestone
 
-Introduce project-oriented navigation and read-only discovery surfaces on top
-of the stabilized history and renderer baseline, without changing the existing
-manual-approval and remote-access trust model.
+The conversation-density and thread-setting refinement is implemented and
+verified. The next milestone first closes the remaining item-level recovery gap
+for oversized turns, then returns to project-oriented navigation and read-only
+discovery without changing the manual-approval or remote-access trust model.
 
 ## Current Baseline
 
 The implementation currently provides:
 
 - React desktop and mobile layouts for listing, searching, creating, resuming,
-  and refreshing native Codex threads.
+  and refreshing native Codex threads, with a 44-pixel conversation header and
+  a responsive one-line composer.
 - Incremental recent-turn loading through `thread/turns/list`, adaptive page
   sizing, retryable older pages, summary fallback, and per-turn detail retry.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering, with explicit
   stream and message-size bounds.
 - Reusable syntax-highlighted code blocks, copy and wrap controls, structured
-  unified/split diffs, safe raw-diff fallback, and lazy collapsible tool output.
+  unified/split diffs, safe raw-diff fallback, and bounded two-level tool
+  disclosures that group consecutive commands, file changes, MCP calls, and
+  searches while keeping assistant messages prominent.
 - Browser handling for command and file-change approvals and structured
-  `request_user_input` requests.
-- Model, reasoning-effort, sandbox, and absolute-working-directory controls,
-  plus active-turn interruption.
+  `request_user_input` requests. Captured command approval reasons remain
+  attached to the exact command item for the current browser session.
+- New-thread working-directory and sandbox settings, explicit idle-thread
+  sandbox overrides, next-turn model and reasoning controls beside the
+  composer, and active-turn interruption. Initial model and effort selections
+  come from a strictly filtered effective Codex config read; alternatives come
+  from `model/list`. Existing thread cwd is read-only and routine resume no
+  longer resends flattened sandbox state.
 - An Express/WebSocket gateway that starts `codex app-server` over JSONL stdio,
   rebuilds parameters for an explicit RPC allowlist, and routes app-server
   requests to the owning browser.
@@ -39,9 +48,9 @@ The implementation currently provides:
 - Deterministic desktop and mobile production visual fixtures that do not
   create a real Codex turn.
 
-This snapshot describes the implementation introduced by commit `c8fab6f` and
-verified on 2026-07-23. The source and context are available from `origin/main`
-for continuation on another device.
+This file describes the handoff baseline on `main`. After pulling the latest
+`origin/main`, another device can resume from the ordered outcomes in `Next`
+without relying on prior chat history.
 
 ## Known Gaps
 
@@ -52,6 +61,10 @@ for continuation on another device.
 - Loaded history pages remain mounted. Heavy closed disclosures are lazy and
   Markdown/diff work is bounded, but very long manually expanded histories do
   not yet use viewport virtualization or an aggregate DOM budget.
+- Completed `commandExecution` history does not contain approval reasons in
+  Codex CLI 0.144.5. Ask Codex can retain reasons captured during the current
+  browser session and through in-session resync, but cannot reconstruct them
+  after a page reload or on another device from native thread history alone.
 - The sidebar is a flat thread list. There are no project groups, Skills view,
   Activity view, usage panel, or thread-management actions.
 - Turn steering, image input, persistent cross-device message queues, fixed host
@@ -75,6 +88,10 @@ a delivery commitment.
   compare generated bindings and update normalization and tests together.
 - Rich rendering must treat all agent, command, diff, and ANSI content as
   untrusted text and must bound memory and DOM growth.
+- Modern approval rationale must remain keyed by thread, turn, and item id;
+  legacy call ids are attached only when they identify one command uniquely.
+- `config/read` results must remain projected at the gateway to model and
+  reasoning effort only; never forward the complete Codex configuration.
 - Skills and future host tools must not introduce path or command pass-through
   around the gateway allowlists.
 - Automatic recovery and read-only views must not claim thread ownership or
@@ -89,9 +106,10 @@ Verified on 2026-07-23 with Node.js `v24.13.1`, npm `11.12.1`, and Codex CLI
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 16 files, 135 tests. The server tests were run in an
+- `npm test` passed: 21 files, 178 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
 - `npm run check:visual` passed against the production build on port 4173 with
-  deterministic desktop and mobile fixtures: no horizontal overflow, clipped
-  rich content, console errors, or page errors.
+  deterministic desktop and mobile fixtures, including the new-thread dialog,
+  configured model selections, grouped tools, and a simulated approval reason:
+  no horizontal overflow, clipped rich content, console errors, or page errors.

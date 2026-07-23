@@ -10,8 +10,11 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "turn/start",
   "turn/interrupt",
   "model/list",
+  "config/read",
   "account/read",
 ]);
+
+const MAX_CONFIG_VALUE_CHARACTERS = 512;
 
 const SANDBOX_MODES = new Set([
   "read-only",
@@ -397,6 +400,11 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
       assignDefined(output, "includeHidden", optionalBoolean(method, input, "includeHidden"));
       return output;
     }
+    case "config/read": {
+      const input = paramsObject(method, params);
+      assertOnlyKeys(method, input, []);
+      return { includeLayers: false };
+    }
     case "account/read": {
       const input = paramsObject(method, params);
       assertOnlyKeys(method, input, ["refreshToken"]);
@@ -407,4 +415,19 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
     default:
       throw new ClientInputError(`${method} has no browser RPC policy`);
   }
+}
+
+function configuredValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_CONFIG_VALUE_CHARACTERS ? trimmed : null;
+}
+
+export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
+  if (method !== "config/read") return result;
+  const config = isRecord(result) && isRecord(result.config) ? result.config : {};
+  return {
+    model: configuredValue(config.model),
+    effort: configuredValue(config.model_reasoning_effort),
+  };
 }

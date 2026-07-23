@@ -9,6 +9,7 @@ import {
   User,
   Wrench,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import type { CodexItem, PlanStep } from "../types/protocol";
 import {
   commandText,
@@ -24,9 +25,16 @@ import { LazyDetails } from "./LazyDetails";
 import { Markdown } from "./Markdown";
 import { PlanView } from "./PlanView";
 import { StatusPill } from "./StatusPill";
+import { displayToolStatus, isFailedToolActivity } from "./activityUtils";
+
+const TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS = 24_000;
+const FAILURE_PREVIEW_MAX_CHARACTERS = 360;
+const FAILURE_PREVIEW_MAX_LINES = 3;
 
 interface ItemRendererProps {
+  disclosureOpen?: boolean;
   item: CodexItem;
+  onDisclosureOpenChange?: (open: boolean) => void;
 }
 
 function omittedCharacters(item: CodexItem, fields: readonly string[]): number {
@@ -55,7 +63,57 @@ function JsonBlock({ value, label = "JSON" }: { value: unknown; label?: string }
   } catch {
     text = String(value);
   }
-  return <CodeBlock code={stripAnsi(text)} language="json" label={label} maxDisplayCharacters={100_000} />;
+  return (
+    <CodeBlock
+      code={stripAnsi(text)}
+      language="json"
+      label={label}
+      maxDisplayCharacters={TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS}
+      truncate="middle"
+    />
+  );
+}
+
+function approvalReasons(item: CodexItem): string[] {
+  if (!Array.isArray(item.approvalReasons)) return [];
+  return Array.from(new Set(item.approvalReasons.flatMap((reason) => {
+    if (typeof reason !== "string") return [];
+    const trimmed = reason.trim();
+    return trimmed ? [trimmed] : [];
+  })));
+}
+
+function failureOutputPreview(item: CodexItem, output: string): string {
+  if (!output || !isFailedToolActivity(item)) return "";
+  const lines = stripAnsi(output)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .slice(-FAILURE_PREVIEW_MAX_LINES);
+  const preview = lines.join("\n");
+  if (preview.length <= FAILURE_PREVIEW_MAX_CHARACTERS) return preview;
+  const marker = "... ";
+  return `${marker}${preview.slice(-(FAILURE_PREVIEW_MAX_CHARACTERS - marker.length))}`;
+}
+
+function ToolDisclosureSummary({
+  children,
+  item,
+}: {
+  children: ReactNode;
+  item: CodexItem;
+}) {
+  const status = displayToolStatus(item);
+  return (
+    <>
+      <span className="tool-activity-main">{children}</span>
+      <span className="tool-activity-state">
+        {status && <StatusPill status={status} />}
+        <ChevronRight size={14} className="details-chevron" aria-hidden="true" />
+      </span>
+    </>
+  );
 }
 
 function UserMessage({ item }: ItemRendererProps) {
@@ -101,32 +159,54 @@ function Reasoning({ item }: ItemRendererProps) {
   );
 }
 
-function CommandExecution({ item }: ItemRendererProps) {
+function CommandExecution({ disclosureOpen, item, onDisclosureOpenChange }: ItemRendererProps) {
   const output = readString(item.aggregatedOutput) ?? readString(item.output) ?? "";
   const command = commandText(item);
+  const reasons = approvalReasons(item);
+  const failurePreview = failureOutputPreview(item, output);
   return (
     <LazyDetails
-      className="tool-block command-block"
-      initiallyOpen={item.status === "inProgress"}
-      summaryClassName="item-heading item-heading--spread"
+      className={`tool-block tool-activity command-block${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}
+      onOpenChange={onDisclosureOpenChange}
+      open={disclosureOpen}
+      summaryClassName="tool-activity-summary"
       summary={(
-        <>
-          <span>
+        <ToolDisclosureSummary item={item}>
+          <span className="tool-activity-icon-copy">
             <Terminal size={15} aria-hidden="true" />
-            <strong>Command</strong>
-            {command && <code className="command-summary">{command}</code>}
+            <span className="tool-activity-copy">
+              <span className="tool-activity-title">
+                <strong>Command</strong>
+                {command && <code className="command-summary">{command}</code>}
+              </span>
+              {reasons.length > 0 && (
+                <span className="tool-reason-preview" title={reasons.join("\n")}>
+                  {reasons.join(" / ")}
+                </span>
+              )}
+              {failurePreview && (
+                <span className="tool-failure-preview" aria-label="Error output preview">
+                  {failurePreview}
+                </span>
+              )}
+            </span>
           </span>
-          <StatusPill status={item.status} />
-        </>
+        </ToolDisclosureSummary>
       )}
     >
       <div className="command-details">
+        {reasons.length > 0 && (
+          <div className="tool-reasons">
+            <strong>{reasons.length === 1 ? "Reason" : "Reasons"}</strong>
+            <ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+          </div>
+        )}
         {command && <CodeBlock code={command} language="shell" label="Command" maxDisplayCharacters={20_000} />}
         {output && (
           <CodeBlock
             code={stripAnsi(output)}
             label="Output"
-            maxDisplayCharacters={160_000}
+            maxDisplayCharacters={TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS}
             truncate="middle"
             tone="terminal"
           />
@@ -142,15 +222,30 @@ function CommandExecution({ item }: ItemRendererProps) {
   );
 }
 
-function FileChange({ item }: ItemRendererProps) {
+function FileChange({ disclosureOpen, item, onDisclosureOpenChange }: ItemRendererProps) {
   const changes = Array.isArray(item.changes) ? item.changes : [];
   const output = readString(item.output);
+  const firstChange = changes.find(isRecord);
+  const firstPath = firstChange ? readString(firstChange.path) ?? readString(firstChange.file) : undefined;
+  const changeSummary = changes.length > 1 ? `${changes.length} files` : firstPath;
   return (
-    <section className="tool-block">
-      <div className="item-heading item-heading--spread">
-        <span><FileCode2 size={15} aria-hidden="true" /><strong>File changes</strong></span>
-        <StatusPill status={item.status} />
-      </div>
+    <LazyDetails
+      className={`tool-block tool-activity file-change-block${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}
+      onOpenChange={onDisclosureOpenChange}
+      open={disclosureOpen}
+      summaryClassName="tool-activity-summary"
+      summary={(
+        <ToolDisclosureSummary item={item}>
+          <span className="tool-activity-icon-copy">
+            <FileCode2 size={15} aria-hidden="true" />
+            <span className="tool-activity-title">
+              <strong>File changes</strong>
+              {changeSummary && <code className="command-summary">{changeSummary}</code>}
+            </span>
+          </span>
+        </ToolDisclosureSummary>
+      )}
+    >
       <ul className="file-change-list">
         {changes.map((change, index) => {
           if (!isRecord(change)) return null;
@@ -173,25 +268,36 @@ function FileChange({ item }: ItemRendererProps) {
           );
         })}
       </ul>
-      {output && <CodeBlock code={stripAnsi(output)} label="Output" tone="terminal" truncate="middle" />}
+      {output && (
+        <CodeBlock
+          code={stripAnsi(output)}
+          label="Output"
+          maxDisplayCharacters={TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS}
+          tone="terminal"
+          truncate="middle"
+        />
+      )}
       <StreamOmission count={omittedCharacters(item, ["output"])} />
-    </section>
+    </LazyDetails>
   );
 }
 
-function McpToolCall({ item }: ItemRendererProps) {
+function McpToolCall({ disclosureOpen, item, onDisclosureOpenChange }: ItemRendererProps) {
   const server = readString(item.server) ?? readString(item.serverName) ?? "MCP";
   const tool = readString(item.tool) ?? readString(item.toolName) ?? "tool";
   return (
     <LazyDetails
-      className="tool-block mcp-block"
-      initiallyOpen={item.status === "inProgress"}
-      summaryClassName="item-heading item-heading--spread"
+      className={`tool-block tool-activity mcp-block${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}
+      onOpenChange={onDisclosureOpenChange}
+      open={disclosureOpen}
+      summaryClassName="tool-activity-summary"
       summary={(
-        <>
-          <span><Wrench size={15} aria-hidden="true" /><strong>{server} / {tool}</strong></span>
-          <StatusPill status={item.status} />
-        </>
+        <ToolDisclosureSummary item={item}>
+          <span className="tool-activity-icon-copy">
+            <Wrench size={15} aria-hidden="true" />
+            <span className="tool-activity-title"><strong>{server} / {tool}</strong></span>
+          </span>
+        </ToolDisclosureSummary>
       )}
     >
       {item.arguments !== undefined && <JsonBlock value={item.arguments} label="Arguments" />}
@@ -217,15 +323,29 @@ function PlanItem({ item }: ItemRendererProps) {
   ) : null;
 }
 
-function WebSearch({ item }: ItemRendererProps) {
+function WebSearch({ disclosureOpen, item, onDisclosureOpenChange }: ItemRendererProps) {
   const query = readString(item.query) ?? itemText(item);
   return (
-    <section className="activity-row">
-      <Globe size={15} aria-hidden="true" />
-      <span>Web search</span>
-      <code>{query}</code>
-      <StatusPill status={item.status} />
-    </section>
+    <LazyDetails
+      className={`tool-block tool-activity web-search-block${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}
+      onOpenChange={onDisclosureOpenChange}
+      open={disclosureOpen}
+      summaryClassName="tool-activity-summary"
+      summary={(
+        <ToolDisclosureSummary item={item}>
+          <span className="tool-activity-icon-copy">
+            <Globe size={15} aria-hidden="true" />
+            <span className="tool-activity-title">
+              <strong>Web search</strong>
+              <code className="command-summary">{query}</code>
+            </span>
+          </span>
+        </ToolDisclosureSummary>
+      )}
+    >
+      {query && <div className="web-search-query">{query}</div>}
+      <StreamOmission count={omittedCharacters(item, ["query", "text"])} />
+    </LazyDetails>
   );
 }
 
@@ -248,7 +368,8 @@ function UnknownItem({ item }: ItemRendererProps) {
   );
 }
 
-export function ItemRenderer({ item }: ItemRendererProps) {
+export function ItemRenderer(props: ItemRendererProps) {
+  const { item } = props;
   switch (item.type) {
     case "userMessage":
       return <UserMessage item={item} />;
@@ -257,15 +378,15 @@ export function ItemRenderer({ item }: ItemRendererProps) {
     case "reasoning":
       return <Reasoning item={item} />;
     case "commandExecution":
-      return <CommandExecution item={item} />;
+      return <CommandExecution {...props} />;
     case "fileChange":
-      return <FileChange item={item} />;
+      return <FileChange {...props} />;
     case "mcpToolCall":
-      return <McpToolCall item={item} />;
+      return <McpToolCall {...props} />;
     case "plan":
       return <PlanItem item={item} />;
     case "webSearch":
-      return <WebSearch item={item} />;
+      return <WebSearch {...props} />;
     default:
       if (item.type.toLowerCase().includes("plan")) return <PlanItem item={item} />;
       return <UnknownItem item={item} />;

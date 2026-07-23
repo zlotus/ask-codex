@@ -23,10 +23,14 @@ events, but it does not get a general-purpose file-serving endpoint.
 - Stream agent messages, reasoning summaries, plans, command output, file
   changes, MCP calls, and turn diffs.
 - Render syntax-highlighted code blocks with copy and wrap controls, structured
-  unified/split diffs, and collapsible command and file activity.
-- Review command and file-change approvals in the browser.
+  unified/split diffs, and grouped collapsible tool activity with bounded output.
+- Review command and file-change approvals in the browser, and keep captured
+  approval rationale attached to the matching command for the browser session.
 - Answer structured questions from `request_user_input`.
-- Select the model, reasoning effort, sandbox, and absolute working directory.
+- Choose the absolute working directory and sandbox when starting a thread,
+  then select the next-turn model and reasoning effort beside the composer.
+  Initial selections come from Codex's effective configuration; alternatives
+  come from `model/list`.
 - Interrupt an active turn.
 - Responsive desktop and mobile layouts.
 - Optional web access token, Origin checks, and loopback-only defaults.
@@ -91,7 +95,8 @@ commands, and present requests for broader access.
 Treat `ASK_CODEX_TOKEN` like a password for the operating-system account that
 runs Ask Codex. `ASK_CODEX_WORKSPACE` selects the initial directory; it is not
 an access boundary. An authenticated browser can select another absolute
-directory and can choose full-access sandbox mode, subject to Codex approvals.
+directory when starting a thread and can choose full-access sandbox mode,
+subject to Codex approvals.
 
 For access from another device:
 

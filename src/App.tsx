@@ -3,6 +3,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel";
 import { Composer } from "./components/Composer";
 import { Conversation } from "./components/Conversation";
 import { Sidebar } from "./components/Sidebar";
+import { ThreadSettingsDialog } from "./components/ThreadSettingsDialog";
 import { Toasts } from "./components/Toasts";
 import { TokenDialog } from "./components/TokenDialog";
 import { Toolbar } from "./components/Toolbar";
@@ -16,9 +17,11 @@ import type {
   ModelInfo,
   NotificationMessage,
   ServerRequestMessage,
+  ThreadSettings,
   ToastMessage,
 } from "./types/protocol";
 import {
+  commandApprovalTarget,
   errorMessage,
   extractInitialTurnsPage,
   extractThread,
@@ -35,6 +38,13 @@ import {
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
 import { filterSnapshotCoveredNotifications, ResyncCoordinator } from "./utils/resyncCoordinator";
+import {
+  configuredTurnSettings,
+  existingThreadResumeParams,
+  newThreadSettings,
+  nextTurnOverrides,
+  normalizeEffortForModel,
+} from "./utils/threadSettings";
 import { requestFullTurnPage, requestTurnPage, resumeThreadForHistory } from "./utils/turnHistory";
 
 function threadTitle(thread: CodexThread | null): string {
@@ -47,6 +57,13 @@ function paramsRecord(value: unknown): Record<string, unknown> {
 
 const TURN_PAGE_SIZE = 10;
 const MAX_REASONING_PARTS = 16;
+
+interface ThreadDialogState {
+  mode: "new" | "existing";
+  settings: ThreadSettings;
+}
+
+type NextTurnSettings = Pick<ThreadSettings, "model" | "effort">;
 
 function reasoningPartIndex(value: unknown): number | null {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < MAX_REASONING_PARTS
@@ -81,6 +98,11 @@ export default function App() {
   const [resyncSignal, setResyncSignal] = useState(0);
   const [resyncing, setResyncing] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
+  const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
+  const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
+  const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
+  const [sandboxOverride, setSandboxOverride] = useState<ThreadSettings["sandbox"] | null>(null);
   const toastIdRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
@@ -88,6 +110,13 @@ export default function App() {
   const historyLoadsRef = useRef(new Set<string>());
   const detailLoadsRef = useRef(new Set<string>());
   const resyncCoordinatorRef = useRef(new ResyncCoordinator());
+  const bootstrapCwdInitializedRef = useRef(false);
+  const nextTurnSettingsInitializedRef = useRef(false);
+  const settingsLoadGenerationRef = useRef(0);
+  const composerSettings = useMemo<ThreadSettings>(
+    () => ({ ...state.settings, ...nextTurnSettings }),
+    [nextTurnSettings, state.settings],
+  );
 
   useEffect(() => {
     selectedThreadIdRef.current = state.selectedThreadId;
@@ -263,12 +292,20 @@ export default function App() {
   }, [applyNotification]);
 
   const onRequest = useCallback((message: ServerRequestMessage) => {
+    const params = paramsRecord(message.params);
+    const approvalTarget = commandApprovalTarget(message.method, params);
+    if (approvalTarget) {
+      dispatch({
+        type: "recordCommandApprovalReason",
+        ...approvalTarget,
+      });
+    }
     dispatch({
       type: "addRequest",
       request: {
         id: message.id,
         method: message.method,
-        params: paramsRecord(message.params),
+        params,
         receivedAt: Date.now(),
       },
     });
@@ -315,7 +352,10 @@ export default function App() {
       };
       setBootstrap(info);
       if (info.authRequired && !token) setTokenOpen(true);
-      dispatch({ type: "settings", settings: { cwd: info.defaultCwd } });
+      if (!bootstrapCwdInitializedRef.current) {
+        bootstrapCwdInitializedRef.current = true;
+        dispatch({ type: "settings", settings: { cwd: info.defaultCwd } });
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       const message = errorMessage(error);
@@ -365,18 +405,46 @@ export default function App() {
 
   useEffect(() => {
     if (connection !== "connected") return;
+    const generation = ++settingsLoadGenerationRef.current;
     const timer = window.setTimeout(() => {
       void refreshThreads();
-      void rpc("model/list", { limit: 100 })
-        .then((result) => setModels(extractModels(result)))
-        .catch(() => setModels([]));
+      void Promise.allSettled([
+        rpc("model/list", { limit: 100 }),
+        rpc("config/read", {}),
+      ]).then(([modelResult, configResult]) => {
+        if (generation !== settingsLoadGenerationRef.current) return;
+        const nextModels = modelResult.status === "fulfilled" ? extractModels(modelResult.value) : [];
+        setModels(nextModels);
+        if (configResult.status === "rejected") {
+          showToast(`Could not load configured model settings: ${errorMessage(configResult.reason)}`);
+          return;
+        }
+        const defaults = configuredTurnSettings(configResult.value, nextModels);
+        setConfiguredDefaults(defaults);
+        if (
+          !nextTurnSettingsInitializedRef.current &&
+          (defaults.model.length > 0 || defaults.effort.length > 0)
+        ) {
+          nextTurnSettingsInitializedRef.current = true;
+          setNextTurnSettings(defaults);
+        }
+      });
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, [connection, refreshThreads, rpc]);
+    return () => {
+      window.clearTimeout(timer);
+      if (settingsLoadGenerationRef.current === generation) {
+        settingsLoadGenerationRef.current += 1;
+      }
+    };
+  }, [connection, refreshThreads, rpc, showToast]);
 
   const selectThread = useCallback(async (threadId: string) => {
     const generation = ++selectionGenerationRef.current;
+    nextTurnSettingsInitializedRef.current = true;
     selectedThreadIdRef.current = threadId;
+    setDraftThreadConfigured(false);
+    setSandboxOverride(null);
+    setThreadDialog(null);
     dispatch({ type: "selectThread", threadId });
     setSidebarOpen(false);
     setThreadLoadError(null);
@@ -401,12 +469,18 @@ export default function App() {
         history: { nextCursor: page.nextCursor },
       });
       const resumeRecord = paramsRecord(resumed);
+      const model = readString(resumeRecord.model) ?? thread.model ?? configuredDefaults.model;
+      const resumedEffort = readString(resumeRecord.effort) ?? readString(resumeRecord.reasoningEffort);
+      const effort = resumedEffort ?? (model === configuredDefaults.model
+        ? configuredDefaults.effort
+        : normalizeEffortForModel(models, model, ""));
+      setNextTurnSettings({ model, effort });
       dispatch({
         type: "settings",
         settings: {
           cwd: readString(resumeRecord.cwd) ?? thread.cwd ?? bootstrap?.defaultCwd ?? "",
-          model: readString(resumeRecord.model) ?? thread.model ?? "",
-          effort: readString(resumeRecord.effort) ?? readString(resumeRecord.reasoningEffort) ?? "",
+          model,
+          effort,
           sandbox: sandboxMode(resumeRecord.sandbox) ?? "workspace-write",
         },
       });
@@ -419,7 +493,7 @@ export default function App() {
     } finally {
       if (generation === selectionGenerationRef.current) setLoadingThread(false);
     }
-  }, [bootstrap, rpc, showToast]);
+  }, [bootstrap, configuredDefaults, models, rpc, showToast]);
 
   const loadResyncSnapshot = useCallback(async (threadId: string): Promise<CodexThread> => {
     const readResult = await rpc("thread/read", { threadId, includeTurns: false });
@@ -570,49 +644,77 @@ export default function App() {
     }
   }, [rpc, state.currentThread]);
 
-  const newThread = useCallback(() => {
-    selectionGenerationRef.current += 1;
-    selectedThreadIdRef.current = null;
-    setLoadingThread(false);
-    setThreadLoadError(null);
-    dispatch({ type: "selectThread", threadId: null });
-    dispatch({
-      type: "settings",
-      settings: {
-        cwd: bootstrap?.defaultCwd ?? state.settings.cwd,
-        effort: "",
-        sandbox: "workspace-write",
-      },
+  const openNewThread = useCallback(() => {
+    const defaults = {
+      ...composerSettings,
+      model: configuredDefaults.model || composerSettings.model,
+      effort: configuredDefaults.effort || composerSettings.effort,
+    };
+    setThreadDialog({
+      mode: "new",
+      settings: newThreadSettings(bootstrap?.defaultCwd ?? "", defaults),
     });
     setSidebarOpen(false);
-  }, [bootstrap, state.settings.cwd]);
+  }, [bootstrap?.defaultCwd, composerSettings, configuredDefaults]);
+
+  const openThreadSettings = useCallback(() => {
+    setThreadDialog({
+      mode: state.currentThread || draftThreadConfigured ? "existing" : "new",
+      settings: composerSettings.sandbox === "external" && !state.currentThread && !draftThreadConfigured
+        ? { ...composerSettings, sandbox: "workspace-write" }
+        : composerSettings,
+    });
+  }, [composerSettings, draftThreadConfigured, state.currentThread]);
+
+  const confirmThreadSettings = useCallback((settings: ThreadSettings) => {
+    if (threadDialog?.mode === "new") {
+      selectionGenerationRef.current += 1;
+      selectedThreadIdRef.current = null;
+      setLoadingThread(false);
+      setThreadLoadError(null);
+      setDraftThreadConfigured(true);
+      setSandboxOverride(null);
+      nextTurnSettingsInitializedRef.current = true;
+      setNextTurnSettings({ model: settings.model, effort: settings.effort });
+      dispatch({ type: "selectThread", threadId: null });
+      dispatch({ type: "settings", settings });
+      setSidebarOpen(false);
+    } else if (
+      threadDialog?.mode === "existing" &&
+      state.settings.sandbox !== "external" &&
+      settings.sandbox !== state.settings.sandbox
+    ) {
+      dispatch({ type: "settings", settings: { sandbox: settings.sandbox } });
+      setSandboxOverride(state.currentThread ? settings.sandbox : null);
+    }
+    setThreadDialog(null);
+  }, [state.currentThread, state.settings.sandbox, threadDialog?.mode]);
 
   const sendMessage = useCallback(async (text: string) => {
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
+    const cwd = state.settings.cwd.trim();
     try {
+      if (!cwd) throw new Error("Choose an absolute working directory first");
       if (!thread) {
-        if (!state.settings.cwd.trim()) throw new Error("Choose an absolute working directory first");
         const result = await rpc("thread/start", {
-          cwd: state.settings.cwd.trim(),
+          cwd,
           approvalPolicy: "on-request",
           sandbox: state.settings.sandbox === "external" ? "workspace-write" : state.settings.sandbox,
-          ...(state.settings.model.trim() ? { model: state.settings.model.trim() } : {}),
+          ...(nextTurnSettings.model.trim() ? { model: nextTurnSettings.model.trim() } : {}),
         });
         thread = extractThread(result);
         if (!thread) throw new Error("Codex did not return a new thread");
+        setDraftThreadConfigured(false);
         selectedThreadIdRef.current = thread.id;
         dispatch({ type: "setCurrentThread", thread });
       }
       if (existingThread) {
-        const resumed = await rpc("thread/resume", {
-          threadId: thread.id,
-          excludeTurns: true,
-          cwd: state.settings.cwd.trim(),
-          approvalPolicy: "on-request",
-          ...(state.settings.sandbox === "external" ? {} : { sandbox: state.settings.sandbox }),
-          ...(state.settings.model.trim() ? { model: state.settings.model.trim() } : {}),
-        });
+        const resumed = await rpc(
+          "thread/resume",
+          existingThreadResumeParams(thread.id, sandboxOverride, state.settings.sandbox),
+        );
+        if (sandboxOverride) setSandboxOverride(null);
         const updatedThread = extractThread(resumed);
         if (updatedThread) {
           thread = { ...updatedThread, turns: thread.turns };
@@ -622,9 +724,8 @@ export default function App() {
       const result = await rpc("turn/start", {
         threadId: thread.id,
         input: [{ type: "text", text, text_elements: [] }],
-        cwd: state.settings.cwd.trim(),
-        ...(state.settings.model.trim() ? { model: state.settings.model.trim() } : {}),
-        ...(state.settings.effort ? { effort: state.settings.effort } : {}),
+        cwd,
+        ...nextTurnOverrides(nextTurnSettings),
       });
       const turn = extractTurn(result);
       if (turn) dispatch({ type: "upsertTurn", turn, threadId: thread.id });
@@ -633,7 +734,7 @@ export default function App() {
       showToast(errorMessage(error));
       throw error;
     }
-  }, [refreshThreads, rpc, showToast, state.currentThread, state.settings]);
+  }, [nextTurnSettings, refreshThreads, rpc, sandboxOverride, showToast, state.currentThread, state.settings]);
 
   const stopTurn = useCallback(async () => {
     if (!state.currentThread || !state.activeTurnId) return;
@@ -686,7 +787,7 @@ export default function App() {
         connection={connection}
         onSearch={setSearch}
         onSelect={(threadId) => void selectThread(threadId)}
-        onNew={newThread}
+        onNew={openNewThread}
         onRefresh={() => void refreshThreads()}
         onClose={() => setSidebarOpen(false)}
         onToken={() => setTokenOpen(true)}
@@ -695,9 +796,10 @@ export default function App() {
         <Toolbar
           settings={state.settings}
           title={title}
+          connection={connection}
           connectionDetail={bootstrapError || connectionDetail}
-          models={models}
-          onChange={(settings) => dispatch({ type: "settings", settings })}
+          running={Boolean(state.activeTurnId)}
+          onSettings={openThreadSettings}
           onMenu={() => setSidebarOpen(true)}
         />
         <Conversation
@@ -721,10 +823,30 @@ export default function App() {
         <Composer
           disabled={connection !== "connected" || loadingThread || resyncing || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
+          settings={composerSettings}
+          models={models}
+          onSettingsChange={(settings) => {
+            nextTurnSettingsInitializedRef.current = true;
+            setNextTurnSettings((current) => ({
+              model: settings.model ?? current.model,
+              effort: settings.effort ?? current.effort,
+            }));
+          }}
           onSend={sendMessage}
           onStop={stopTurn}
         />
       </section>
+      {threadDialog && (
+        <ThreadSettingsDialog
+          key={`${threadDialog.mode}:${threadDialog.settings.cwd}:${threadDialog.settings.sandbox}`}
+          open
+          mode={threadDialog.mode}
+          settings={threadDialog.settings}
+          running={Boolean(state.activeTurnId)}
+          onConfirm={confirmThreadSettings}
+          onClose={() => setThreadDialog(null)}
+        />
+      )}
       <TokenDialog
         key={`${tokenOpen || requiredToken}:${token}`}
         open={tokenOpen || requiredToken}

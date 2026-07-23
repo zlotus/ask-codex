@@ -31,6 +31,7 @@ import {
 import {
   ALLOWED_BROWSER_RPC_METHODS,
   sanitizeBrowserRpcParams,
+  sanitizeBrowserRpcResult,
 } from "./rpc-policy.js";
 import { normalizeServerRequestResponse } from "./server-request-policy.js";
 import {
@@ -500,13 +501,14 @@ export class AskCodexServer {
         this.ownership.set(existingThreadId, client);
       }
 
-      const result = await this.codex.request(message.method, sanitizedParams);
+      const rawResult = await this.codex.request(message.method, sanitizedParams);
       if (message.method === "thread/start") {
-        const newThreadId = threadIdFromStartResult(result);
+        const newThreadId = threadIdFromStartResult(rawResult);
         if (newThreadId) {
           this.ownership.set(newThreadId, client);
         }
       }
+      const result = sanitizeBrowserRpcResult(message.method, rawResult);
       this.send(client, { type: "rpcResult", id: message.id, result });
     } catch (error) {
       this.send(client, { type: "rpcError", id: message.id, error: errorPayload(error) });

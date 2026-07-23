@@ -507,6 +507,278 @@ describe("appReducer", () => {
     }));
   });
 
+  it("keeps bounded approval reasons on the exact command item through completion", () => {
+    const approved = appReducer(stateWithTurn(), {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "command-1",
+      reason: "Needs network access to inspect the upstream API",
+    });
+    const duplicate = appReducer(approved, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "command-1",
+      reason: "Needs network access to inspect the upstream API",
+    });
+    const secondApproval = appReducer(duplicate, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "command-1",
+      reason: "Needs access to a second host",
+    });
+    const started = appReducer(secondApproval, {
+      type: "upsertItem",
+      turnId: "turn-1",
+      item: { id: "command-1", type: "commandExecution", status: "inProgress", command: "curl example.com" },
+      lifecycle: "started",
+    });
+    const completed = appReducer(started, {
+      type: "upsertItem",
+      turnId: "turn-1",
+      item: { id: "command-1", type: "commandExecution", status: "completed", exitCode: 0 },
+      lifecycle: "completed",
+    });
+
+    expect(completed.currentThread?.turns?.[0]?.items).toHaveLength(1);
+    expect(completed.currentThread?.turns?.[0]?.items[0]).toEqual(expect.objectContaining({
+      command: "curl example.com",
+      approvalReasons: [
+        "Needs network access to inspect the upstream API",
+        "Needs access to a second host",
+      ],
+      exitCode: 0,
+    }));
+  });
+
+  it("does not leak a modern approval reason across turns that reuse an item id", () => {
+    const state: AppState = {
+      ...stateWithTurn(),
+      currentThread: {
+        id: "thread-1",
+        turns: [
+          { id: "turn-1", items: [{ id: "command", type: "commandExecution", command: "first" }] },
+          { id: "turn-2", items: [{ id: "command", type: "commandExecution", command: "second" }] },
+        ],
+      },
+    };
+    const approved = appReducer(state, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-2",
+      itemId: "command",
+      reason: "Only the second command needs network access",
+    });
+
+    expect(approved.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toBeUndefined();
+    expect(approved.currentThread?.turns?.[1]?.items[0]?.approvalReasons).toEqual([
+      "Only the second command needs network access",
+    ]);
+  });
+
+  it("attaches a legacy call reason only when its item id is unique", () => {
+    const uniqueState: AppState = {
+      ...stateWithTurn(),
+      currentThread: {
+        id: "thread-1",
+        turns: [{ id: "turn-1", items: [{ id: "call-1", type: "commandExecution", command: "git status" }] }],
+      },
+    };
+    const unique = appReducer(uniqueState, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      itemId: "call-1",
+      reason: "Inspect repository state",
+    });
+    expect(unique.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Inspect repository state",
+    ]);
+
+    const becameAmbiguous = appReducer(unique, {
+      type: "upsertTurn",
+      threadId: "thread-1",
+      turn: {
+        id: "turn-2",
+        items: [{ id: "call-1", type: "commandExecution", command: "another command" }],
+      },
+    });
+    expect(becameAmbiguous.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Inspect repository state",
+    ]);
+    expect(becameAmbiguous.currentThread?.turns?.[1]?.items[0]?.approvalReasons).toBeUndefined();
+
+    const originalTurnUnloaded = appReducer(unique, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{ id: "turn-2", items: [{ id: "call-1", type: "commandExecution", command: "later" }] }],
+      },
+    });
+    expect(originalTurnUnloaded.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toBeUndefined();
+
+    const originalTurnReloaded = appReducer(originalTurnUnloaded, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{ id: "turn-1", items: [{ id: "call-1", type: "commandExecution", command: "git status" }] }],
+      },
+    });
+    expect(originalTurnReloaded.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Inspect repository state",
+    ]);
+
+    const ambiguousState: AppState = {
+      ...uniqueState,
+      currentThread: {
+        id: "thread-1",
+        turns: [
+          { id: "turn-1", items: [{ id: "call-1", type: "commandExecution", command: "first" }] },
+          { id: "turn-2", items: [{ id: "call-1", type: "commandExecution", command: "second" }] },
+        ],
+      },
+    };
+    const ambiguous = appReducer(ambiguousState, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      itemId: "call-1",
+      reason: "A legacy reason with an ambiguous call id",
+    });
+    expect(ambiguous.currentThread?.turns?.every(
+      (turn) => turn.items[0]?.approvalReasons === undefined,
+    )).toBe(true);
+
+    const ambiguityCannotRebind = appReducer(ambiguous, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{ id: "turn-2", items: [{ id: "call-1", type: "commandExecution", command: "second" }] }],
+      },
+    });
+    expect(ambiguityCannotRebind.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toBeUndefined();
+  });
+
+  it("matches legacy approval ids against command items only", () => {
+    const state: AppState = {
+      ...stateWithTurn(),
+      currentThread: {
+        id: "thread-1",
+        turns: [
+          { id: "turn-command", items: [{ id: "call-1", type: "commandExecution", command: "git status" }] },
+          { id: "turn-file", items: [{ id: "call-1", type: "fileChange", changes: [] }] },
+        ],
+      },
+    };
+    const approved = appReducer(state, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      itemId: "call-1",
+      reason: "Inspect repository state",
+    });
+
+    expect(approved.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Inspect repository state",
+    ]);
+    expect(approved.currentThread?.turns?.[1]?.items[0]?.approvalReasons).toBeUndefined();
+  });
+
+  it("bounds retained approval rationale by value, item, and session limits", () => {
+    let state = stateWithTurn();
+    for (let index = 0; index < 5; index += 1) {
+      state = appReducer(state, {
+        type: "recordCommandApprovalReason",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "bounded-command",
+        reason: index === 4 ? "x".repeat(3_000) : `reason-${index}`,
+      });
+    }
+
+    const boundedReasons = Object.values(state.commandApprovalReasons)[0];
+    expect(boundedReasons).toHaveLength(4);
+    expect(boundedReasons?.slice(0, 3)).toEqual(["reason-1", "reason-2", "reason-3"]);
+    expect(boundedReasons?.[3]).toHaveLength(2_000);
+
+    for (let index = 0; index < 260; index += 1) {
+      state = appReducer(state, {
+        type: "recordCommandApprovalReason",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: `command-${index}`,
+        reason: `reason-${index}`,
+      });
+    }
+
+    const retainedKeys = Object.keys(state.commandApprovalReasons).map((key) => JSON.parse(key));
+    expect(retainedKeys).toHaveLength(256);
+    expect(retainedKeys[0]).toEqual(["thread-1", "turn-1", "command-4"]);
+    expect(retainedKeys.at(-1)).toEqual(["thread-1", "turn-1", "command-259"]);
+  });
+
+  it("rehydrates captured reasons after the same thread is loaded again", () => {
+    const approved = appReducer(stateWithTurn(), {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "command-1",
+      reason: "Run the requested verification",
+    });
+    const deselected = appReducer(approved, { type: "selectThread", threadId: "thread-2" });
+    const reloaded = appReducer(deselected, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          items: [{ id: "command-1", type: "commandExecution", command: "npm test", status: "completed" }],
+        }],
+      },
+    });
+
+    expect(reloaded.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Run the requested verification",
+    ]);
+  });
+
+  it("rehydrates a modern reason after a full resync snapshot replaces item payloads", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ id: "command-1", type: "commandExecution", command: "npm test" }],
+        }],
+      },
+    });
+    const approved = appReducer(hydrated, {
+      type: "recordCommandApprovalReason",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "command-1",
+      reason: "Run the verification requested by the user",
+    });
+    const reconciled = appReducer(approved, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "command-1", type: "commandExecution", command: "npm test", exitCode: 0 }],
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]?.items[0]?.approvalReasons).toEqual([
+      "Run the verification requested by the user",
+    ]);
+  });
+
   it("keeps streamed content and omissions when item/started arrives late", () => {
     const streamed = appReducer(stateWithTurn(), {
       type: "appendItemDelta",
