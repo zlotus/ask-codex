@@ -14,6 +14,27 @@ Do not depend on Codex Desktop private IPC or expose the terminal UI.
 - `server/server-request-policy.ts`: browser responses to app-server requests.
 - `scripts/visual-check.mjs`: desktop and mobile production UI smoke test.
 
+## Project Context
+
+For non-trivial work or when resuming development, read `docs/context.md` and
+`docs/progress.md`, then only the task-relevant ADRs linked from
+`docs/decisions/README.md`. Read `docs/ideas.md` only during product planning.
+
+Treat the installed CLI-generated schema as the protocol source of truth, the
+security invariants in this file as normative requirements, and code, tests,
+and configuration as the source of implemented behavior. If these sources and
+the documentation disagree, verify the behavior and update stale documentation
+in the same change.
+
+Keep `docs/context.md` stable and `docs/progress.md` as a concise current-state
+snapshot, not a changelog or task diary. Record durable architecture, security,
+protocol, dependency, product, or workflow decisions as dated ADRs. Preserve
+accepted decisions; replace one with a new ADR and mark the old one superseded.
+
+Do not update project-context documentation for routine edits, formatting,
+small isolated fixes, or exploratory discussion that has not become an
+accepted decision. Record only verification that was actually run.
+
 ## Security Invariants
 
 - Never expose arbitrary app-server RPC methods or pass browser params through

@@ -16,7 +16,9 @@
     "check:visual": "node scripts/visual-check.mjs"
   },
   "dependencies": {
+    "diff": "^9.0.0",
     "express": "latest",
+    "highlight.js": "^11.11.1",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",

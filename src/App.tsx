@@ -11,6 +11,8 @@ import { appReducer, initialState } from "./state/appReducer";
 import type {
   BootstrapInfo,
   CodexThread,
+  CodexTurn,
+  CodexTurnsPage,
   ModelInfo,
   NotificationMessage,
   ServerRequestMessage,
@@ -18,6 +20,7 @@ import type {
 } from "./types/protocol";
 import {
   errorMessage,
+  extractInitialTurnsPage,
   extractThread,
   extractThreads,
   extractTurn,
@@ -31,6 +34,8 @@ import {
   sandboxMode,
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
+import { filterSnapshotCoveredNotifications, ResyncCoordinator } from "./utils/resyncCoordinator";
+import { requestFullTurnPage, requestTurnPage, resumeThreadForHistory } from "./utils/turnHistory";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -38,6 +43,28 @@ function threadTitle(thread: CodexThread | null): string {
 
 function paramsRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+const TURN_PAGE_SIZE = 10;
+const MAX_REASONING_PARTS = 16;
+
+function reasoningPartIndex(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < MAX_REASONING_PARTS
+    ? value as number
+    : null;
+}
+
+function turnsForDisplay(page: CodexTurnsPage, cursor: string | null): CodexTurn[] {
+  return [...page.data].reverse().map((turn) => turn.itemsView === "summary"
+    ? {
+        ...turn,
+        historyDetail: {
+          cursor,
+          status: "idle",
+          error: null,
+        },
+      }
+    : turn);
 }
 
 export default function App() {
@@ -50,9 +77,22 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [threadLoadError, setThreadLoadError] = useState<string | null>(null);
+  const [resyncSignal, setResyncSignal] = useState(0);
+  const [resyncing, setResyncing] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const toastIdRef = useRef(0);
   const selectionGenerationRef = useRef(0);
+  const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
+  const currentThreadRef = useRef<CodexThread | null>(state.currentThread);
+  const historyLoadsRef = useRef(new Set<string>());
+  const detailLoadsRef = useRef(new Set<string>());
+  const resyncCoordinatorRef = useRef(new ResyncCoordinator());
+
+  useEffect(() => {
+    selectedThreadIdRef.current = state.selectedThreadId;
+    currentThreadRef.current = state.currentThread;
+  }, [state.currentThread, state.selectedThreadId]);
 
   const showToast = useCallback((message: string, tone: ToastMessage["tone"] = "error") => {
     const id = ++toastIdRef.current;
@@ -60,7 +100,7 @@ export default function App() {
     window.setTimeout(() => dispatch({ type: "removeToast", id }), 5_500);
   }, []);
 
-  const onNotification = useCallback((message: NotificationMessage) => {
+  const applyNotification = useCallback((message: NotificationMessage) => {
     const params = paramsRecord(message.params);
     const threadId = readString(params.threadId);
     const turnId = readString(params.turnId);
@@ -122,7 +162,12 @@ export default function App() {
       case "item/started":
       case "item/completed": {
         const item = normalizeItem(params.item);
-        if (turnId && item) dispatch({ type: "upsertItem", turnId, item });
+        if (turnId && item) dispatch({
+          type: "upsertItem",
+          turnId,
+          item,
+          lifecycle: message.method === "item/started" ? "started" : "completed",
+        });
         return;
       }
       case "serverRequest/resolved": {
@@ -140,31 +185,82 @@ export default function App() {
     if (message.method === "item/agentMessage/delta") {
       dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "agentMessage", field: "text", delta });
     } else if (message.method === "item/reasoning/summaryTextDelta") {
-      dispatch({
-        type: "appendIndexedItemDelta",
-        turnId,
-        itemId,
-        itemType: "reasoning",
-        field: "summary",
-        index: typeof params.summaryIndex === "number" ? params.summaryIndex : 0,
-        delta,
-      });
+      const index = reasoningPartIndex(params.summaryIndex);
+      dispatch(index === null
+        ? {
+            type: "recordIndexedItemOmission",
+            turnId,
+            itemId,
+            itemType: "reasoning",
+            field: "summary",
+            omitted: delta.length,
+          }
+        : {
+            type: "appendIndexedItemDelta",
+            turnId,
+            itemId,
+            itemType: "reasoning",
+            field: "summary",
+            index,
+            delta,
+          });
     } else if (message.method === "item/reasoning/textDelta") {
-      dispatch({
-        type: "appendIndexedItemDelta",
-        turnId,
-        itemId,
-        itemType: "reasoning",
-        field: "content",
-        index: typeof params.contentIndex === "number" ? params.contentIndex : 0,
-        delta,
-      });
+      const index = reasoningPartIndex(params.contentIndex);
+      dispatch(index === null
+        ? {
+            type: "recordIndexedItemOmission",
+            turnId,
+            itemId,
+            itemType: "reasoning",
+            field: "content",
+            omitted: delta.length,
+          }
+        : {
+            type: "appendIndexedItemDelta",
+            turnId,
+            itemId,
+            itemType: "reasoning",
+            field: "content",
+            index,
+            delta,
+          });
     } else if (message.method === "item/plan/delta") {
       dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "plan", field: "text", delta });
     } else if (message.method === "item/commandExecution/outputDelta") {
       dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "commandExecution", field: "aggregatedOutput", delta });
+    } else if (message.method === "item/fileChange/outputDelta") {
+      dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "fileChange", field: "output", delta });
     }
   }, []);
+
+  const onNotification = useCallback((message: NotificationMessage) => {
+    const coordinator = resyncCoordinatorRef.current;
+    if (message.method === "gateway/resyncRequired") {
+      const params = paramsRecord(message.params);
+      const lostMethod = readString(params.lostMethod);
+      const turnId = readString(params.turnId);
+      if (
+        turnId &&
+        (lostMethod === "turn/diff/updated" || lostMethod === "turn/plan/updated")
+      ) {
+        dispatch({
+          type: "recordTurnRecoveryOmission",
+          threadId: readString(params.threadId),
+          turnId,
+          method: lostMethod,
+        });
+      }
+      coordinator.request();
+      setResyncing(true);
+      setResyncSignal((current) => current + 1);
+      return;
+    }
+    if (coordinator.shouldBuffer(message)) {
+      coordinator.buffer(message);
+      return;
+    }
+    applyNotification(message);
+  }, [applyNotification]);
 
   const onRequest = useCallback((message: ServerRequestMessage) => {
     dispatch({
@@ -251,11 +347,11 @@ export default function App() {
           sortKey: "updated_at",
           sortDirection: "desc",
           sourceKinds: [],
-          ...(cursor ? { cursor } : {}),
+          ...(cursor !== undefined ? { cursor } : {}),
         });
         threads.push(...extractThreads(result));
         const nextCursor = isRecord(result) ? readString(result.nextCursor) : undefined;
-        if (!nextCursor || seenCursors.has(nextCursor)) break;
+        if (nextCursor === undefined || seenCursors.has(nextCursor)) break;
         seenCursors.add(nextCursor);
         cursor = nextCursor;
       }
@@ -280,19 +376,30 @@ export default function App() {
 
   const selectThread = useCallback(async (threadId: string) => {
     const generation = ++selectionGenerationRef.current;
+    selectedThreadIdRef.current = threadId;
     dispatch({ type: "selectThread", threadId });
     setSidebarOpen(false);
+    setThreadLoadError(null);
     setLoadingThread(true);
     try {
-      const resumed = await rpc("thread/resume", { threadId });
-      let thread = extractThread(resumed);
-      if (!thread?.turns) {
-        const read = await rpc("thread/read", { threadId, includeTurns: true });
-        thread = extractThread(read);
+      const resumed = await resumeThreadForHistory(rpc, threadId, TURN_PAGE_SIZE);
+      if (generation !== selectionGenerationRef.current) return;
+      const thread = extractThread(resumed);
+      if (!thread) throw new Error("Codex did not return the requested thread");
+      let page = extractInitialTurnsPage(resumed);
+      if (!page) {
+        page = await requestTurnPage(rpc, {
+          threadId,
+          preferredLimit: TURN_PAGE_SIZE,
+        });
       }
       if (generation !== selectionGenerationRef.current) return;
-      if (!thread) throw new Error("Codex did not return the requested thread");
-      dispatch({ type: "setCurrentThread", thread });
+      if (!page) throw new Error("Codex did not return the requested turn page");
+      dispatch({
+        type: "setCurrentThread",
+        thread: { ...thread, turns: turnsForDisplay(page, null) },
+        history: { nextCursor: page.nextCursor },
+      });
       const resumeRecord = paramsRecord(resumed);
       dispatch({
         type: "settings",
@@ -304,15 +411,170 @@ export default function App() {
         },
       });
     } catch (error) {
-      if (generation === selectionGenerationRef.current) showToast(errorMessage(error));
+      if (generation === selectionGenerationRef.current) {
+        const message = errorMessage(error);
+        setThreadLoadError(message);
+        showToast(message);
+      }
     } finally {
       if (generation === selectionGenerationRef.current) setLoadingThread(false);
     }
   }, [bootstrap, rpc, showToast]);
 
+  const loadResyncSnapshot = useCallback(async (threadId: string): Promise<CodexThread> => {
+    const readResult = await rpc("thread/read", { threadId, includeTurns: false });
+    const thread = extractThread(readResult);
+    if (!thread) throw new Error("Codex did not return the requested thread");
+    const page = await requestTurnPage(rpc, {
+      threadId,
+      preferredLimit: TURN_PAGE_SIZE,
+    });
+    return { ...thread, turns: turnsForDisplay(page, null) };
+  }, [rpc]);
+
+  const runResync = useCallback(async () => {
+    const coordinator = resyncCoordinatorRef.current;
+    if (!coordinator.startCycle()) return;
+
+    setResyncing(true);
+    void refreshThreads();
+    let restart = false;
+    let baseline = currentThreadRef.current;
+    try {
+      for (let pass = 0; pass < 2; pass += 1) {
+        const threadId = selectedThreadIdRef.current;
+        const generation = selectionGenerationRef.current;
+        if (!threadId) {
+          for (const message of coordinator.abort()) applyNotification(message);
+          return;
+        }
+
+        let snapshot: CodexThread;
+        try {
+          snapshot = await loadResyncSnapshot(threadId);
+        } catch (error) {
+          for (const message of coordinator.abort()) applyNotification(message);
+          showToast(`Live state refresh failed: ${errorMessage(error)}`);
+          return;
+        }
+
+        if (
+          generation !== selectionGenerationRef.current ||
+          selectedThreadIdRef.current !== threadId
+        ) {
+          for (const message of coordinator.abort()) applyNotification(message);
+          return;
+        }
+
+        const result = coordinator.finishPass(pass === 0);
+        const notifications = filterSnapshotCoveredNotifications(
+          baseline,
+          snapshot,
+          result.notifications,
+        );
+        dispatch({ type: "reconcileCurrentThread", thread: snapshot });
+        for (const message of notifications) applyNotification(message);
+        baseline = snapshot;
+        if (result.rerun) continue;
+        restart = result.restart;
+        break;
+      }
+    } finally {
+      setResyncing(coordinator.isBuffering());
+      if (restart) setResyncSignal((current) => current + 1);
+    }
+  }, [applyNotification, loadResyncSnapshot, refreshThreads, showToast]);
+
+  useEffect(() => {
+    if (connection !== "connected" || loadingThread) return;
+    void runResync();
+  }, [connection, loadingThread, resyncSignal, runResync]);
+
+  const loadEarlierTurns = useCallback(async () => {
+    const threadId = state.currentThread?.id;
+    const cursor = state.turnHistory.threadId === threadId
+      ? state.turnHistory.nextCursor
+      : null;
+    if (!threadId || cursor === null || state.turnHistory.status === "loading") return;
+
+    const requestKey = `${threadId}:${cursor}`;
+    if (historyLoadsRef.current.has(requestKey)) return;
+    const generation = selectionGenerationRef.current;
+    historyLoadsRef.current.add(requestKey);
+    dispatch({ type: "loadOlderTurnsStarted", threadId, cursor });
+    try {
+      const page = await requestTurnPage(rpc, {
+        threadId,
+        cursor,
+        preferredLimit: TURN_PAGE_SIZE,
+      });
+      if (page.nextCursor === cursor) throw new Error("Codex returned a non-advancing turn cursor");
+      if (generation !== selectionGenerationRef.current) return;
+      dispatch({
+        type: "prependOlderTurns",
+        threadId,
+        cursor,
+        turns: turnsForDisplay(page, cursor),
+        nextCursor: page.nextCursor,
+      });
+    } catch (error) {
+      if (generation === selectionGenerationRef.current) {
+        dispatch({ type: "loadOlderTurnsFailed", threadId, cursor, error: errorMessage(error) });
+      }
+    } finally {
+      historyLoadsRef.current.delete(requestKey);
+    }
+  }, [rpc, state.currentThread?.id, state.turnHistory]);
+
+  const loadTurnDetail = useCallback(async (turnId: string) => {
+    const thread = state.currentThread;
+    const turn = thread?.turns?.find((entry) => entry.id === turnId);
+    const detail = turn?.historyDetail;
+    if (!thread || !detail || detail.status === "loading") return;
+
+    const { cursor } = detail;
+    const requestKey = JSON.stringify([thread.id, turnId, cursor]);
+    if (detailLoadsRef.current.has(requestKey)) return;
+    const generation = selectionGenerationRef.current;
+    detailLoadsRef.current.add(requestKey);
+    dispatch({ type: "loadTurnDetailStarted", threadId: thread.id, turnId, cursor });
+    try {
+      const page = await requestFullTurnPage(rpc, {
+        threadId: thread.id,
+        ...(cursor !== null ? { cursor } : {}),
+      });
+      const fullTurn = page.data.find((entry) => entry.id === turnId);
+      if (!fullTurn || fullTurn.itemsView !== "full") {
+        throw new Error("Codex did not return full detail for this turn");
+      }
+      if (generation !== selectionGenerationRef.current) return;
+      dispatch({
+        type: "loadTurnDetailSucceeded",
+        threadId: thread.id,
+        turnId,
+        cursor,
+        turn: fullTurn,
+      });
+    } catch (error) {
+      if (generation === selectionGenerationRef.current) {
+        dispatch({
+          type: "loadTurnDetailFailed",
+          threadId: thread.id,
+          turnId,
+          cursor,
+          error: errorMessage(error),
+        });
+      }
+    } finally {
+      detailLoadsRef.current.delete(requestKey);
+    }
+  }, [rpc, state.currentThread]);
+
   const newThread = useCallback(() => {
     selectionGenerationRef.current += 1;
+    selectedThreadIdRef.current = null;
     setLoadingThread(false);
+    setThreadLoadError(null);
     dispatch({ type: "selectThread", threadId: null });
     dispatch({
       type: "settings",
@@ -339,11 +601,13 @@ export default function App() {
         });
         thread = extractThread(result);
         if (!thread) throw new Error("Codex did not return a new thread");
+        selectedThreadIdRef.current = thread.id;
         dispatch({ type: "setCurrentThread", thread });
       }
       if (existingThread) {
         const resumed = await rpc("thread/resume", {
           threadId: thread.id,
+          excludeTurns: true,
           cwd: state.settings.cwd.trim(),
           approvalPolicy: "on-request",
           ...(state.settings.sandbox === "external" ? {} : { sandbox: state.settings.sandbox }),
@@ -351,8 +615,8 @@ export default function App() {
         });
         const updatedThread = extractThread(resumed);
         if (updatedThread) {
-          thread = updatedThread;
-          dispatch({ type: "setCurrentThread", thread: updatedThread });
+          thread = { ...updatedThread, turns: thread.turns };
+          dispatch({ type: "setCurrentThread", thread });
         }
       }
       const result = await rpc("turn/start", {
@@ -436,14 +700,26 @@ export default function App() {
           onChange={(settings) => dispatch({ type: "settings", settings })}
           onMenu={() => setSidebarOpen(true)}
         />
-        <Conversation thread={state.currentThread} loading={loadingThread} />
+        <Conversation
+          thread={state.currentThread}
+          loading={loadingThread}
+          loadError={threadLoadError}
+          historyLoading={state.turnHistory.status === "loading"}
+          hasMore={state.turnHistory.nextCursor !== null}
+          historyError={state.turnHistory.error}
+          onLoadEarlier={() => void loadEarlierTurns()}
+          onLoadTurnDetail={(turnId) => void loadTurnDetail(turnId)}
+          onRetryThread={() => {
+            if (state.selectedThreadId) void selectThread(state.selectedThreadId);
+          }}
+        />
         <ApprovalPanel
           requests={state.pendingRequests}
           onResolve={resolveRequest}
           onReject={rejectRequest}
         />
         <Composer
-          disabled={connection !== "connected"}
+          disabled={connection !== "connected" || loadingThread || resyncing || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           onSend={sendMessage}
           onStop={stopTurn}

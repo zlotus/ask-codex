@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
-import { createInterface } from "node:readline";
 
 import type { CodexStatus, RpcId } from "./types.js";
 import { isRecord, isRpcId } from "./types.js";
@@ -60,6 +59,9 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+const DEFAULT_MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
+const INITIAL_STDOUT_LINE_BUFFER_BYTES = 64 * 1024;
+
 export class CodexRpcError extends Error {
   constructor(readonly rpcError: unknown) {
     super(errorMessage(rpcError));
@@ -96,6 +98,7 @@ export interface CodexAppServerOptions {
   clientVersion?: string;
   initializeTimeoutMs?: number;
   requestTimeoutMs?: number;
+  maxStdoutLineBytes?: number;
 }
 
 export class CodexAppServer extends EventEmitter<CodexEventMap> implements CodexGateway {
@@ -104,6 +107,7 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
   private readonly clientVersion: string;
   private readonly initializeTimeoutMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly maxStdoutLineBytes: number;
   private child: CodexProcess | undefined;
   private startPromise: Promise<void> | undefined;
   private nextRequestId = 1;
@@ -120,6 +124,11 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     this.clientVersion = options.clientVersion ?? "0.1.0";
     this.initializeTimeoutMs = Math.max(1, options.initializeTimeoutMs ?? 30_000);
     this.requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? 120_000);
+    const maxStdoutLineBytes = options.maxStdoutLineBytes ?? DEFAULT_MAX_STDOUT_LINE_BYTES;
+    if (!Number.isSafeInteger(maxStdoutLineBytes) || maxStdoutLineBytes <= 0) {
+      throw new Error("maxStdoutLineBytes must be a positive safe integer");
+    }
+    this.maxStdoutLineBytes = maxStdoutLineBytes;
   }
 
   get status(): CodexStatus {
@@ -206,8 +215,7 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     }
 
     this.child = child;
-    const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    stdout.on("line", (line) => this.handleLine(child, line));
+    this.readStdout(child);
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", () => {
       // Drain stderr so a verbose child cannot block on a full pipe.
@@ -248,6 +256,81 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
       }
       throw error;
     }
+  }
+
+  private readStdout(child: CodexProcess): void {
+    let lineBuffer = Buffer.allocUnsafe(
+      Math.min(this.maxStdoutLineBytes, INITIAL_STDOUT_LINE_BUFFER_BYTES),
+    );
+    let lineBytes = 0;
+
+    const failOversizedLine = (): void => {
+      const error = new Error(
+        `Codex app-server stdout JSONL line exceeded ${this.maxStdoutLineBytes} byte limit`,
+      );
+      this.handleTermination(child, error);
+      child.kill("SIGTERM");
+    };
+
+    const append = (part: Buffer): boolean => {
+      if (part.length > this.maxStdoutLineBytes - lineBytes) {
+        failOversizedLine();
+        return false;
+      }
+      if (part.length === 0) {
+        return true;
+      }
+
+      const requiredBytes = lineBytes + part.length;
+      if (requiredBytes > lineBuffer.length) {
+        const nextCapacity = Math.min(
+          this.maxStdoutLineBytes,
+          Math.max(requiredBytes, lineBuffer.length * 2),
+        );
+        const nextBuffer = Buffer.allocUnsafe(nextCapacity);
+        lineBuffer.copy(nextBuffer, 0, 0, lineBytes);
+        lineBuffer = nextBuffer;
+      }
+      part.copy(lineBuffer, lineBytes);
+      lineBytes += part.length;
+      return true;
+    };
+
+    const emitLine = (): void => {
+      const line = lineBuffer.toString("utf8", 0, lineBytes);
+      lineBytes = 0;
+      this.handleLine(child, line);
+    };
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      if (this.child !== child) {
+        return;
+      }
+
+      const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      let offset = 0;
+      while (offset < data.length) {
+        const newline = data.indexOf(0x0a, offset);
+        const end = newline === -1 ? data.length : newline;
+        if (!append(data.subarray(offset, end))) {
+          return;
+        }
+        if (newline === -1) {
+          return;
+        }
+
+        emitLine();
+        if (this.child !== child) {
+          return;
+        }
+        offset = newline + 1;
+      }
+    });
+    child.stdout.once("end", () => {
+      if (this.child === child && lineBytes > 0) {
+        emitLine();
+      }
+    });
   }
 
   private sendRequest(

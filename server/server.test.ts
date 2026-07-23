@@ -259,6 +259,250 @@ describe("AskCodexServer", () => {
     expect(gateway.request).not.toHaveBeenCalled();
   });
 
+  it("closes an oversized browser message before forwarding it", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    const closed = once(client.socket, "close");
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "oversized-browser-message",
+      method: "model/list",
+      params: { padding: "x".repeat(1_048_576) },
+    }));
+
+    const [code] = await closed;
+    expect(code).toBe(1009);
+    expect(gateway.request).not.toHaveBeenCalled();
+  });
+
+  it("replaces an oversized RPC result with a structured recoverable error", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockResolvedValueOnce({ data: "x".repeat(1_048_576) });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "oversized-result",
+      method: "model/list",
+      params: {},
+    }));
+    const error = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "oversized-result",
+    );
+    expect(error).toEqual({
+      type: "rpcError",
+      id: "oversized-result",
+      error: {
+        code: -32_000,
+        message: "Codex response exceeded the 1 MiB gateway message limit",
+      },
+    });
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "after-oversized-result",
+      method: "model/list",
+      params: {},
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "after-oversized-result",
+    );
+  });
+
+  it("replaces an oversized notification with a bounded resync signal", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    gateway.emit("notification", "item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { aggregatedOutput: "x".repeat(1_048_576) },
+    });
+
+    const resync = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "gateway/resyncRequired",
+    );
+    expect(resync).toEqual({
+      type: "notification",
+      method: "gateway/resyncRequired",
+      params: {
+        reason: "messageTooLarge",
+        lostMethod: "item/completed",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+    });
+    expect(JSON.stringify(resync)).not.toContain("x".repeat(1_000));
+    expect(client.messages.some((message) =>
+      message.type === "notification" && message.method === "item/completed"
+    )).toBe(false);
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+
+    gateway.emit("notification", "turn/completed", { threadId: "thread-1" });
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" && message.method === "turn/completed",
+    );
+  });
+
+  it("rejects an oversized server request without routing it to browsers", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    gateway.emit("request", 88, "item/commandExecution/requestApproval", {
+      command: "x".repeat(1_048_576),
+    });
+
+    await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
+      88,
+      undefined,
+      {
+        code: -32_000,
+        message: "Ask Codex cannot forward a server request larger than 1 MiB",
+      },
+    ));
+    expect(client.messages.some((message) => message.type === "request" && message.id === 88))
+      .toBe(false);
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("closes a slow browser with a retryable backpressure reason", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    let serverSocket: WebSocket | undefined;
+    service.webSocketServer.once("connection", (socket) => {
+      serverSocket = socket;
+    });
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+    expect(serverSocket).toBeDefined();
+
+    Object.defineProperty(serverSocket, "bufferedAmount", {
+      configurable: true,
+      get: () => 2 * 1024 * 1024,
+    });
+    const closed = once(client.socket, "close");
+    gateway.emit("notification", "turn/completed", { threadId: "thread-1" });
+
+    const [code, reason] = await closed;
+    expect(code).toBe(1013);
+    expect(reason.toString()).toBe("Client too slow");
+  });
+
+  it.each(["backpressure", "sendFailure"] as const)(
+    "immediately reroutes an approval when its owner delivery hits %s",
+    async (failureMode) => {
+      const gateway = new FakeGateway();
+      const service = new AskCodexServer(config("test-token"), gateway);
+      services.push(service);
+      const serverSockets: WebSocket[] = [];
+      service.webSocketServer.on("connection", (socket) => serverSockets.push(socket));
+      const { url } = await service.start();
+
+      const owner = connect(url, "test-token");
+      await once(owner.socket, "open");
+      await waitForMessage(owner.messages, (message) => message.type === "status");
+      const fallback = connect(url, "test-token");
+      await once(fallback.socket, "open");
+      await waitForMessage(fallback.messages, (message) => message.type === "status");
+
+      owner.socket.send(JSON.stringify({
+        type: "rpc",
+        id: "start-owned-thread",
+        method: "thread/start",
+        params: { cwd: process.cwd() },
+      }));
+      await waitForMessage(
+        owner.messages,
+        (message) => message.type === "rpcResult" && message.id === "start-owned-thread",
+      );
+
+      const ownerServerSocket = serverSockets[0];
+      expect(ownerServerSocket).toBeDefined();
+      if (!ownerServerSocket) return;
+      let assertFailure: () => void;
+      let restoreFailure: () => void;
+      if (failureMode === "backpressure") {
+        Object.defineProperty(ownerServerSocket, "bufferedAmount", {
+          configurable: true,
+          get: () => 2 * 1024 * 1024,
+        });
+        const closeSpy = vi.spyOn(ownerServerSocket, "close")
+          .mockImplementation(() => undefined);
+        assertFailure = () => expect(closeSpy).toHaveBeenCalledWith(1013, "Client too slow");
+        restoreFailure = () => closeSpy.mockRestore();
+      } else {
+        const sendSpy = vi.spyOn(ownerServerSocket, "send")
+          .mockImplementation(() => {
+            throw new Error("socket write failed");
+          });
+        assertFailure = () => expect(sendSpy).toHaveBeenCalled();
+        restoreFailure = () => sendSpy.mockRestore();
+      }
+
+      try {
+        gateway.emit(
+          "request",
+          89,
+          "item/commandExecution/requestApproval",
+          { threadId: "thread-owned", command: "true" },
+        );
+
+        await waitForMessage(
+          fallback.messages,
+          (message) => message.type === "request" && message.id === 89,
+        );
+        assertFailure();
+        expect(owner.messages.some((message) => message.type === "request" && message.id === 89))
+          .toBe(false);
+
+        fallback.socket.send(JSON.stringify({
+          type: "response",
+          id: 89,
+          result: { decision: "accept" },
+        }));
+        await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
+          89,
+          { decision: "accept" },
+        ));
+      } finally {
+        restoreFailure();
+        if (ownerServerSocket.readyState !== WebSocket.CLOSED) {
+          ownerServerSocket.terminate();
+        }
+      }
+    },
+  );
+
   it("routes approvals to the thread owner and broadcasts notifications", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
@@ -315,6 +559,54 @@ describe("AskCodexServer", () => {
       waitForMessage(first.messages, (message) => message.type === "notification"),
       waitForMessage(second.messages, (message) => message.type === "notification"),
     ]);
+  });
+
+  it("does not change approval ownership when another client reads a thread", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const owner = connect(url, "test-token");
+    const reader = connect(url, "test-token");
+    await Promise.all([once(owner.socket, "open"), once(reader.socket, "open")]);
+    await waitForMessage(owner.messages, (message) => message.type === "status");
+    await waitForMessage(reader.messages, (message) => message.type === "status");
+
+    owner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "start-owner",
+      method: "thread/start",
+      params: { cwd: process.cwd() },
+    }));
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "rpcResult" && message.id === "start-owner",
+    );
+
+    reader.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "read-passively",
+      method: "thread/read",
+      params: { threadId: "thread-owned", includeTurns: false },
+    }));
+    await waitForMessage(
+      reader.messages,
+      (message) => message.type === "rpcResult" && message.id === "read-passively",
+    );
+
+    gateway.emit(
+      "request",
+      91,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-owned", command: "true" },
+    );
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "request" && message.id === 91,
+    );
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(reader.messages.some((message) => message.type === "request" && message.id === 91))
+      .toBe(false);
   });
 
   it("rejects relative cwd before forwarding an RPC", async () => {

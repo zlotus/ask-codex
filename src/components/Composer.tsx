@@ -1,6 +1,8 @@
 import { Send, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+const MAX_COMPOSER_CHARACTERS = 250_000;
+
 interface ComposerProps {
   disabled: boolean;
   running: boolean;
@@ -48,6 +50,7 @@ export function Composer({ disabled, running, onSend, onStop }: ComposerProps) {
           placeholder={running ? "Codex is working…" : "Ask Codex to work in this repository"}
           aria-label="Message Codex"
           disabled={disabled || running}
+          maxLength={MAX_COMPOSER_CHARACTERS}
           rows={1}
         />
         {running ? (

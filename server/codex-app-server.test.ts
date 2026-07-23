@@ -43,6 +43,17 @@ function captureJsonLines(stream: PassThrough): unknown[] {
   return messages;
 }
 
+function sendJsonInFragments(
+  process: FakeCodexProcess,
+  message: unknown,
+  fragmentBytes = 1,
+): void {
+  const encoded = Buffer.from(`${JSON.stringify(message)}\n`);
+  for (let offset = 0; offset < encoded.length; offset += fragmentBytes) {
+    process.stdout.write(encoded.subarray(offset, offset + fragmentBytes));
+  }
+}
+
 describe("CodexAppServer", () => {
   it("initializes once and maps JSONL requests, notifications, and server requests", async () => {
     const fakeProcess = new FakeCodexProcess();
@@ -169,6 +180,84 @@ describe("CodexAppServer", () => {
     await expect(retried).resolves.toEqual({ data: ["model"] });
     expect(spawnCodex).toHaveBeenCalledTimes(2);
     client.close();
+  });
+
+  it("fails an oversized stdout line and restarts cleanly on the next request", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const replacementProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const replacementOutput = captureJsonLines(replacementProcess.stdin);
+    const spawnCodex = vi.fn<SpawnCodex>()
+      .mockReturnValueOnce(fakeProcess)
+      .mockReturnValueOnce(replacementProcess);
+    const client = new CodexAppServer({
+      spawnCodex,
+      maxStdoutLineBytes: 128,
+    });
+
+    const starting = client.start();
+    const initialized = JSON.stringify({
+      id: 1,
+      result: { userAgent: "codex-cli/test" },
+    });
+    fakeProcess.stdout.write(initialized.slice(0, 10));
+    fakeProcess.stdout.write(`${initialized.slice(10)}\n`);
+    await starting;
+
+    const pending = client.request("model/list", {});
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    fakeProcess.stdout.write("x".repeat(129));
+
+    await expect(pending).rejects.toThrow(
+      "Codex app-server stdout JSONL line exceeded 128 byte limit",
+    );
+    expect(client.status).toBe("error");
+    expect(client.error).toEqual({
+      message: "Codex app-server stdout JSONL line exceeded 128 byte limit",
+    });
+    expect(fakeProcess.killed).toBe(true);
+
+    const retried = client.request("model/list", {});
+    await vi.waitFor(() => expect(replacementOutput).toHaveLength(1));
+    fakeProcess.emit("exit", null, "SIGTERM");
+    expect(client.status).toBe("starting");
+    replacementProcess.send({ id: 3, result: { userAgent: "codex-cli/restarted" } });
+    await vi.waitFor(() => expect(replacementOutput).toHaveLength(3));
+    replacementProcess.send({ id: 4, result: { data: ["model"] } });
+    await expect(retried).resolves.toEqual({ data: ["model"] });
+    expect(spawnCodex).toHaveBeenCalledTimes(2);
+    client.close();
+  });
+
+  it("parses highly fragmented stdout lines without repeated concatenation", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const client = new CodexAppServer({
+      spawnCodex: () => fakeProcess,
+      maxStdoutLineBytes: 256,
+    });
+    const concat = vi.spyOn(Buffer, "concat");
+
+    try {
+      const starting = client.start();
+      sendJsonInFragments(fakeProcess, {
+        id: 1,
+        result: { userAgent: "codex-cli/fragmented" },
+      });
+      await starting;
+
+      const request = client.request("model/list", {});
+      await vi.waitFor(() => expect(output).toHaveLength(3));
+      sendJsonInFragments(fakeProcess, {
+        id: 2,
+        result: { data: ["x".repeat(120)] },
+      });
+      await expect(request).resolves.toEqual({ data: ["x".repeat(120)] });
+      expect(concat).not.toHaveBeenCalled();
+    } finally {
+      concat.mockRestore();
+      client.close();
+    }
   });
 
   it("times out initialization and exposes a cleaned status error", async () => {

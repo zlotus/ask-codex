@@ -18,8 +18,12 @@ events, but it does not get a general-purpose file-serving endpoint.
 ## Features
 
 - Create, search, resume, and refresh Codex threads.
+- Load long thread histories incrementally with bounded output and recoverable
+  oversized-turn fallbacks.
 - Stream agent messages, reasoning summaries, plans, command output, file
   changes, MCP calls, and turn diffs.
+- Render syntax-highlighted code blocks with copy and wrap controls, structured
+  unified/split diffs, and collapsible command and file activity.
 - Review command and file-change approvals in the browser.
 - Answer structured questions from `request_user_input`.
 - Select the model, reasoning effort, sandbox, and absolute working directory.

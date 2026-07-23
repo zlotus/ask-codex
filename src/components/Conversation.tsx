@@ -6,20 +6,42 @@ import { TurnView } from "./TurnView";
 interface ConversationProps {
   thread: CodexThread | null;
   loading: boolean;
+  loadError: string | null;
+  historyLoading: boolean;
+  hasMore: boolean;
+  historyError: string | null;
+  onLoadEarlier: () => void;
+  onLoadTurnDetail: (turnId: string) => void;
+  onRetryThread: () => void;
 }
 
-export function Conversation({ thread, loading }: ConversationProps) {
+export function Conversation({
+  thread,
+  loading,
+  loadError,
+  historyLoading,
+  hasMore,
+  historyError,
+  onLoadEarlier,
+  onLoadTurnDetail,
+  onRetryThread,
+}: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasNearBottomRef = useRef(true);
   const turns = thread?.turns ?? [];
-  const itemCount = turns.reduce((count, turn) => count + turn.items.length, 0);
   const lastContent = turns.at(-1)?.items.at(-1);
   const lastTurnStatus = turns.at(-1)?.status;
 
   useEffect(() => {
+    wasNearBottomRef.current = true;
+    const node = scrollRef.current;
+    if (node) node.scrollTo({ top: node.scrollHeight, behavior: "auto" });
+  }, [thread?.id]);
+
+  useEffect(() => {
     const node = scrollRef.current;
     if (node && wasNearBottomRef.current) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [itemCount, lastContent, lastTurnStatus]);
+  }, [lastContent, lastTurnStatus]);
 
   return (
     <div
@@ -33,13 +55,33 @@ export function Conversation({ thread, loading }: ConversationProps) {
       <main className="conversation" aria-label="Conversation">
         {loading ? (
           <div className="conversation-state"><LoaderCircle size={22} className="spin" aria-hidden="true" /><span>Loading thread</span></div>
-        ) : turns.length > 0 ? (
-          turns.map((turn) => <TurnView key={turn.id} turn={turn} />)
-        ) : (
-          <div className="conversation-empty">
-            <div className="empty-mark"><Bot size={23} aria-hidden="true" /></div>
-            <h1>{thread ? "Continue this thread" : "What should Codex work on?"}</h1>
+        ) : loadError ? (
+          <div className="conversation-state" role="alert">
+            <span>Could not load thread: {loadError}</span>
+            <button className="button" type="button" onClick={onRetryThread}>Retry thread</button>
           </div>
+        ) : (
+          <>
+            {(hasMore || historyLoading || historyError) && (
+              <div className="conversation-history">
+                {historyError && <span role="alert">Could not load earlier turns: {historyError}</span>}
+                <button className="button" type="button" disabled={historyLoading} onClick={onLoadEarlier}>
+                  {historyLoading && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
+                  {historyLoading ? "Loading earlier turns" : historyError ? "Retry earlier turns" : "Load earlier turns"}
+                </button>
+              </div>
+            )}
+            {turns.length > 0 ? (
+              turns.map((turn) => (
+                <TurnView key={turn.id} turn={turn} onLoadFullDetail={onLoadTurnDetail} />
+              ))
+            ) : (
+              <div className="conversation-empty">
+                <div className="empty-mark"><Bot size={23} aria-hidden="true" /></div>
+                <h1>{thread ? "Continue this thread" : "What should Codex work on?"}</h1>
+              </div>
+            )}
+          </>
         )}
       </main>
     </div>

@@ -2,6 +2,7 @@ import type {
   CodexItem,
   CodexThread,
   CodexTurn,
+  CodexTurnsPage,
   ModelInfo,
   PlanStep,
   ServerMessage,
@@ -106,6 +107,22 @@ export function extractThread(result: unknown): CodexThread | null {
 export function extractTurn(result: unknown): CodexTurn | null {
   const candidate = isRecord(result) && "turn" in result ? result.turn : result;
   return normalizeTurn(candidate);
+}
+
+export function normalizeTurnsPage(value: unknown): CodexTurnsPage | null {
+  if (!isRecord(value) || !Array.isArray(value.data)) return null;
+  const data = value.data
+    .map(normalizeTurn)
+    .filter((turn): turn is CodexTurn => turn !== null);
+  return {
+    data,
+    nextCursor: readString(value.nextCursor) ?? null,
+    backwardsCursor: readString(value.backwardsCursor) ?? null,
+  };
+}
+
+export function extractInitialTurnsPage(result: unknown): CodexTurnsPage | null {
+  return isRecord(result) ? normalizeTurnsPage(result.initialTurnsPage) : null;
 }
 
 export function extractModels(result: unknown): ModelInfo[] {

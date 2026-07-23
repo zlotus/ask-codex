@@ -6,6 +6,7 @@ import type {
   StatusMessage,
 } from "../types/protocol";
 import { errorMessage, parseServerMessage } from "../utils/protocol";
+import { serializeClientMessage } from "../utils/messageSize";
 
 interface PendingRpc {
   resolve: (value: unknown) => void;
@@ -188,9 +189,20 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
       return Promise.reject(new Error("Codex is not connected"));
     }
     const id = makeId();
+    let serialized: string;
+    try {
+      serialized = serializeClientMessage({ type: "rpc", id, method, params });
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+    }
     return new Promise<unknown>((resolve, reject) => {
       pendingRef.current.set(id, { resolve, reject });
-      socket.send(JSON.stringify({ type: "rpc", id, method, params }));
+      try {
+        socket.send(serialized);
+      } catch (error) {
+        pendingRef.current.delete(id);
+        reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      }
     });
   }, []);
 
@@ -199,7 +211,7 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       throw new Error("Codex is not connected");
     }
-    socket.send(JSON.stringify({
+    socket.send(serializeClientMessage({
       type: "response",
       id,
       ...(error !== undefined ? { error } : { result }),

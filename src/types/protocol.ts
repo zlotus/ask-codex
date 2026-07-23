@@ -70,6 +70,7 @@ export interface CodexItem {
   id: string;
   type: string;
   status?: ItemStatus;
+  streamOmittedCharacters?: Record<string, number>;
   [key: string]: unknown;
 }
 
@@ -90,7 +91,19 @@ export interface CodexTurn {
   error?: unknown;
   diff?: string;
   plan?: TurnPlan;
+  recoveryOmissions?: string[];
+  historyDetail?: {
+    cursor: string | null;
+    status: "idle" | "loading" | "error";
+    error: string | null;
+  };
   [key: string]: unknown;
+}
+
+export interface CodexTurnsPage {
+  data: CodexTurn[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
 }
 
 export interface CodexThread {

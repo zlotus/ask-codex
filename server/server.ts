@@ -49,8 +49,12 @@ const MAX_IN_FLIGHT_RPC_PER_CLIENT = 32;
 const MAX_IN_FLIGHT_RPC_GLOBAL = 128;
 const MAX_WS_CONNECTIONS = 32;
 const MAX_PENDING_SERVER_REQUESTS = 128;
+const MAX_BROWSER_MESSAGE_BYTES = 1024 * 1024;
+const MAX_SERVER_MESSAGE_BYTES = 1024 * 1024;
 const MAX_WS_BUFFERED_BYTES = 2 * 1024 * 1024;
 const WS_AUTH_TIMEOUT_MS = 5_000;
+const MAX_RESYNC_METHOD_CHARACTERS = 128;
+const MAX_RESYNC_ID_CHARACTERS = 256;
 export { ALLOWED_BROWSER_RPC_METHODS } from "./rpc-policy.js";
 
 export interface AskCodexConfig {
@@ -146,10 +150,37 @@ function rawDataToString(data: RawData): string {
   return data.toString("utf8");
 }
 
+function boundedString(value: unknown, maximum: number): string | undefined {
+  return typeof value === "string" ? value.slice(0, maximum) : undefined;
+}
+
+function resyncRequiredNotification(
+  message: Extract<ServerMessage, { type: "notification" }>,
+): ServerMessage {
+  const source = isRecord(message.params) ? message.params : {};
+  const threadId = boundedString(source.threadId, MAX_RESYNC_ID_CHARACTERS);
+  const turnId = boundedString(source.turnId, MAX_RESYNC_ID_CHARACTERS);
+  const itemId = boundedString(source.itemId, MAX_RESYNC_ID_CHARACTERS);
+  return {
+    type: "notification",
+    method: "gateway/resyncRequired",
+    params: {
+      reason: "messageTooLarge",
+      lostMethod: message.method.slice(0, MAX_RESYNC_METHOD_CHARACTERS),
+      ...(threadId === undefined ? {} : { threadId }),
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(itemId === undefined ? {} : { itemId }),
+    },
+  };
+}
+
 export class AskCodexServer {
   readonly app = express();
   readonly httpServer = createServer(this.app);
-  readonly webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
+  readonly webSocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BROWSER_MESSAGE_BYTES,
+  });
 
   private readonly clients = new Set<WebSocket>();
   private readonly authenticatingClients = new Set<WebSocket>();
@@ -374,7 +405,9 @@ export class AskCodexServer {
   private activateClient(client: WebSocket): void {
     this.authenticatingClients.delete(client);
     this.clients.add(client);
-    this.send(client, this.statusMessage());
+    if (!this.send(client, this.statusMessage())) {
+      return;
+    }
     this.offerUnroutedRequests(client);
 
     client.on("message", (data, isBinary) => {
@@ -514,44 +547,70 @@ export class AskCodexServer {
       }).catch(() => undefined);
       return;
     }
-    const recipients = new Set<WebSocket>();
+    if (!this.isOutboundMessageWithinLimit(message)) {
+      void this.codex.respond(message.id, undefined, {
+        code: -32_000,
+        message: "Ask Codex cannot forward a server request larger than 1 MiB",
+      }).catch(() => undefined);
+      return;
+    }
+    const pending: PendingServerRequest = { message, recipients: new Set() };
+    this.pendingServerRequests.set(key, pending);
     const owner = this.ownership.get(threadIdFromParams(message.params));
     if (owner?.readyState === WebSocket.OPEN) {
-      recipients.add(owner);
-    } else {
-      for (const client of this.openClients()) {
-        recipients.add(client);
+      if (this.deliverServerRequest(pending, [owner]) > 0) {
+        return;
       }
     }
-
-    this.pendingServerRequests.set(key, { message, recipients });
-    for (const recipient of recipients) {
-      this.send(recipient, message);
-    }
+    this.deliverServerRequest(pending, this.openClients());
   }
 
   private offerUnroutedRequests(client: WebSocket): void {
     for (const pending of this.pendingServerRequests.values()) {
       if (pending.recipients.size === 0) {
-        pending.recipients.add(client);
-        this.send(client, pending.message);
+        if (!this.clients.has(client) || client.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        this.deliverServerRequest(pending, [client]);
       }
     }
   }
 
   private handleClientClose(client: WebSocket): void {
+    this.evictClient(client);
+  }
+
+  private evictClient(client: WebSocket): void {
     this.clients.delete(client);
     this.inFlightRpc.delete(client);
     this.ownership.deleteOwner(client);
+    const orphaned: PendingServerRequest[] = [];
     for (const pending of this.pendingServerRequests.values()) {
       if (!pending.recipients.delete(client) || pending.recipients.size > 0) {
         continue;
       }
-      for (const fallback of this.openClients()) {
-        pending.recipients.add(fallback);
-        this.send(fallback, pending.message);
+      orphaned.push(pending);
+    }
+    for (const pending of orphaned) {
+      this.deliverServerRequest(pending, this.openClients());
+    }
+  }
+
+  private deliverServerRequest(
+    pending: PendingServerRequest,
+    candidates: readonly WebSocket[],
+  ): number {
+    let delivered = 0;
+    for (const candidate of candidates) {
+      if (pending.recipients.has(candidate)) {
+        continue;
+      }
+      if (this.send(candidate, pending.message)) {
+        pending.recipients.add(candidate);
+        delivered += 1;
       }
     }
+    return delivered;
   }
 
   private handleCodexStatus(status: CodexStatusEvent): void {
@@ -597,19 +656,119 @@ export class AskCodexServer {
     }
   }
 
-  private send(client: WebSocket, message: ServerMessage): void {
+  private send(client: WebSocket, message: ServerMessage): boolean {
     if (client.readyState !== WebSocket.OPEN) {
-      return;
+      this.evictClient(client);
+      return false;
     }
-    const serialized = JSON.stringify(message);
-    if (
-      client.bufferedAmount + Buffer.byteLength(serialized, "utf8") >
-      MAX_WS_BUFFERED_BYTES
-    ) {
-      client.terminate();
-      return;
+
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(message);
+    } catch {
+      return this.handleUnsendableMessage(
+        client,
+        message,
+        "Codex response could not be serialized",
+        1011,
+        "Server message serialization failed",
+      );
     }
-    client.send(serialized);
+    if (serialized === undefined) {
+      return this.handleUnsendableMessage(
+        client,
+        message,
+        "Codex response could not be serialized",
+        1011,
+        "Server message serialization failed",
+      );
+    }
+
+    const byteLength = Buffer.byteLength(serialized, "utf8");
+    if (byteLength > MAX_SERVER_MESSAGE_BYTES) {
+      return this.handleUnsendableMessage(
+        client,
+        message,
+        "Codex response exceeded the 1 MiB gateway message limit",
+      );
+    }
+    return this.sendSerialized(client, serialized, byteLength);
+  }
+
+  private isOutboundMessageWithinLimit(message: ServerMessage): boolean {
+    try {
+      const serialized = JSON.stringify(message);
+      return serialized !== undefined &&
+        Buffer.byteLength(serialized, "utf8") <= MAX_SERVER_MESSAGE_BYTES;
+    } catch {
+      return false;
+    }
+  }
+
+  private handleUnsendableMessage(
+    client: WebSocket,
+    message: ServerMessage,
+    reason: string,
+    closeCode = 1009,
+    closeReason = "Server message too large",
+  ): boolean {
+    if (message.type === "notification") {
+      const fallback = JSON.stringify(resyncRequiredNotification(message));
+      return this.sendSerialized(
+        client,
+        fallback,
+        Buffer.byteLength(fallback, "utf8"),
+      );
+    }
+    if (message.type !== "rpcResult" && message.type !== "rpcError") {
+      this.closeAndEvictClient(client, closeCode, closeReason);
+      return false;
+    }
+
+    const fallback = JSON.stringify({
+      type: "rpcError",
+      id: message.id,
+      error: { code: -32_000, message: reason },
+    });
+    const byteLength = Buffer.byteLength(fallback, "utf8");
+    if (byteLength > MAX_SERVER_MESSAGE_BYTES) {
+      this.closeAndEvictClient(client, 1009, "Server message too large");
+      return false;
+    }
+    return this.sendSerialized(client, fallback, byteLength);
+  }
+
+  private sendSerialized(client: WebSocket, serialized: string, byteLength: number): boolean {
+    if (client.readyState !== WebSocket.OPEN) {
+      this.evictClient(client);
+      return false;
+    }
+    if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES - byteLength) {
+      this.closeAndEvictClient(client, 1013, "Client too slow");
+      return false;
+    }
+    try {
+      client.send(serialized, (error) => {
+        if (error) {
+          this.closeAndEvictClient(client, 1011, "Server send failed");
+        }
+      });
+    } catch {
+      this.closeAndEvictClient(client, 1011, "Server send failed");
+      return false;
+    }
+    return this.clients.has(client) && client.readyState === WebSocket.OPEN;
+  }
+
+  private closeAndEvictClient(client: WebSocket, code: number, reason: string): void {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.close(code, reason);
+      } catch {
+        client.terminate();
+      }
+    }
+    this.evictClient(client);
   }
 
   private rejectUpgrade(

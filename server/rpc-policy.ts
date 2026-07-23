@@ -6,6 +6,7 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "thread/start",
   "thread/resume",
   "thread/read",
+  "thread/turns/list",
   "turn/start",
   "turn/interrupt",
   "model/list",
@@ -19,6 +20,7 @@ const SANDBOX_MODES = new Set([
 ]);
 const SORT_KEYS = new Set(["created_at", "updated_at", "recency_at"]);
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
+const TURN_ITEMS_VIEWS = new Set(["notLoaded", "summary", "full"]);
 const SOURCE_KINDS = new Set([
   "cli",
   "vscode",
@@ -107,6 +109,32 @@ function optionalLimit(
   return value as number;
 }
 
+function optionalNullableLimit(
+  method: string,
+  params: Record<string, unknown>,
+): number | null | undefined {
+  if (params.limit === null) {
+    return null;
+  }
+  return optionalLimit(method, params);
+}
+
+function optionalNullableEnum(
+  method: string,
+  params: Record<string, unknown>,
+  key: string,
+  allowed: ReadonlySet<string>,
+): string | null | undefined {
+  const value = params[key];
+  if (value === undefined || value === null) {
+    return value;
+  }
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw new ClientInputError(`${method} ${key} is invalid`);
+  }
+  return value;
+}
+
 function assignDefined(
   target: Record<string, unknown>,
   key: string,
@@ -157,13 +185,77 @@ function sanitizeThreadList(params: unknown): Record<string, unknown> {
   return output;
 }
 
+function sanitizeTurnPageOptions(
+  method: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  assignDefined(output, "limit", optionalNullableLimit(method, input));
+  assignDefined(
+    output,
+    "sortDirection",
+    optionalNullableEnum(method, input, "sortDirection", SORT_DIRECTIONS),
+  );
+  assignDefined(
+    output,
+    "itemsView",
+    optionalNullableEnum(method, input, "itemsView", TURN_ITEMS_VIEWS),
+  );
+  return output;
+}
+
+function sanitizeThreadTurnsList(params: unknown): Record<string, unknown> {
+  const method = "thread/turns/list";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, [
+    "threadId",
+    "cursor",
+    "limit",
+    "sortDirection",
+    "itemsView",
+  ]);
+
+  const output: Record<string, unknown> = {
+    threadId: requiredString(method, input, "threadId"),
+    ...sanitizeTurnPageOptions(method, input),
+  };
+  const cursor = input.cursor;
+  if (cursor !== undefined) {
+    if (cursor !== null && typeof cursor !== "string") {
+      throw new ClientInputError(`${method} cursor must be a string or null`);
+    }
+    output.cursor = cursor;
+  }
+  return output;
+}
+
+function sanitizeInitialTurnsPage(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === undefined || value === null) {
+    return value;
+  }
+
+  const method = "thread/resume initialTurnsPage";
+  const input = paramsObject(method, value);
+  assertOnlyKeys(method, input, ["limit", "sortDirection", "itemsView"]);
+  return sanitizeTurnPageOptions(method, input);
+}
+
 function sanitizeThreadSettings(
   method: "thread/start" | "thread/resume",
   params: unknown,
 ): Record<string, unknown> {
   const input = paramsObject(method, params);
   const allowed = method === "thread/resume"
-    ? ["threadId", "cwd", "model", "sandbox", "approvalPolicy", "approvalsReviewer"]
+    ? [
+        "threadId",
+        "cwd",
+        "model",
+        "sandbox",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "excludeTurns",
+        "initialTurnsPage",
+      ]
     : ["cwd", "model", "sandbox", "approvalPolicy", "approvalsReviewer"];
   assertOnlyKeys(method, input, allowed);
 
@@ -180,6 +272,17 @@ function sanitizeThreadSettings(
   };
   if (method === "thread/resume") {
     output.threadId = requiredString(method, input, "threadId");
+    if (input.excludeTurns !== undefined) {
+      if (typeof input.excludeTurns !== "boolean") {
+        throw new ClientInputError(`${method} excludeTurns must be a boolean`);
+      }
+      output.excludeTurns = input.excludeTurns;
+    }
+    assignDefined(
+      output,
+      "initialTurnsPage",
+      sanitizeInitialTurnsPage(input.initialTurnsPage),
+    );
   }
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));
@@ -273,6 +376,8 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
       assignDefined(output, "includeTurns", optionalBoolean(method, input, "includeTurns"));
       return output;
     }
+    case "thread/turns/list":
+      return sanitizeThreadTurnsList(params);
     case "turn/start":
       return sanitizeTurnStart(params);
     case "turn/interrupt": {
