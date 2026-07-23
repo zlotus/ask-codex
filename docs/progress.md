@@ -39,9 +39,9 @@ The implementation currently provides:
 - Deterministic desktop and mobile production visual fixtures that do not
   create a real Codex turn.
 
-This snapshot was verified against the working tree on 2026-07-23. Source and
-context still need an explicit commit and push before another device can rely
-on this state.
+This snapshot describes the implementation introduced by commit `c8fab6f` and
+verified on 2026-07-23. The source and context are available from `origin/main`
+for continuation on another device.
 
 ## Known Gaps
 
