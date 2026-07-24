@@ -33,6 +33,7 @@ function installRpcFixture() {
       data: [{
         model: "configured-model",
         displayName: "Configured Model",
+        inputModalities: ["text", "image"],
         isDefault: true,
         defaultReasoningEffort: "low",
         supportedReasoningEfforts: [
@@ -104,6 +105,14 @@ describe("App thread settings lifecycle", () => {
       configurable: true,
       value: vi.fn(),
     });
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn((file: File) => `blob:${file.name}`),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
     socket.rpc.mockReset();
     socket.respond.mockReset();
     socket.connection = "connected";
@@ -128,6 +137,181 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       cwd: "/workspace/existing",
     }));
+  });
+
+  it("uploads image bytes over authenticated HTTP and sends only attachment IDs to the gateway", async () => {
+    sessionStorage.setItem("ASK_CODEX_TOKEN", "browser-token");
+    const attachmentId = "a".repeat(32);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/bootstrap") {
+        return new Response(JSON.stringify({
+          ready: true,
+          defaultCwd: "/workspace/default-one",
+          authRequired: true,
+        }), { status: 200 });
+      }
+      if (url === "/api/attachments" && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          attachment: {
+            id: attachmentId,
+            mediaType: "image/png",
+            size: 3,
+            expiresAt: Date.now() + 60_000,
+          },
+        }), { status: 201 });
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/bootstrap",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer browser-token" },
+      }),
+    ));
+    const file = new File([new Uint8Array([1, 2, 3])], "screen.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "Inspect this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [
+        { type: "text", text: "Inspect this", text_elements: [] },
+        { type: "localImage", attachmentId },
+      ],
+    })));
+    const uploadCall = fetchMock.mock.calls.find(([input, init]) => (
+      String(input) === "/api/attachments" && init?.method === "POST"
+    ));
+    expect(uploadCall?.[0]).toBe("/api/attachments");
+    expect(String(uploadCall?.[0])).not.toContain("browser-token");
+    expect(uploadCall?.[1]).toEqual(expect.objectContaining({
+      body: file,
+      headers: expect.objectContaining({
+        Authorization: "Bearer browser-token",
+        "Content-Type": "image/png",
+      }),
+    }));
+    await waitFor(() => expect(screen.queryByText("screen.png")).not.toBeInTheDocument());
+  });
+
+  it("cancels a prepared image turn when thread selection changes during upload", async () => {
+    const attachmentId = "b".repeat(32);
+    let resolveUpload: ((response: Response) => void) | undefined;
+    const pendingUpload = new Promise<Response>((resolve) => {
+      resolveUpload = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/bootstrap") {
+        return Promise.resolve(new Response(JSON.stringify({
+          ready: true,
+          defaultCwd: "/workspace/default-one",
+          authRequired: false,
+        }), { status: 200 }));
+      }
+      if (url === "/api/attachments" && init?.method === "POST") return pendingUpload;
+      if (url === `/api/attachments/${attachmentId}` && init?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByText("Existing thread");
+    const file = new File([new Uint8Array([1, 2, 3])], "delayed.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "stay as draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/attachments",
+      expect.objectContaining({ method: "POST", body: file }),
+    ));
+
+    fireEvent.click(screen.getByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await act(async () => {
+      resolveUpload?.(new Response(JSON.stringify({
+        attachment: {
+          id: attachmentId,
+          mediaType: "image/png",
+          size: 3,
+          expiresAt: Date.now() + 60_000,
+        },
+      }), { status: 201 }));
+      await pendingUpload;
+    });
+
+    expect(await screen.findByText(/Thread changed while preparing the message/)).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/attachments/${attachmentId}`,
+      expect.objectContaining({ method: "DELETE" }),
+    ));
+    expect(socket.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("stay as draft");
+    expect(screen.getByText("delayed.png")).toBeInTheDocument();
+  });
+
+  it("reports a failed image turn without waiting for attachment cleanup", async () => {
+    const attachmentId = "c".repeat(32);
+    let resolveDelete: ((response: Response) => void) | undefined;
+    const pendingDelete = new Promise<Response>((resolve) => {
+      resolveDelete = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/bootstrap") {
+        return Promise.resolve(new Response(JSON.stringify({
+          ready: true,
+          defaultCwd: "/workspace/default-one",
+          authRequired: false,
+        }), { status: 200 }));
+      }
+      if (url === "/api/attachments" && init?.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({
+          attachment: {
+            id: attachmentId,
+            mediaType: "image/png",
+            size: 3,
+            expiresAt: Date.now() + 60_000,
+          },
+        }), { status: 201 }));
+      }
+      if (url === `/api/attachments/${attachmentId}` && init?.method === "DELETE") {
+        return pendingDelete;
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/start"
+        ? Promise.reject(new Error("Codex rejected the image turn"))
+        : baseRpc?.(method, params)
+    ));
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add images" })).toBeEnabled());
+
+    const file = new File([new Uint8Array([1, 2, 3])], "retry-after-error.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Codex rejected the image turn")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("keep this draft");
+    expect(screen.getByText("retry-after-error.png")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/attachments/${attachmentId}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+
+    await act(async () => {
+      resolveDelete?.(new Response(null, { status: 204 }));
+      await pendingDelete;
+    });
   });
 
   it("selects and sends the configured model and effort without Default options", async () => {

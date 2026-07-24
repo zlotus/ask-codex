@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   commandApprovalTarget,
   extractInitialTurnsPage,
+  extractModels,
+  itemText,
   normalizeItemsPage,
   normalizeTurnsPage,
   sandboxMode,
+  userMessageContent,
+  userMessageImages,
 } from "./protocol";
 
 describe("commandApprovalTarget", () => {
@@ -73,6 +77,47 @@ describe("sandboxMode", () => {
     expect(sandboxMode({ type: "readOnly" })).toBe("read-only");
     expect(sandboxMode({ type: "dangerFullAccess" })).toBe("danger-full-access");
     expect(sandboxMode({ type: "externalSandbox" })).toBe("external");
+  });
+});
+
+describe("multimodal protocol normalization", () => {
+  it("preserves supported model input modalities and drops unknown values", () => {
+    expect(extractModels({
+      data: [{
+        model: "vision-model",
+        displayName: "Vision Model",
+        supportedReasoningEfforts: [],
+        inputModalities: ["text", "image", "video", 7],
+      }],
+    })).toEqual([expect.objectContaining({
+      model: "vision-model",
+      inputModalities: ["text", "image"],
+    })]);
+  });
+
+  it("extracts user text and safe image metadata without retaining image locations", () => {
+    const item = {
+      id: "user-1",
+      type: "userMessage",
+      content: [
+        { type: "text", text: "Inspect both", text_elements: [] },
+        { type: "localImage", path: "/private/image.png", detail: "original" },
+        { type: "image", url: "https://private.example/image.jpg", detail: "invalid" },
+      ],
+    };
+
+    expect(itemText(item)).toBe("Inspect both");
+    expect(userMessageImages(item)).toEqual([
+      { type: "localImage", detail: "original" },
+      { type: "image", detail: undefined },
+    ]);
+    expect(JSON.stringify(userMessageImages(item))).not.toContain("/private/image.png");
+    expect(JSON.stringify(userMessageImages(item))).not.toContain("private.example");
+    expect(userMessageContent(item)).toEqual([
+      { type: "text", text: "Inspect both" },
+      { type: "localImage", detail: "original" },
+      { type: "image", detail: undefined },
+    ]);
   });
 });
 

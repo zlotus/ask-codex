@@ -65,6 +65,28 @@ export type ClientMessage = RpcMessage | ResponseMessage;
 
 export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted" | string;
 export type ItemStatus = "inProgress" | "completed" | "failed" | "declined" | string;
+export type ImageDetail = "auto" | "low" | "high" | "original";
+export type InputModality = "text" | "image" | "audio";
+
+export interface TextUserInput {
+  type: "text";
+  text: string;
+  text_elements: unknown[];
+}
+
+export interface LocalImageUserInput {
+  type: "localImage";
+  path: string;
+  detail?: ImageDetail;
+}
+
+export interface UrlImageUserInput {
+  type: "image";
+  url: string;
+  detail?: ImageDetail;
+}
+
+export type UserInput = TextUserInput | LocalImageUserInput | UrlImageUserInput;
 
 export interface CodexItem {
   id: string;
@@ -149,6 +171,7 @@ export interface ModelInfo {
   model: string;
   displayName: string;
   supportedReasoningEfforts: ReasoningEffortOption[];
+  inputModalities?: InputModality[];
   defaultReasoningEffort?: string;
   isDefault?: boolean;
 }

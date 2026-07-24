@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FileCode2,
   Globe,
+  Image as ImageIcon,
   Terminal,
   User,
   Wrench,
@@ -18,6 +19,7 @@ import {
   readString,
   stripAnsi,
   textParts,
+  userMessageContent,
 } from "../utils/protocol";
 import { CodeBlock } from "./CodeBlock";
 import { DiffViewer } from "./DiffViewer";
@@ -117,10 +119,30 @@ function ToolDisclosureSummary({
 }
 
 function UserMessage({ item }: ItemRendererProps) {
+  const orderedContent = userMessageContent(item);
+  const fallbackText = orderedContent.length === 0 ? itemText(item) : "";
+  const imageCount = orderedContent.filter((part) => part.type !== "text").length;
   return (
     <article className="message message--user">
       <div className="message-role"><User size={14} aria-hidden="true" />You</div>
-      <Markdown>{itemText(item)}</Markdown>
+      {fallbackText && <Markdown>{fallbackText}</Markdown>}
+      {imageCount > 0 && (
+        <span className="sr-only" aria-label={`${imageCount} image attachment${imageCount === 1 ? "" : "s"}`} />
+      )}
+      {orderedContent.map((part, index) => {
+        if (part.type === "text") return <Markdown key={`text:${index}`}>{part.text}</Markdown>;
+        const imageNumber = orderedContent
+          .slice(0, index + 1)
+          .filter((candidate) => candidate.type !== "text").length;
+        return (
+          <div className="message-images" key={`${part.type}:${part.detail ?? "auto"}:${index}`}>
+            <span className="message-image" aria-label={`Image ${imageNumber} of ${imageCount}`}>
+              <ImageIcon size={15} aria-hidden="true" />
+              <span>Image {imageCount > 1 ? imageNumber : "attachment"}</span>
+            </span>
+          </div>
+        );
+      })}
     </article>
   );
 }

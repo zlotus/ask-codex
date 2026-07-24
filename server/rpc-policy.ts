@@ -16,6 +16,8 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 const MAX_CONFIG_VALUE_CHARACTERS = 512;
+const MAX_LOCAL_IMAGES_PER_TURN = 4;
+const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 const SANDBOX_MODES = new Set([
   "read-only",
@@ -25,6 +27,7 @@ const SANDBOX_MODES = new Set([
 const SORT_KEYS = new Set(["created_at", "updated_at", "recency_at"]);
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
 const TURN_ITEMS_VIEWS = new Set(["notLoaded", "summary", "full"]);
+const IMAGE_DETAILS = new Set(["auto", "low", "high", "original"]);
 const SOURCE_KINDS = new Set([
   "cli",
   "vscode",
@@ -379,15 +382,49 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
     throw new ClientInputError(`${method} input must be a non-empty array`);
   }
 
+  let imageCount = 0;
+  const attachmentIds = new Set<string>();
   const sanitizedInput = input.input.map((item, index) => {
-    if (!isRecord(item) || item.type !== "text" || typeof item.text !== "string") {
-      throw new ClientInputError(`${method} input[${index}] must be text input`);
+    if (!isRecord(item)) {
+      throw new ClientInputError(`${method} input[${index}] must be an object`);
     }
-    assertOnlyKeys(method, item, ["type", "text", "text_elements"]);
+    if (item.type === "text") {
+      if (typeof item.text !== "string") {
+        throw new ClientInputError(`${method} input[${index}].text must be a string`);
+      }
+      assertOnlyKeys(method, item, ["type", "text", "text_elements"]);
+      return {
+        type: "text",
+        text: item.text,
+        text_elements: sanitizeTextElements(method, item.text_elements),
+      };
+    }
+    if (item.type !== "localImage") {
+      throw new ClientInputError(`${method} input[${index}] must be text or an uploaded image`);
+    }
+    assertOnlyKeys(method, item, ["type", "attachmentId", "detail"]);
+    const attachmentId = requiredString(method, item, "attachmentId");
+    if (!ATTACHMENT_ID_PATTERN.test(attachmentId)) {
+      throw new ClientInputError(`${method} input[${index}].attachmentId is invalid`);
+    }
+    if (attachmentIds.has(attachmentId)) {
+      throw new ClientInputError(`${method} input contains a duplicate attachmentId`);
+    }
+    attachmentIds.add(attachmentId);
+    imageCount += 1;
+    if (imageCount > MAX_LOCAL_IMAGES_PER_TURN) {
+      throw new ClientInputError(
+        `${method} input allows at most ${MAX_LOCAL_IMAGES_PER_TURN} images`,
+      );
+    }
+    const detail = optionalString(method, item, "detail");
+    if (detail !== undefined && !IMAGE_DETAILS.has(detail)) {
+      throw new ClientInputError(`${method} input[${index}].detail is invalid`);
+    }
     return {
-      type: "text",
-      text: item.text,
-      text_elements: sanitizeTextElements(method, item.text_elements),
+      type: "localImage",
+      attachmentId,
+      ...(detail === undefined ? {} : { detail }),
     };
   });
 
@@ -399,6 +436,42 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   assignDefined(output, "model", optionalString(method, input, "model"));
   assignDefined(output, "effort", optionalString(method, input, "effort"));
   return output;
+}
+
+export function attachmentIdsFromTurnStart(params: unknown): string[] {
+  if (!isRecord(params) || !Array.isArray(params.input)) return [];
+  return params.input.flatMap((item) => (
+    isRecord(item) && item.type === "localImage" && typeof item.attachmentId === "string"
+      ? [item.attachmentId]
+      : []
+  ));
+}
+
+export function materializeTurnStartAttachments(
+  params: unknown,
+  paths: readonly string[],
+): unknown {
+  if (!isRecord(params) || !Array.isArray(params.input)) {
+    throw new Error("Cannot materialize attachments for invalid turn/start params");
+  }
+  let pathIndex = 0;
+  const turnInput = params.input.map((item) => {
+    if (!isRecord(item) || item.type !== "localImage") return item;
+    const path = paths[pathIndex];
+    pathIndex += 1;
+    if (path === undefined) {
+      throw new Error("Attachment path count does not match turn/start input");
+    }
+    return {
+      type: "localImage",
+      path,
+      ...(typeof item.detail === "string" ? { detail: item.detail } : {}),
+    };
+  });
+  if (pathIndex !== paths.length) {
+    throw new Error("Attachment path count does not match turn/start input");
+  }
+  return { ...params, input: turnInput };
 }
 
 export function sanitizeBrowserRpcParams(method: string, params: unknown): unknown {
@@ -464,10 +537,24 @@ function configuredValue(value: unknown): string | null {
 }
 
 export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
-  if (method !== "config/read") return result;
+  if (method !== "config/read") return sanitizeBrowserVisibleValue(result);
   const config = isRecord(result) && isRecord(result.config) ? result.config : {};
   return {
     model: configuredValue(config.model),
     effort: configuredValue(config.model_reasoning_effort),
   };
+}
+
+export function sanitizeBrowserVisibleValue(value: unknown, depth = 0): unknown {
+  if (depth > 64) return null;
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeBrowserVisibleValue(entry, depth + 1));
+  }
+  if (!isRecord(value)) return value;
+  const localImage = value.type === "localImage";
+  return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => (
+    localImage && key === "path"
+      ? []
+      : [[key, sanitizeBrowserVisibleValue(entry, depth + 1)]]
+  )));
 }

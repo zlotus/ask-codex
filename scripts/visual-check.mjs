@@ -4,6 +4,10 @@ import { chromium } from "playwright-core";
 const url = process.env.ASK_CODEX_VISUAL_URL ?? "http://127.0.0.1:4173";
 const browserPath = process.env.CHROME_BIN ?? "/usr/bin/chromium";
 const outputDirectory = process.env.ASK_CODEX_VISUAL_OUTPUT ?? "/tmp/ask-codex-visual";
+const fixtureImage = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 await mkdir(outputDirectory, { recursive: true });
 
@@ -129,6 +133,7 @@ async function installFixture(page) {
           data: [{
             model: "gpt-5-codex",
             displayName: "GPT-5 Codex",
+            inputModalities: ["text", "image"],
             isDefault: true,
             defaultReasoningEffort: "high",
             supportedReasoningEfforts: [
@@ -250,6 +255,46 @@ async function inspectThreadDialog(page) {
   });
 }
 
+async function addFixtureImage(page) {
+  await page.locator('[aria-label="Choose images"]').setInputFiles({
+    name: "visual-fixture.png",
+    mimeType: "image/png",
+    buffer: fixtureImage,
+  });
+  await page.getByRole("button", { name: "Remove visual-fixture.png" }).waitFor();
+}
+
+async function inspectComposerImage(page) {
+  return page.evaluate(() => {
+    const composer = document.querySelector(".composer")?.getBoundingClientRect();
+    const preview = document.querySelector(".composer-attachment")?.getBoundingClientRect();
+    const image = document.querySelector(".composer-attachment img");
+    const textarea = document.querySelector(".composer textarea")?.getBoundingClientRect();
+    const action = document.querySelector(".composer-action")?.getBoundingClientRect();
+    const footer = document.querySelector(".composer-footer")?.getBoundingClientRect();
+    const remove = document.querySelector(".composer-attachment-remove")?.getBoundingClientRect();
+    const add = document.querySelector(".composer-image-action")?.getBoundingClientRect();
+    const overlaps = (first, second) => Boolean(first && second &&
+      first.left < second.right && first.right > second.left &&
+      first.top < second.bottom && first.bottom > second.top);
+    return {
+      count: document.querySelectorAll(".composer-attachment").length,
+      previewLoaded: image?.tagName === "IMG" && image.complete && image.naturalWidth > 0,
+      previewContained: Boolean(composer && preview &&
+        preview.left >= composer.left && preview.right <= composer.right &&
+        preview.top >= composer.top && preview.bottom <= composer.bottom),
+      composerVisible: Boolean(composer && composer.left >= 0 && composer.right <= window.innerWidth &&
+        composer.top >= 0 && composer.bottom <= window.innerHeight),
+      controlsOverlap: overlaps(preview, textarea) || overlaps(preview, action) ||
+        overlaps(preview, footer) || overlaps(textarea, action),
+      removeVisible: Boolean(document.querySelector('.composer-attachment-remove')),
+      compactControlsUsable: Boolean(remove && add &&
+        remove.width >= 32 && remove.height >= 32 && add.width >= 32 && add.height >= 32),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await installFixture(page);
@@ -283,6 +328,10 @@ try {
     };
   });
   await page.screenshot({ path: `${outputDirectory}/desktop.png`, fullPage: true });
+  await addFixtureImage(page);
+  const desktopComposerImage = await inspectComposerImage(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-attachment.png`, fullPage: true });
+  await page.getByRole("button", { name: "Remove visual-fixture.png" }).click();
   await page.getByRole("button", { name: "New thread", exact: true }).click();
   const desktopDialog = await inspectThreadDialog(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-new-thread.png`, fullPage: true });
@@ -317,6 +366,10 @@ try {
     }),
   }));
   await page.screenshot({ path: `${outputDirectory}/mobile.png`, fullPage: true });
+  await addFixtureImage(page);
+  const mobileComposerImage = await inspectComposerImage(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-attachment.png`, fullPage: true });
+  await page.getByRole("button", { name: "Remove visual-fixture.png" }).click();
   await page.getByRole("button", { name: "Thread settings", exact: true }).click();
   const mobileDialog = await inspectThreadDialog(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-new-thread.png`, fullPage: true });
@@ -335,9 +388,15 @@ try {
   await page.screenshot({ path: `${outputDirectory}/mobile-rich.png`, fullPage: true });
 
   const result = {
-    desktop: { ...desktop, dialog: desktopDialog, rich: desktopRich },
+    desktop: {
+      ...desktop,
+      composerImage: desktopComposerImage,
+      dialog: desktopDialog,
+      rich: desktopRich,
+    },
     mobile: {
       ...mobileBefore,
+      composerImage: mobileComposerImage,
       dialog: mobileDialog,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -358,6 +417,14 @@ try {
     desktop.modelSelection !== "gpt-5-codex" ||
     desktop.effortSelection !== "high" ||
     desktop.defaultLabels > 0 ||
+    desktopComposerImage.count !== 1 ||
+    !desktopComposerImage.previewLoaded ||
+    !desktopComposerImage.previewContained ||
+    !desktopComposerImage.composerVisible ||
+    desktopComposerImage.controlsOverlap ||
+    !desktopComposerImage.removeVisible ||
+    !desktopComposerImage.compactControlsUsable ||
+    desktopComposerImage.horizontalOverflow ||
     desktop.connection === "error" ||
     !desktopDialog.fitsViewport ||
     !desktopDialog.cwdEditable ||
@@ -372,6 +439,14 @@ try {
     mobileBefore.effortSelection !== "high" ||
     mobileBefore.defaultLabels > 0 ||
     !mobileBefore.composerSettingsVisible ||
+    mobileComposerImage.count !== 1 ||
+    !mobileComposerImage.previewLoaded ||
+    !mobileComposerImage.previewContained ||
+    !mobileComposerImage.composerVisible ||
+    mobileComposerImage.controlsOverlap ||
+    !mobileComposerImage.removeVisible ||
+    !mobileComposerImage.compactControlsUsable ||
+    mobileComposerImage.horizontalOverflow ||
     !mobileDialog.fitsViewport ||
     !mobileDialog.cwdEditable ||
     !mobileDialog.sandboxEnabled ||

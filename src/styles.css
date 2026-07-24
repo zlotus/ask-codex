@@ -580,6 +580,32 @@ pre {
   color: var(--green);
 }
 
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.message-images + .markdown,
+.message--user .markdown + .markdown {
+  margin-top: 8px;
+}
+
+.message-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 7px;
+  color: #5f665f;
+  font-size: 11px;
+  line-height: 16px;
+  background: rgba(255, 255, 255, 0.48);
+  border: 1px solid #d3d1c8;
+  border-radius: 4px;
+}
+
 .markdown {
   min-width: 0;
   color: #2b2f2b;
@@ -1916,6 +1942,64 @@ details[open] > summary .details-chevron {
   color: #929792;
 }
 
+.composer-attachments {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 7px;
+  min-width: 0;
+  padding: 2px 0 3px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.composer-attachment {
+  position: relative;
+  display: grid;
+  flex: 0 0 68px;
+  grid-template-rows: 52px 14px;
+  width: 68px;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-attachment img {
+  width: 68px;
+  height: 52px;
+  object-fit: cover;
+  background: #ecece7;
+  border: 1px solid #d4d4cd;
+  border-radius: 4px;
+}
+
+.composer-attachment > span {
+  overflow: hidden;
+  color: #656b65;
+  font-size: 9px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: #ffffff;
+  background: rgba(34, 39, 35, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: #9c493f;
+}
+
 .composer-footer {
   display: flex;
   align-items: center;
@@ -1923,6 +2007,26 @@ details[open] > summary .details-chevron {
   gap: 4px;
   min-width: 0;
   padding-bottom: 3px;
+}
+
+.composer-image-action {
+  display: grid;
+  flex: 0 0 32px;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: #666d66;
+  background: #f3f2ed;
+  border: 1px solid #deddd6;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.composer-image-action:hover:not(:disabled) {
+  color: var(--green);
+  background: #ebf2ed;
+  border-color: #b8cfbf;
 }
 
 .composer-setting {
@@ -1978,6 +2082,17 @@ details[open] > summary .details-chevron {
 
 .composer-action--stop:hover {
   background: #bd4c3e;
+}
+
+.composer-spinner {
+  animation: spin 800ms linear infinite;
+}
+
+.composer-error {
+  margin: 5px 2px 0;
+  color: #985047;
+  font-size: 10.5px;
+  line-height: 15px;
 }
 
 .dialog-backdrop {
@@ -2310,10 +2425,23 @@ details[open] > summary .details-chevron {
     grid-column: 1;
   }
 
+  .composer--with-attachments .composer-attachments {
+    grid-row: 1;
+  }
+
+  .composer--with-attachments textarea,
+  .composer--with-attachments .composer-action {
+    grid-row: 2;
+  }
+
   .composer-footer {
     grid-column: 1 / -1;
     grid-row: 2;
     padding: 0;
+  }
+
+  .composer--with-attachments .composer-footer {
+    grid-row: 3;
   }
 
   .composer-setting {

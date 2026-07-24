@@ -6,9 +6,9 @@ Last reviewed: 2026-07-24
 
 ## Current Milestone
 
-Item-level recovery for oversized turns is implemented. The next milestone
-adds a bounded image-input MVP and then returns to project-oriented navigation
-and read-only discovery without changing the manual-approval or remote-access
+Item-level recovery for oversized turns and a bounded image-input MVP are
+implemented. The next milestone returns to project-oriented navigation and
+read-only discovery without changing the manual-approval or remote-access
 trust model.
 
 ## Current Baseline
@@ -42,6 +42,13 @@ The implementation currently provides:
 - An Express/WebSocket gateway that starts `codex app-server` over JSONL stdio,
   rebuilds parameters for an explicit RPC allowlist, and routes app-server
   requests to the owning browser.
+- Composer support for selecting, pasting, previewing, removing, and sending
+  PNG, JPEG, and WebP images, including image-only turns, with the entry point
+  enabled only when a model explicitly declares image input. Image bytes use
+  a temporary HTTP attachment endpoint governed by the existing HTTP token and
+  Origin/Host policy. One-use IDs are rebuilt into official `localImage` paths
+  at the gateway; count, byte, concurrency, storage, and lifecycle limits are
+  explicit, and history uses safe image placeholders.
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
@@ -76,16 +83,19 @@ without relying on prior chat history.
   after a page reload or on another device from native thread history alone.
 - The sidebar is a flat thread list. There are no project groups, Skills view,
   Activity view, usage panel, or thread-management actions.
-- Turn steering, image input, persistent cross-device message queues, fixed host
-  actions, and an embedded PTY are not implemented.
+- Image attachments are deleted after a turn completes. Normal subsequent
+  Codex context is unaffected, but another native client cannot use the deleted
+  `localImage.path` to edit history and reattach the original image; persistent
+  attachment ownership and garbage collection are not designed. General file
+  and audio input are also not exposed.
+- Turn steering, persistent cross-device message queues, fixed host actions,
+  and an embedded PTY are not implemented.
 
 ## Next
 
-1. Add an image-input MVP through the official `localImage` input, with
-   explicit type, size, count, storage, and lifecycle limits.
-2. Group threads by working directory and add a read-only Skills catalog backed
+1. Group threads by working directory and add a read-only Skills catalog backed
    only by the official `skills/list` method.
-3. Add a read-only Activity surface before considering any new host execution
+2. Add a read-only Activity surface before considering any new host execution
    capability.
 
 Later candidates remain in [`ideas.en.md`](ideas.en.md); their presence there is
@@ -104,6 +114,9 @@ not a delivery commitment.
   legacy call ids are attached only when they identify one command uniquely.
 - `config/read` results must remain projected at the gateway to model and
   reasoning effort only; never forward the complete Codex configuration.
+- Image bytes must remain outside WebSocket JSON. The browser must not provide
+  host paths, and temporary-attachment format checks, quotas, one-use
+  consumption, and cleanup backstops must remain enforced.
 - Skills and future host tools must not introduce path or command pass-through
   around the gateway allowlists.
 - Automatic recovery and read-only views must not claim thread ownership or
@@ -118,11 +131,12 @@ Verified on 2026-07-24 with Node.js `v24.13.0`, npm `11.18.0`, and Codex CLI
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 21 files, 214 tests. The server tests were run in an
+- `npm test` passed: 23 files, 259 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
 - `node scripts/visual-check.mjs` (the script behind `npm run check:visual`)
   passed against the production build on port 4173 with deterministic desktop
   and mobile fixtures, including the new-thread dialog, configured model
-  selections, grouped tools, and a simulated approval reason: no horizontal
-  overflow, clipped rich content, console errors, or page errors.
+  selections, image previews, grouped tools, and a simulated approval reason:
+  no horizontal overflow, overlapping controls, clipped rich content, console
+  errors, or page errors.

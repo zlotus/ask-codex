@@ -13,6 +13,7 @@ the records relevant to the current task.
 | [0006](0006-configured-turn-defaults.md) | Accepted | Amend model defaults to use filtered effective Codex configuration. |
 | [0007](0007-document-language.en.md) | Accepted | Use Simplified Chinese as the primary project documentation language and maintain corresponding English versions. |
 | [0008](0008-paginated-thread-history.en.md) | Accepted | Use paginated history for new threads and recover oversized turns through item pages. |
+| [0009](0009-temporary-image-attachments.en.md) | Accepted | Submit images to Codex through constrained temporary HTTP attachments and one-use IDs. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

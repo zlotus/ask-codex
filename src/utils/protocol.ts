@@ -5,6 +5,8 @@ import type {
   CodexThread,
   CodexTurn,
   CodexTurnsPage,
+  ImageDetail,
+  InputModality,
   ModelInfo,
   PlanStep,
   ServerMessage,
@@ -212,10 +214,16 @@ export function extractModels(result: unknown): ModelInfo[] {
         ? [{ reasoningEffort, description: readString(effort.description) }]
         : [];
     });
+    const inputModalities = Array.isArray(entry.inputModalities)
+      ? entry.inputModalities.filter((modality): modality is InputModality => (
+          modality === "text" || modality === "image" || modality === "audio"
+        ))
+      : undefined;
     return [{
       model,
       displayName: readString(entry.displayName) ?? model,
       supportedReasoningEfforts,
+      inputModalities,
       defaultReasoningEffort: readString(entry.defaultReasoningEffort),
       isDefault: typeof entry.isDefault === "boolean" ? entry.isDefault : undefined,
     }];
@@ -243,6 +251,38 @@ function contentPartText(part: unknown): string {
   if (typeof part === "string") return part;
   if (!isRecord(part)) return "";
   return readString(part.text) ?? readString(part.content) ?? "";
+}
+
+export interface UserMessageImage {
+  type: "localImage" | "image";
+  detail?: ImageDetail;
+}
+
+export type UserMessageContentPart =
+  | { type: "text"; text: string }
+  | UserMessageImage;
+
+export function userMessageContent(item: CodexItem): UserMessageContentPart[] {
+  if (!Array.isArray(item.content)) return [];
+  return item.content.flatMap<UserMessageContentPart>((part) => {
+    if (isRecord(part) && (part.type === "localImage" || part.type === "image")) {
+      const detail: ImageDetail | undefined = part.detail === "auto" ||
+          part.detail === "low" ||
+          part.detail === "high" ||
+          part.detail === "original"
+        ? part.detail
+        : undefined;
+      return [{ type: part.type, detail }];
+    }
+    const text = contentPartText(part);
+    return text ? [{ type: "text" as const, text }] : [];
+  });
+}
+
+export function userMessageImages(item: CodexItem): UserMessageImage[] {
+  return userMessageContent(item).filter(
+    (part): part is UserMessageImage => part.type === "localImage" || part.type === "image",
+  );
 }
 
 export function itemText(item: CodexItem): string {

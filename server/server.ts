@@ -1,4 +1,5 @@
 import express from "express";
+import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -6,6 +7,13 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import type { RawData } from "ws";
+
+import {
+  AttachmentStore,
+  AttachmentStoreError,
+  DEFAULT_ATTACHMENT_STORE_LIMITS,
+  type AttachmentLease,
+} from "./attachments.js";
 
 import {
   CodexAppServer,
@@ -30,8 +38,11 @@ import {
 } from "./thread-ownership.js";
 import {
   ALLOWED_BROWSER_RPC_METHODS,
+  attachmentIdsFromTurnStart,
+  materializeTurnStartAttachments,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
+  sanitizeBrowserVisibleValue,
 } from "./rpc-policy.js";
 import { normalizeServerRequestResponse } from "./server-request-policy.js";
 import {
@@ -50,6 +61,11 @@ const MAX_IN_FLIGHT_RPC_PER_CLIENT = 32;
 const MAX_IN_FLIGHT_RPC_GLOBAL = 128;
 const MAX_WS_CONNECTIONS = 32;
 const MAX_PENDING_SERVER_REQUESTS = 128;
+const MAX_IN_FLIGHT_ATTACHMENT_UPLOADS = 4;
+const MAX_COMPLETED_ATTACHMENT_TURNS = 256;
+const MAX_HTTP_CONNECTIONS = 64;
+const HTTP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const HTTP_HEADERS_TIMEOUT_MS = 10 * 1000;
 const MAX_BROWSER_MESSAGE_BYTES = 1024 * 1024;
 const MAX_SERVER_MESSAGE_BYTES = 1024 * 1024;
 const MAX_WS_BUFFERED_BYTES = 2 * 1024 * 1024;
@@ -77,6 +93,83 @@ export interface StartedServer {
 interface PendingServerRequest {
   message: RequestMessage;
   recipients: Set<WebSocket>;
+}
+
+function turnIdFromStartResult(result: unknown): string | undefined {
+  const candidate = isRecord(result) && isRecord(result.turn) ? result.turn : result;
+  return isRecord(candidate) && typeof candidate.id === "string" && candidate.id
+    ? candidate.id
+    : undefined;
+}
+
+function turnIdFromNotification(params: unknown): string | undefined {
+  if (!isRecord(params)) return undefined;
+  if (typeof params.turnId === "string" && params.turnId) return params.turnId;
+  return isRecord(params.turn) && typeof params.turn.id === "string" && params.turn.id
+    ? params.turn.id
+    : undefined;
+}
+
+function attachmentTurnKey(threadId: string, turnId: string): string {
+  return JSON.stringify([threadId, turnId]);
+}
+
+function attachmentHttpError(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} {
+  if (error instanceof AttachmentStoreError) {
+    return { status: error.statusCode, code: error.code, message: error.message };
+  }
+  if (isRecord(error) && error.type === "entity.too.large") {
+    return {
+      status: 413,
+      code: "attachmentTooLarge",
+      message: "Attachment exceeds the per-file size limit",
+    };
+  }
+  if (isRecord(error) && error.type === "encoding.unsupported") {
+    return {
+      status: 415,
+      code: "unsupportedEncoding",
+      message: "Compressed attachment uploads are not supported",
+    };
+  }
+  if (isRecord(error) && (error.type === "request.aborted" || error.type === "entity.parse.failed")) {
+    return {
+      status: 400,
+      code: "invalidPayload",
+      message: "Attachment upload was incomplete",
+    };
+  }
+  if (isRecord(error) && error.type === "request.size.invalid") {
+    return {
+      status: 400,
+      code: "invalidPayload",
+      message: "Attachment size did not match Content-Length",
+    };
+  }
+  if (error instanceof URIError) {
+    return {
+      status: 400,
+      code: "invalidAttachmentId",
+      message: "Attachment ID is invalid",
+    };
+  }
+  return {
+    status: 500,
+    code: "storageUnavailable",
+    message: "Attachment storage is unavailable",
+  };
+}
+
+function closeRejectedAttachmentRequest(
+  request: express.Request,
+  response: express.Response,
+): void {
+  response.setHeader("Connection", "close");
+  response.once("finish", () => request.socket.destroy());
 }
 
 function parsePort(value: string | undefined): number {
@@ -186,9 +279,15 @@ export class AskCodexServer {
   private readonly clients = new Set<WebSocket>();
   private readonly authenticatingClients = new Set<WebSocket>();
   private readonly ownership = new ThreadOwnership();
+  private readonly attachmentOwnerId = randomBytes(24).toString("base64url");
+  private readonly activeAttachmentLeases = new Map<string, AttachmentLease[]>();
+  private readonly completedAttachmentTurns = new Set<string>();
+  private readonly pendingAttachmentStarts = new Map<string, number>();
+  private readonly attachments: AttachmentStore;
   private readonly pendingServerRequests = new Map<string, PendingServerRequest>();
   private readonly inFlightRpc = new Map<WebSocket, number>();
   private totalInFlightRpc = 0;
+  private inFlightAttachmentUploads = 0;
   private started = false;
 
   constructor(
@@ -196,9 +295,16 @@ export class AskCodexServer {
     readonly codex: CodexGateway = new CodexAppServer({
       command: process.env.CODEX_BIN || "codex",
     }),
+    attachments?: AttachmentStore,
   ) {
     assertSafeBind(config.host, config.token, config.publicOrigin);
     assertDirectory(config.defaultCwd, "defaultCwd");
+    this.attachments = attachments ?? new AttachmentStore();
+    this.httpServer.maxConnections = MAX_HTTP_CONNECTIONS;
+    this.httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
+    this.httpServer.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+    this.httpServer.keepAliveTimeout = 5_000;
+    this.httpServer.maxRequestsPerSocket = 100;
     this.configureHttp();
     this.configureWebSocket();
     this.configureCodexEvents();
@@ -225,7 +331,12 @@ export class AskCodexServer {
   }
 
   async close(): Promise<void> {
-    this.codex.close();
+    const failures: unknown[] = [];
+    try {
+      this.codex.close();
+    } catch (error) {
+      failures.push(error);
+    }
     this.pendingServerRequests.clear();
     for (const client of this.clients) {
       client.terminate();
@@ -235,12 +346,15 @@ export class AskCodexServer {
     }
     this.clients.clear();
     this.authenticatingClients.clear();
+    this.activeAttachmentLeases.clear();
+    this.completedAttachmentTurns.clear();
+    this.pendingAttachmentStarts.clear();
 
-    await new Promise<void>((resolveClose) => {
+    const webSocketClose = new Promise<void>((resolveClose) => {
       this.webSocketServer.close(() => resolveClose());
     });
-    if (this.httpServer.listening) {
-      await new Promise<void>((resolveClose, rejectClose) => {
+    const httpClose = this.httpServer.listening
+      ? new Promise<void>((resolveClose, rejectClose) => {
         this.httpServer.close((error) => {
           if (error) {
             rejectClose(error);
@@ -248,9 +362,18 @@ export class AskCodexServer {
             resolveClose();
           }
         });
-      });
+      })
+      : Promise.resolve();
+    const networkResults = await Promise.allSettled([webSocketClose, httpClose]);
+    for (const result of networkResults) {
+      if (result.status === "rejected") failures.push(result.reason);
     }
+    const attachmentResult = await Promise.allSettled([this.attachments.close()]);
+    if (attachmentResult[0]?.status === "rejected") failures.push(attachmentResult[0].reason);
     this.started = false;
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Ask Codex server did not close cleanly");
+    }
   }
 
   private configureHttp(): void {
@@ -258,7 +381,7 @@ export class AskCodexServer {
     this.app.use((request, response, next) => {
       response.setHeader(
         "Content-Security-Policy",
-        "default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+        "default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
       );
       response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
       response.setHeader("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
@@ -272,6 +395,9 @@ export class AskCodexServer {
         this.config.production,
         this.config.publicOrigin,
       )) {
+        if (request.path.startsWith("/api/attachments")) {
+          closeRejectedAttachmentRequest(request, response);
+        }
         response.status(403).json({ error: "Origin not allowed" });
         return;
       }
@@ -280,6 +406,9 @@ export class AskCodexServer {
     this.app.use("/api", (request, response, next) => {
       response.setHeader("Cache-Control", "no-store");
       if (!isHttpAuthorized(request, this.config.token)) {
+        if (request.path.startsWith("/attachments")) {
+          closeRejectedAttachmentRequest(request, response);
+        }
         response.status(401).json({ error: "Unauthorized" });
         return;
       }
@@ -305,6 +434,90 @@ export class AskCodexServer {
 
     this.app.get("/api/health", (_request, response) => {
       response.json({ ok: true, ready: this.codex.status === "ready" });
+    });
+
+    const attachmentBody = express.raw({
+      inflate: false,
+      limit: DEFAULT_ATTACHMENT_STORE_LIMITS.maxAttachmentBytes,
+      type: () => true,
+    });
+    this.app.post(
+      "/api/attachments",
+      (request, response, next) => {
+        if (this.inFlightAttachmentUploads >= MAX_IN_FLIGHT_ATTACHMENT_UPLOADS) {
+          closeRejectedAttachmentRequest(request, response);
+          response.status(429).json({
+            error: {
+              code: "tooManyUploads",
+              message: "Too many attachment uploads are in progress",
+            },
+          });
+          return;
+        }
+        const contentLength = request.headers["content-length"];
+        if (
+          contentLength !== undefined &&
+          (!/^\d+$/.test(contentLength) ||
+            Number(contentLength) > DEFAULT_ATTACHMENT_STORE_LIMITS.maxAttachmentBytes)
+        ) {
+          closeRejectedAttachmentRequest(request, response);
+          response.status(413).json({
+            error: {
+              code: "attachmentTooLarge",
+              message: "Attachment exceeds the per-file size limit",
+            },
+          });
+          return;
+        }
+        this.inFlightAttachmentUploads += 1;
+        let released = false;
+        const release = (): void => {
+          if (released) return;
+          released = true;
+          this.inFlightAttachmentUploads = Math.max(0, this.inFlightAttachmentUploads - 1);
+        };
+        response.once("finish", release);
+        response.once("close", release);
+        next();
+      },
+      attachmentBody,
+      async (request, response) => {
+        const mediaType = request.headers["content-type"];
+        const data = request.body;
+        if (typeof mediaType !== "string" || !Buffer.isBuffer(data)) {
+          response.status(400).json({
+            error: { code: "invalidPayload", message: "Attachment payload is invalid" },
+          });
+          return;
+        }
+        const attachment = await this.attachments.store(this.attachmentOwnerId, {
+          mediaType,
+          data,
+        });
+        response.status(201).json({ attachment });
+      },
+    );
+    this.app.delete("/api/attachments/:attachmentId", async (request, response) => {
+      await this.attachments.discard(this.attachmentOwnerId, request.params.attachmentId);
+      response.status(204).end();
+    });
+    this.app.use("/api/attachments", (
+      error: unknown,
+      _request: express.Request,
+      response: express.Response,
+      next: express.NextFunction,
+    ) => {
+      if (response.headersSent) {
+        next(error);
+        return;
+      }
+      if (isRecord(error) && typeof error.type === "string") {
+        closeRejectedAttachmentRequest(_request, response);
+      }
+      const normalized = attachmentHttpError(error);
+      response.status(normalized.status).json({
+        error: { code: normalized.code, message: normalized.message },
+      });
     });
 
     if (this.config.production) {
@@ -427,7 +640,16 @@ export class AskCodexServer {
       if (method === "serverRequest/resolved" && isRecord(params) && isRpcId(params.requestId)) {
         this.pendingServerRequests.delete(rpcIdKey(params.requestId));
       }
-      this.broadcast({ type: "notification", method, params });
+      if (method === "turn/completed") {
+        const threadId = threadIdFromParams(params);
+        const turnId = turnIdFromNotification(params);
+        if (threadId && turnId) this.completeAttachmentTurn(threadId, turnId);
+      }
+      this.broadcast({
+        type: "notification",
+        method,
+        params: sanitizeBrowserVisibleValue(params),
+      });
     });
     this.codex.on("request", (id, method, params) => {
       this.routeServerRequest({ type: "request", id, method, params });
@@ -486,14 +708,37 @@ export class AskCodexServer {
     client: WebSocket,
     message: Extract<BrowserMessage, { type: "rpc" }>,
   ): Promise<void> {
+    let attachmentLeases: AttachmentLease[] = [];
+    let pendingAttachmentThreadId: string | undefined;
     try {
       if (!ALLOWED_BROWSER_RPC_METHODS.has(message.method)) {
         throw new MethodNotAllowedError(message.method);
       }
       const sanitizedParams = sanitizeBrowserRpcParams(message.method, message.params);
       await validateRpcCwd(message.method, sanitizedParams);
-
       const existingThreadId = threadIdFromParams(sanitizedParams);
+      const attachmentIds = message.method === "turn/start"
+        ? attachmentIdsFromTurnStart(sanitizedParams)
+        : [];
+      if (attachmentIds.length > 0) {
+        attachmentLeases = await this.attachments.consumeForTurn(
+          this.attachmentOwnerId,
+          attachmentIds,
+        );
+      }
+      const codexParams = attachmentLeases.length > 0
+        ? materializeTurnStartAttachments(
+            sanitizedParams,
+            attachmentLeases.map((lease) => lease.path),
+          )
+        : sanitizedParams;
+      if (attachmentLeases.length > 0 && existingThreadId) {
+        pendingAttachmentThreadId = existingThreadId;
+        this.pendingAttachmentStarts.set(
+          existingThreadId,
+          (this.pendingAttachmentStarts.get(existingThreadId) ?? 0) + 1,
+        );
+      }
       if (
         existingThreadId &&
         (message.method === "thread/resume" || message.method === "turn/start")
@@ -501,7 +746,14 @@ export class AskCodexServer {
         this.ownership.set(existingThreadId, client);
       }
 
-      const rawResult = await this.codex.request(message.method, sanitizedParams);
+      const rawResult = await this.codex.request(message.method, codexParams);
+      if (message.method === "turn/start" && attachmentLeases.length > 0) {
+        const turnId = turnIdFromStartResult(rawResult);
+        if (existingThreadId && turnId) {
+          this.holdAttachmentLeases(existingThreadId, turnId, attachmentLeases);
+          attachmentLeases = [];
+        }
+      }
       if (message.method === "thread/start") {
         const newThreadId = threadIdFromStartResult(rawResult);
         if (newThreadId) {
@@ -512,6 +764,46 @@ export class AskCodexServer {
       this.send(client, { type: "rpcResult", id: message.id, result });
     } catch (error) {
       this.send(client, { type: "rpcError", id: message.id, error: errorPayload(error) });
+    } finally {
+      if (pendingAttachmentThreadId) {
+        const remaining = (this.pendingAttachmentStarts.get(pendingAttachmentThreadId) ?? 1) - 1;
+        if (remaining > 0) this.pendingAttachmentStarts.set(pendingAttachmentThreadId, remaining);
+        else this.pendingAttachmentStarts.delete(pendingAttachmentThreadId);
+      }
+      if (attachmentLeases.length > 0) {
+        await Promise.allSettled(attachmentLeases.map((lease) => lease.release()));
+      }
+    }
+  }
+
+  private holdAttachmentLeases(
+    threadId: string,
+    turnId: string,
+    leases: AttachmentLease[],
+  ): void {
+    const key = attachmentTurnKey(threadId, turnId);
+    if (this.completedAttachmentTurns.delete(key)) {
+      void Promise.allSettled(leases.map((lease) => lease.release()));
+      return;
+    }
+    const previous = this.activeAttachmentLeases.get(key);
+    this.activeAttachmentLeases.set(key, leases);
+    if (previous) void Promise.allSettled(previous.map((lease) => lease.release()));
+  }
+
+  private completeAttachmentTurn(threadId: string, turnId: string): void {
+    const key = attachmentTurnKey(threadId, turnId);
+    const leases = this.activeAttachmentLeases.get(key);
+    if (leases) {
+      this.activeAttachmentLeases.delete(key);
+      void Promise.allSettled(leases.map((lease) => lease.release()));
+      return;
+    }
+    if (!this.pendingAttachmentStarts.has(threadId)) return;
+    this.completedAttachmentTurns.add(key);
+    if (this.completedAttachmentTurns.size > MAX_COMPLETED_ATTACHMENT_TURNS) {
+      const oldest = this.completedAttachmentTurns.values().next().value;
+      if (typeof oldest === "string") this.completedAttachmentTurns.delete(oldest);
     }
   }
 
@@ -618,6 +910,11 @@ export class AskCodexServer {
   private handleCodexStatus(status: CodexStatusEvent): void {
     if (status.status === "error") {
       this.pendingServerRequests.clear();
+      const leases = [...this.activeAttachmentLeases.values()].flat();
+      this.activeAttachmentLeases.clear();
+      this.completedAttachmentTurns.clear();
+      this.pendingAttachmentStarts.clear();
+      void Promise.allSettled(leases.map((lease) => lease.release()));
     }
     const message: StatusMessage = {
       type: "status",

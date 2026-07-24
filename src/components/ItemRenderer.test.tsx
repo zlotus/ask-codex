@@ -18,6 +18,28 @@ describe("ItemRenderer", () => {
     expect(screen.getByText("fix").tagName).toBe("STRONG");
   });
 
+  it("shows safe placeholders for user images without exposing host paths", () => {
+    render(<ItemRenderer item={{
+      id: "user-images",
+      type: "userMessage",
+      content: [
+        { type: "localImage", path: "/private/ask-codex-secret/image.png" },
+        { type: "text", text: "Compare these", text_elements: [] },
+        { type: "image", url: "https://private.example/image.jpg", detail: "high" },
+      ],
+    }} />);
+
+    expect(screen.getByText("Compare these")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 image attachments")).toBeInTheDocument();
+    const firstImage = screen.getByText("Image 1");
+    const text = screen.getByText("Compare these");
+    const secondImage = screen.getByText("Image 2");
+    expect(firstImage.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(text.compareDocumentPosition(secondImage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.body).not.toHaveTextContent("/private/ask-codex-secret");
+    expect(document.body).not.toHaveTextContent("private.example");
+  });
+
   it("defers completed command output and strips terminal control sequences", () => {
     const { container } = render(<ItemRenderer item={{
       id: "command-1",

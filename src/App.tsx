@@ -54,6 +54,11 @@ import {
   resumeThreadForHistory,
   TurnDetailUnavailableError,
 } from "./utils/turnHistory";
+import {
+  discardAttachments,
+  uploadImageAttachments,
+  type UploadedAttachment,
+} from "./utils/attachments";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -745,12 +750,22 @@ export default function App() {
     setThreadDialog(null);
   }, [state.currentThread, state.settings.sandbox, threadDialog?.mode]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, images: readonly File[]) => {
+    const selectionGeneration = selectionGenerationRef.current;
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
     const cwd = state.settings.cwd.trim();
+    let uploaded: UploadedAttachment[] = [];
+    let turnAccepted = false;
+    const assertSelectionUnchanged = (): void => {
+      if (selectionGeneration !== selectionGenerationRef.current) {
+        throw new Error("Thread changed while preparing the message; nothing was sent");
+      }
+    };
     try {
       if (!cwd) throw new Error("Choose an absolute working directory first");
+      uploaded = await uploadImageAttachments(images, token);
+      assertSelectionUnchanged();
       if (!thread) {
         const result = await rpc("thread/start", {
           cwd,
@@ -758,6 +773,7 @@ export default function App() {
           sandbox: state.settings.sandbox === "external" ? "workspace-write" : state.settings.sandbox,
           ...(nextTurnSettings.model.trim() ? { model: nextTurnSettings.model.trim() } : {}),
         });
+        assertSelectionUnchanged();
         thread = extractThread(result);
         if (!thread) throw new Error("Codex did not return a new thread");
         setDraftThreadConfigured(false);
@@ -769,6 +785,7 @@ export default function App() {
           "thread/resume",
           existingThreadResumeParams(thread.id, sandboxOverride, state.settings.sandbox),
         );
+        assertSelectionUnchanged();
         if (sandboxOverride) setSandboxOverride(null);
         const updatedThread = extractThread(resumed);
         if (updatedThread) {
@@ -776,20 +793,33 @@ export default function App() {
           dispatch({ type: "setCurrentThread", thread });
         }
       }
+      assertSelectionUnchanged();
       const result = await rpc("turn/start", {
         threadId: thread.id,
-        input: [{ type: "text", text, text_elements: [] }],
+        input: [
+          ...(text ? [{ type: "text", text, text_elements: [] }] : []),
+          ...uploaded.map((attachment) => ({
+            type: "localImage",
+            attachmentId: attachment.id,
+          })),
+        ],
         cwd,
         ...nextTurnOverrides(nextTurnSettings),
       });
+      turnAccepted = true;
       const turn = extractTurn(result);
-      if (turn) dispatch({ type: "upsertTurn", turn, threadId: thread.id });
+      if (turn && selectionGeneration === selectionGenerationRef.current) {
+        dispatch({ type: "upsertTurn", turn, threadId: thread.id });
+      }
       void refreshThreads();
     } catch (error) {
+      if (!turnAccepted && uploaded.length > 0) {
+        void discardAttachments(uploaded, token);
+      }
       showToast(errorMessage(error));
       throw error;
     }
-  }, [nextTurnSettings, refreshThreads, rpc, sandboxOverride, showToast, state.currentThread, state.settings]);
+  }, [nextTurnSettings, refreshThreads, rpc, sandboxOverride, showToast, state.currentThread, state.settings, token]);
 
   const stopTurn = useCallback(async () => {
     if (!state.currentThread || !state.activeTurnId) return;

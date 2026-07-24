@@ -3,8 +3,11 @@
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_BROWSER_RPC_METHODS,
+  attachmentIdsFromTurnStart,
+  materializeTurnStartAttachments,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
+  sanitizeBrowserVisibleValue,
 } from "./rpc-policy.js";
 
 describe("browser RPC policy", () => {
@@ -58,6 +61,35 @@ describe("browser RPC policy", () => {
         model_reasoning_effort: false,
       },
     })).toEqual({ model: null, effort: null });
+  });
+
+  it("removes local image paths at any nesting depth without stripping ordinary paths", () => {
+    expect(sanitizeBrowserVisibleValue({
+      path: "/workspace/project",
+      nested: {
+        image: {
+          type: "localImage",
+          path: "/private/nested.png",
+          detail: "high",
+        },
+      },
+      entries: [
+        { type: "file", path: "/workspace/keep.txt" },
+        [{ type: "localImage", path: "/private/array.webp" }],
+      ],
+    })).toEqual({
+      path: "/workspace/project",
+      nested: {
+        image: {
+          type: "localImage",
+          detail: "high",
+        },
+      },
+      entries: [
+        { type: "file", path: "/workspace/keep.txt" },
+        [{ type: "localImage" }],
+      ],
+    });
   });
 
   it("allows bounded turn pagination with explicit item detail", () => {
@@ -250,6 +282,76 @@ describe("browser RPC policy", () => {
       input: [{ type: "text", text: "Continue", text_elements: [] }],
       cwd: "/workspace/project",
     });
+  });
+
+  it("rebuilds ordered text and uploaded-image input without accepting browser paths", () => {
+    const firstId = "a".repeat(32);
+    const secondId = "b".repeat(32);
+    const sanitized = sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input: [
+        { type: "localImage", attachmentId: firstId, detail: "high" },
+        { type: "text", text: "Compare these images", text_elements: [] },
+        { type: "localImage", attachmentId: secondId },
+      ],
+    });
+
+    expect(attachmentIdsFromTurnStart(sanitized)).toEqual([firstId, secondId]);
+    expect(materializeTurnStartAttachments(sanitized, ["/private/first.png", "/private/second.webp"]))
+      .toEqual({
+        threadId: "thread-1",
+        input: [
+          { type: "localImage", path: "/private/first.png", detail: "high" },
+          { type: "text", text: "Compare these images", text_elements: [] },
+          { type: "localImage", path: "/private/second.webp" },
+        ],
+      });
+  });
+
+  it.each([
+    [
+      [{ type: "localImage", path: "/tmp/browser-path.png" }],
+      "does not allow param: path",
+    ],
+    [
+      [{ type: "image", url: "https://example.com/image.png" }],
+      "must be text or an uploaded image",
+    ],
+    [
+      [{ type: "remoteImage", url: "https://example.com/image.png" }],
+      "must be text or an uploaded image",
+    ],
+    [
+      [{ type: "localAudio", path: "/tmp/audio.wav" }],
+      "must be text or an uploaded image",
+    ],
+    [
+      [{ type: "localImage", attachmentId: "too-short" }],
+      "attachmentId is invalid",
+    ],
+    [
+      [{ type: "localImage", attachmentId: "a".repeat(32), detail: "maximum" }],
+      "detail is invalid",
+    ],
+    [
+      [
+        { type: "localImage", attachmentId: "a".repeat(32) },
+        { type: "localImage", attachmentId: "a".repeat(32) },
+      ],
+      "duplicate attachmentId",
+    ],
+    [
+      Array.from({ length: 5 }, (_, index) => ({
+        type: "localImage",
+        attachmentId: String(index).repeat(32),
+      })),
+      "allows at most 4 images",
+    ],
+  ])("rejects unsafe uploaded-image input %#", (input, message) => {
+    expect(() => sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input,
+    })).toThrow(message);
   });
 
   it.each([

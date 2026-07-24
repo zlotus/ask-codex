@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { EventEmitter, once } from "node:events";
+import { stat } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,15 +23,42 @@ class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGatewa
   status: CodexStatus = "ready";
   version: string | undefined = "codex-cli/test";
   error: { message: string } | undefined;
-  readonly request = vi.fn(async (method: string): Promise<unknown> => {
+  readonly request = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
+    void params;
     if (method === "thread/start") {
       return { thread: { id: "thread-owned" } };
+    }
+    if (method === "turn/start") {
+      return { turn: { id: "turn-with-attachments", status: "inProgress", items: [] } };
     }
     return { ok: true };
   });
   readonly respond = vi.fn(async (): Promise<void> => undefined);
   readonly start = vi.fn(async (): Promise<void> => undefined);
   readonly close = vi.fn((): void => undefined);
+}
+
+const PNG = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+]);
+
+async function uploadAttachment(
+  url: string,
+  token: string,
+  body: Uint8Array = PNG,
+  contentType = "image/png",
+): Promise<Response> {
+  return fetch(`${url}/api/attachments`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": contentType,
+      Origin: "http://localhost:5173",
+    },
+    body,
+  });
 }
 
 function config(token?: string): AskCodexConfig {
@@ -106,6 +134,8 @@ describe("AskCodexServer", () => {
     const unauthorized = await fetch(`${url}/api/bootstrap`);
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(unauthorized.headers.get("content-security-policy"))
+      .toContain("img-src 'self' blob: data:");
     expect(unauthorized.headers.get("cache-control")).toBe("no-store");
     expect(unauthorized.headers.get("referrer-policy")).toBe("no-referrer");
     expect(unauthorized.headers.get("x-content-type-options")).toBe("nosniff");
@@ -143,6 +173,311 @@ describe("AskCodexServer", () => {
       },
     });
     expect(badOrigin.status).toBe(403);
+  });
+
+  it("protects attachment uploads and rejects spoofed or oversized images", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+
+    const unauthorized = await fetch(`${url}/api/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "image/png", Origin: "http://localhost:5173" },
+      body: PNG,
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("connection")).toBe("close");
+
+    const badOrigin = await fetch(`${url}/api/attachments`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        "Content-Type": "image/png",
+        Origin: "https://evil.example",
+      },
+      body: PNG,
+    });
+    expect(badOrigin.status).toBe(403);
+
+    const spoofed = await uploadAttachment(url, "test-token", Buffer.from("not a png"));
+    expect(spoofed.status).toBe(415);
+    await expect(spoofed.json()).resolves.toEqual({
+      error: {
+        code: "mediaTypeMismatch",
+        message: "Attachment content does not match its media type",
+      },
+    });
+
+    const oversized = await uploadAttachment(
+      url,
+      "test-token",
+      Buffer.alloc(10 * 1024 * 1024 + 1),
+    );
+    expect(oversized.status).toBe(413);
+    expect(oversized.headers.get("connection")).toBe("close");
+    await expect(oversized.json()).resolves.toEqual({
+      error: {
+        code: "attachmentTooLarge",
+        message: "Attachment exceeds the per-file size limit",
+      },
+    });
+  });
+
+  it("does not consume an attachment when turn cwd validation fails", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const upload = await uploadAttachment(url, "test-token");
+    const uploadBody = await upload.json() as { attachment: { id: string } };
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "image-bad-cwd",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "localImage", attachmentId: uploadBody.attachment.id }],
+        cwd: "relative",
+      },
+    }));
+    await expect(waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "image-bad-cwd",
+    )).resolves.toEqual({
+      type: "rpcError",
+      id: "image-bad-cwd",
+      error: { code: -32602, message: "turn/start cwd must be an absolute path" },
+    });
+    expect(gateway.request.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(0);
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "image-valid-cwd",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "localImage", attachmentId: uploadBody.attachment.id }],
+        cwd: process.cwd(),
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "image-valid-cwd",
+    );
+    expect(gateway.request.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(1);
+  });
+
+  it("releases attachments when turn completion arrives before turn/start returns", async () => {
+    const gateway = new FakeGateway();
+    let resolveTurnStart: (result: unknown) => void = () => undefined;
+    const turnStartResult = new Promise<unknown>((resolve) => {
+      resolveTurnStart = resolve;
+    });
+    gateway.request.mockImplementationOnce(() => turnStartResult);
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const upload = await uploadAttachment(url, "test-token");
+    const uploadBody = await upload.json() as { attachment: { id: string } };
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "completion-race",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "localImage", attachmentId: uploadBody.attachment.id }],
+        cwd: process.cwd(),
+      },
+    }));
+    await vi.waitFor(() => {
+      expect(gateway.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true);
+    });
+    const turnStartCall = gateway.request.mock.calls.find(([method]) => method === "turn/start");
+    const storedPath = (turnStartCall?.[1] as {
+      input: Array<{ type: string; path?: string }>;
+    }).input[0].path;
+    expect(storedPath).toEqual(expect.any(String));
+    await expect(stat(storedPath as string)).resolves.toBeDefined();
+
+    gateway.emit("notification", "turn/completed", {
+      threadId: "thread-owned",
+      turn: { id: "turn-with-attachments", status: "completed", items: [] },
+    });
+    resolveTurnStart({
+      turn: { id: "turn-with-attachments", status: "inProgress", items: [] },
+    });
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "completion-race",
+    );
+    await vi.waitFor(async () => {
+      await expect(stat(storedPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("releases active attachment leases when Codex enters an error state", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const upload = await uploadAttachment(url, "test-token");
+    const uploadBody = await upload.json() as { attachment: { id: string } };
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "image-before-error",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "localImage", attachmentId: uploadBody.attachment.id }],
+        cwd: process.cwd(),
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "image-before-error",
+    );
+    const turnStartCall = gateway.request.mock.calls.find(([method]) => method === "turn/start");
+    const storedPath = (turnStartCall?.[1] as {
+      input: Array<{ type: string; path?: string }>;
+    }).input[0].path;
+    expect(storedPath).toEqual(expect.any(String));
+    await expect(stat(storedPath as string)).resolves.toBeDefined();
+
+    gateway.emit("status", { status: "error", error: { message: "Codex stopped" } });
+    await vi.waitFor(async () => {
+      await expect(stat(storedPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("materializes one-shot attachment IDs as localImage paths until turn completion", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+
+    const upload = await uploadAttachment(url, "test-token");
+    expect(upload.status).toBe(201);
+    const uploadBody = await upload.json() as {
+      attachment: { id: string; mediaType: string; size: number; expiresAt: number };
+    };
+    expect(uploadBody.attachment).toEqual({
+      id: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+      mediaType: "image/png",
+      size: PNG.byteLength,
+      expiresAt: expect.any(Number),
+    });
+    expect(uploadBody.attachment).not.toHaveProperty("path");
+
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "image-turn",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [
+          { type: "text", text: "Inspect this image", text_elements: [] },
+          { type: "localImage", attachmentId: uploadBody.attachment.id, detail: "high" },
+        ],
+        cwd: process.cwd(),
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "image-turn",
+    );
+
+    const turnStartCall = gateway.request.mock.calls.find(([method]) => method === "turn/start");
+    const codexParams = turnStartCall?.[1] as {
+      input: Array<Record<string, unknown>>;
+    };
+    expect(codexParams.input[0]).toEqual({
+      type: "text",
+      text: "Inspect this image",
+      text_elements: [],
+    });
+    expect(codexParams.input[1]).toEqual({
+      type: "localImage",
+      path: expect.stringMatching(/ask-codex-attachments-[^/]+\/[A-Za-z0-9_-]{32}\.png$/),
+      detail: "high",
+    });
+    expect(codexParams.input[1]).not.toHaveProperty("attachmentId");
+    const storedPath = codexParams.input[1].path as string;
+    await expect(stat(storedPath)).resolves.toBeDefined();
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "reuse-image",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [{ type: "localImage", attachmentId: uploadBody.attachment.id }],
+        cwd: process.cwd(),
+      },
+    }));
+    const reuseError = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "reuse-image",
+    );
+    expect(reuseError).toMatchObject({
+      error: { message: "Attachment was not found" },
+    });
+    expect(gateway.request.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(1);
+
+    gateway.emit("notification", "turn/completed", {
+      threadId: "thread-owned",
+      turn: { id: "turn-with-attachments", status: "completed", items: [] },
+    });
+    await vi.waitFor(async () => {
+      await expect(stat(storedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("deletes pending attachment IDs without exposing a file endpoint", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const upload = await uploadAttachment(url, "test-token");
+    const body = await upload.json() as { attachment: { id: string } };
+
+    const deleted = await fetch(`${url}/api/attachments/${body.attachment.id}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    expect(deleted.status).toBe(204);
+    const missing = await fetch(`${url}/api/attachments/${body.attachment.id}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toEqual({
+      error: { code: "attachmentNotFound", message: "Attachment was not found" },
+    });
   });
 
   it("accepts authenticated HTTP requests from the configured public origin", async () => {
