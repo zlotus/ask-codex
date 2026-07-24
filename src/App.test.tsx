@@ -26,6 +26,12 @@ const existingThread = {
   turns: [],
 };
 
+const PNG = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+]);
+
 function installRpcFixture() {
   socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
     if (method === "thread/list") return { data: [existingThread], nextCursor: null };
@@ -171,7 +177,7 @@ describe("App thread settings lifecycle", () => {
         headers: { Authorization: "Bearer browser-token" },
       }),
     ));
-    const file = new File([new Uint8Array([1, 2, 3])], "screen.png", { type: "image/png" });
+    const file = new File([PNG], "screen.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "Inspect this" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -221,7 +227,7 @@ describe("App thread settings lifecycle", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     await screen.findByText("Existing thread");
-    const file = new File([new Uint8Array([1, 2, 3])], "delayed.png", { type: "image/png" });
+    const file = new File([PNG], "delayed.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "stay as draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -294,7 +300,7 @@ describe("App thread settings lifecycle", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add images" })).toBeEnabled());
 
-    const file = new File([new Uint8Array([1, 2, 3])], "retry-after-error.png", { type: "image/png" });
+    const file = new File([PNG], "retry-after-error.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "keep this draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));

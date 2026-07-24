@@ -131,7 +131,7 @@ Verified on 2026-07-24 with Node.js `v24.13.0`, npm `11.18.0`, and Codex CLI
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 23 files, 259 tests. The server tests were run in an
+- `npm test` passed: 23 files, 270 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
 - `node scripts/visual-check.mjs` (the script behind `npm run check:visual`)

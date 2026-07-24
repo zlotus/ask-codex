@@ -108,6 +108,7 @@ const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const DEFAULT_CLEANUP_INTERVAL_MS = 60_000;
 const MAX_OWNER_ID_CHARACTERS = 256;
 const FILE_CREATION_ATTEMPTS = 5;
+const JPEG_MARKER_SEARCH_BYTES = 4 * 1024;
 
 const EXTENSIONS: Record<AttachmentMediaType, string> = {
   "image/png": "png",
@@ -151,6 +152,22 @@ function asciiAt(data: Uint8Array, offset: number, value: string): boolean {
   return true;
 }
 
+function hasJpegSignature(data: Uint8Array): boolean {
+  if (data.byteLength < 4 || data[0] !== 0xff || data[1] !== 0xd8) {
+    return false;
+  }
+
+  const markerSearchEnd = Math.min(data.byteLength, JPEG_MARKER_SEARCH_BYTES);
+  let markerCodeOffset = 2;
+  while (markerCodeOffset < markerSearchEnd && data[markerCodeOffset] === 0xff) {
+    markerCodeOffset += 1;
+  }
+  return markerCodeOffset > 2 &&
+    markerCodeOffset < markerSearchEnd &&
+    data[markerCodeOffset] !== 0x00 &&
+    data[markerCodeOffset] !== 0xff;
+}
+
 function detectedMediaType(data: Uint8Array): AttachmentMediaType | undefined {
   if (
     startsWithBytes(data, [137, 80, 78, 71, 13, 10, 26, 10]) &&
@@ -164,14 +181,7 @@ function detectedMediaType(data: Uint8Array): AttachmentMediaType | undefined {
     return "image/png";
   }
 
-  if (
-    data.byteLength >= 4 &&
-    data[0] === 0xff &&
-    data[1] === 0xd8 &&
-    data[2] === 0xff &&
-    data[3] !== 0x00 &&
-    data[3] !== 0xff
-  ) {
+  if (hasJpegSignature(data)) {
     return "image/jpeg";
   }
 

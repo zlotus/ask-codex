@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelInfo } from "../types/protocol";
 import { Composer } from "./Composer";
@@ -139,7 +139,7 @@ describe("Composer", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:second.webp");
   });
 
-  it("adds pasted images without discarding pasted text behavior", () => {
+  it("adds pasted images and suppresses the browser's duplicate default paste", () => {
     render(
       <Composer
         disabled={false}
@@ -152,15 +152,130 @@ describe("Composer", () => {
       />,
     );
     const pasted = new File([new Uint8Array([1])], "pasted.jpg", { type: "image/jpeg" });
-    const preventDefault = vi.fn();
-
-    fireEvent.paste(screen.getByLabelText("Message Codex"), {
+    const textarea = screen.getByLabelText("Message Codex");
+    const pasteEvent = createEvent.paste(textarea, {
       clipboardData: { files: [pasted] },
-      preventDefault,
     });
 
+    fireEvent(textarea, pasteEvent);
+
     expect(screen.getByText("pasted.jpg")).toBeInTheDocument();
-    expect(preventDefault).not.toHaveBeenCalled();
+    expect(pasteEvent.defaultPrevented).toBe(true);
+  });
+
+  it("accepts Android image MIME aliases and generic binary metadata", () => {
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const alias = new File([new Uint8Array([1])], "alias.jpg", { type: "image/jpg" });
+    const generic = new File([new Uint8Array([2])], "generic.jpeg", {
+      type: "application/octet-stream",
+    });
+
+    fireEvent.change(screen.getByLabelText("Choose images"), {
+      target: { files: [alias, generic] },
+    });
+
+    expect(screen.getByText("alias.jpg")).toBeInTheDocument();
+    expect(screen.getByText("generic.jpeg")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("falls back to clipboard items for generic Android image files", () => {
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const pasted = new File([new Uint8Array([1])], "clipboard.jpg", {
+      type: "application/octet-stream",
+    });
+    const textarea = screen.getByLabelText("Message Codex");
+    const pasteEvent = createEvent.paste(textarea, {
+      clipboardData: {
+        files: [],
+        items: [{ kind: "file", getAsFile: () => pasted }],
+      },
+    });
+
+    fireEvent(textarea, pasteEvent);
+
+    expect(screen.getByText("clipboard.jpg")).toBeInTheDocument();
+    expect(pasteEvent.defaultPrevented).toBe(true);
+  });
+
+  it("preserves default paste behavior when no image is accepted", () => {
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const textarea = screen.getByLabelText("Message Codex");
+    const textPaste = createEvent.paste(textarea, {
+      clipboardData: { files: [] },
+    });
+    const invalidPaste = createEvent.paste(textarea, {
+      clipboardData: {
+        files: [new File(["svg"], "vector.svg", { type: "image/svg+xml" })],
+      },
+    });
+
+    fireEvent(textarea, textPaste);
+    fireEvent(textarea, invalidPaste);
+
+    expect(textPaste.defaultPrevented).toBe(false);
+    expect(invalidPaste.defaultPrevented).toBe(false);
+    expect(screen.queryByText("vector.svg")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("PNG, JPEG, or WebP");
+  });
+
+  it("preserves default paste behavior when the image limit is already full", () => {
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const selected = Array.from({ length: 4 }, (_, index) =>
+      new File([new Uint8Array([index])], `selected-${index}.png`, { type: "image/png" }));
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: selected } });
+    const textarea = screen.getByLabelText("Message Codex");
+    const pasteEvent = createEvent.paste(textarea, {
+      clipboardData: {
+        files: [new File([new Uint8Array([5])], "extra.png", { type: "image/png" })],
+      },
+    });
+
+    fireEvent(textarea, pasteEvent);
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(screen.queryByText("extra.png")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("at most 4 images");
   });
 
   it("keeps the draft after send failure and reports invalid image choices", async () => {

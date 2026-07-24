@@ -99,7 +99,7 @@
 
 - `npm run typecheck` 通过。
 - `npm run lint` 通过。
-- `npm test` 通过：23 个文件、259 项测试。服务端测试在允许绑定回环套接字的环境中
+- `npm test` 通过：23 个文件、270 项测试。服务端测试在允许绑定回环套接字的环境中
   运行。
 - `npm run build` 通过。
 - `node scripts/visual-check.mjs`（即 `npm run check:visual` 的底层脚本）针对 4173

@@ -5,6 +5,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_IMAGES_PER_TURN,
   SUPPORTED_IMAGE_TYPES,
+  isPotentialImageFile,
 } from "../utils/attachments";
 import { modelForSelection, normalizeEffortForModel } from "../utils/threadSettings";
 
@@ -30,6 +31,16 @@ interface DraftImage {
 
 function revokePreview(url: string): void {
   if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
+}
+
+function clipboardFiles(data: DataTransfer): File[] {
+  const files = Array.from(data.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(data.items ?? []).flatMap((item) => {
+    if (item.kind !== "file") return [];
+    const file = item.getAsFile();
+    return file ? [file] : [];
+  });
 }
 
 export function Composer({
@@ -72,8 +83,8 @@ export function Composer({
     textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
   }, [value]);
 
-  const addImages = (files: readonly File[]) => {
-    if (controlsDisabled || files.length === 0) return;
+  const addImages = (files: readonly File[]): number => {
+    if (controlsDisabled || files.length === 0) return 0;
     const accepted: DraftImage[] = [];
     let error = "";
     for (const file of files) {
@@ -81,7 +92,7 @@ export function Composer({
         error = `A turn can include at most ${MAX_IMAGES_PER_TURN} images`;
         break;
       }
-      if (!(SUPPORTED_IMAGE_TYPES as readonly string[]).includes(file.type)) {
+      if (!isPotentialImageFile(file)) {
         error ||= `${file.name || "Image"} must be a PNG, JPEG, or WebP image`;
         continue;
       }
@@ -112,6 +123,7 @@ export function Composer({
     }
     if (accepted.length > 0) setImages((current) => [...current, ...accepted]);
     setImageError(error);
+    return accepted.length;
   };
 
   const removeImage = (id: number) => {
@@ -173,9 +185,12 @@ export function Composer({
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onPaste={(event) => {
-            const pastedImages = Array.from(event.clipboardData.files)
-              .filter((file) => file.type.startsWith("image/"));
-            addImages(pastedImages);
+            const pastedImages = clipboardFiles(event.clipboardData)
+              .filter((file) => (
+                file.type.trim().toLowerCase().startsWith("image/") ||
+                isPotentialImageFile(file)
+              ));
+            if (addImages(pastedImages) > 0) event.preventDefault();
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {

@@ -4,10 +4,34 @@ export const MAX_IMAGES_PER_TURN = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const SUPPORTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 
+type SupportedImageType = (typeof SUPPORTED_IMAGE_TYPES)[number];
+type DetectedImageFormat = SupportedImageType | "image/heif" | "image/avif";
+
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const SUPPORTED_IMAGE_TYPE_SET = new Set<string>(SUPPORTED_IMAGE_TYPES);
+const POTENTIAL_IMAGE_TYPE_SET = new Set([
+  ...SUPPORTED_IMAGE_TYPES,
+  "image/jpg",
+  "image/pjpeg",
+]);
+const IMAGE_FILENAME_PATTERN = /\.(?:png|jpe?g|webp)$/i;
+const IMAGE_HEADER_BYTES = 4 * 1024;
+const JPEG_MARKER_SEARCH_BYTES = IMAGE_HEADER_BYTES;
 const UPLOAD_TIMEOUT_MS = 2 * 60 * 1000;
 const DISCARD_TIMEOUT_MS = 15 * 1000;
+const HEIF_BRANDS = new Set([
+  "heic",
+  "heix",
+  "hevc",
+  "hevx",
+  "heim",
+  "heis",
+  "hevm",
+  "hevs",
+  "mif1",
+  "msf1",
+]);
+const AVIF_BRANDS = new Set(["avif", "avis"]);
 
 export interface UploadedAttachment {
   id: string;
@@ -16,12 +40,147 @@ export interface UploadedAttachment {
   expiresAt: number;
 }
 
+export function isPotentialImageFile(file: Pick<File, "name" | "type">): boolean {
+  const mediaType = file.type.trim().toLowerCase();
+  if (POTENTIAL_IMAGE_TYPE_SET.has(mediaType)) return true;
+  return (
+    (mediaType === "" || mediaType === "application/octet-stream") &&
+    IMAGE_FILENAME_PATTERN.test(file.name)
+  );
+}
+
 function requestHeaders(token: string, contentType?: string): HeadersInit {
   return {
     Accept: "application/json",
     ...(contentType ? { "Content-Type": contentType } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
+}
+
+function startsWithBytes(data: Uint8Array, signature: readonly number[]): boolean {
+  return data.byteLength >= signature.length &&
+    signature.every((byte, index) => data[index] === byte);
+}
+
+function asciiAt(data: Uint8Array, offset: number, value: string): boolean {
+  if (data.byteLength < offset + value.length) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    if (data[offset + index] !== value.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
+function asciiFourCC(data: Uint8Array, offset: number): string | undefined {
+  if (data.byteLength < offset + 4) return undefined;
+  return String.fromCharCode(
+    data[offset],
+    data[offset + 1],
+    data[offset + 2],
+    data[offset + 3],
+  );
+}
+
+function readUint32BigEndian(data: Uint8Array, offset: number): number | undefined {
+  if (data.byteLength < offset + 4) return undefined;
+  return (
+    data[offset] * 0x1000000 +
+    data[offset + 1] * 0x10000 +
+    data[offset + 2] * 0x100 +
+    data[offset + 3]
+  );
+}
+
+function readUint32LittleEndian(data: Uint8Array, offset: number): number | undefined {
+  if (data.byteLength < offset + 4) return undefined;
+  return (
+    data[offset] +
+    data[offset + 1] * 0x100 +
+    data[offset + 2] * 0x10000 +
+    data[offset + 3] * 0x1000000
+  );
+}
+
+function detectIsoBaseMediaFormat(data: Uint8Array, fileSize: number): DetectedImageFormat | undefined {
+  if (!asciiAt(data, 4, "ftyp")) return undefined;
+  const boxSize = readUint32BigEndian(data, 0);
+  if (boxSize === undefined || boxSize < 16 || boxSize > fileSize) return undefined;
+
+  const brands: string[] = [];
+  const majorBrand = asciiFourCC(data, 8);
+  if (majorBrand) brands.push(majorBrand);
+  for (let offset = 16; offset + 4 <= Math.min(boxSize, data.byteLength); offset += 4) {
+    const brand = asciiFourCC(data, offset);
+    if (brand) brands.push(brand);
+  }
+  if (brands.some((brand) => AVIF_BRANDS.has(brand))) return "image/avif";
+  if (brands.some((brand) => HEIF_BRANDS.has(brand))) return "image/heif";
+  return undefined;
+}
+
+function detectImageFormat(data: Uint8Array, fileSize: number): DetectedImageFormat | undefined {
+  if (
+    startsWithBytes(data, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) &&
+    fileSize >= 24 &&
+    data[8] === 0 &&
+    data[9] === 0 &&
+    data[10] === 0 &&
+    data[11] === 13 &&
+    asciiAt(data, 12, "IHDR")
+  ) {
+    return "image/png";
+  }
+
+  if (data.byteLength >= 4 && data[0] === 0xff && data[1] === 0xd8) {
+    const markerSearchEnd = Math.min(data.byteLength, JPEG_MARKER_SEARCH_BYTES);
+    let markerOffset = 2;
+    while (markerOffset < markerSearchEnd && data[markerOffset] === 0xff) {
+      markerOffset += 1;
+    }
+    if (
+      markerOffset > 2 &&
+      markerOffset < markerSearchEnd &&
+      data[markerOffset] !== 0x00
+    ) {
+      return "image/jpeg";
+    }
+  }
+
+  if (
+    fileSize >= 16 &&
+    asciiAt(data, 0, "RIFF") &&
+    asciiAt(data, 8, "WEBP") &&
+    (asciiAt(data, 12, "VP8 ") ||
+      asciiAt(data, 12, "VP8L") ||
+      asciiAt(data, 12, "VP8X"))
+  ) {
+    const declaredSize = readUint32LittleEndian(data, 4);
+    if (declaredSize !== undefined && declaredSize + 8 === fileSize) {
+      return "image/webp";
+    }
+  }
+
+  return detectIsoBaseMediaFormat(data, fileSize);
+}
+
+async function detectedUploadMediaType(file: File): Promise<SupportedImageType> {
+  const header = new Uint8Array(
+    await file.slice(0, Math.min(file.size, IMAGE_HEADER_BYTES)).arrayBuffer(),
+  );
+  const format = detectImageFormat(header, file.size);
+  if (format === "image/heif") {
+    throw new Error(
+      "HEIF/HEIC images are not supported; export the image as PNG, JPEG, or WebP",
+    );
+  }
+  if (format === "image/avif") {
+    throw new Error(
+      "AVIF images are not supported; export the image as PNG, JPEG, or WebP",
+    );
+  }
+  if (!format) {
+    throw new Error("Image content is not a supported PNG, JPEG, or WebP image");
+  }
+  return format;
 }
 
 async function responseError(response: Response): Promise<Error> {
@@ -60,9 +219,6 @@ function validateFiles(files: readonly File[]): void {
     throw new Error(`A turn can include at most ${MAX_IMAGES_PER_TURN} images`);
   }
   for (const file of files) {
-    if (!SUPPORTED_IMAGE_TYPE_SET.has(file.type)) {
-      throw new Error(`${file.name || "Image"} must be a PNG, JPEG, or WebP image`);
-    }
     if (file.size === 0) {
       throw new Error(`${file.name || "Image"} is empty`);
     }
@@ -74,10 +230,11 @@ function validateFiles(files: readonly File[]): void {
 
 async function uploadImage(file: File, token: string): Promise<UploadedAttachment> {
   try {
+    const uploadMediaType = await detectedUploadMediaType(file);
     return await withTimeout(UPLOAD_TIMEOUT_MS, "Image upload timed out", async (signal) => {
       const response = await fetch("/api/attachments", {
         method: "POST",
-        headers: requestHeaders(token, file.type),
+        headers: requestHeaders(token, uploadMediaType),
         body: file,
         signal,
       });

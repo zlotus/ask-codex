@@ -25,10 +25,21 @@ const JPEG = Buffer.from([
   0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
   0x49, 0x46, 0x00, 0x01, 0xff, 0xd9,
 ]);
+const JPEG_WITH_FILL = Buffer.from([
+  0xff, 0xd8, 0xff, 0xff, 0xe1, 0x00, 0x02, 0xff, 0xd9,
+]);
 const WEBP = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x08, 0x00, 0x00, 0x00,
   0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
 ]);
+
+function jpegWithMarkerAt(offset: number): Buffer {
+  const bytes = Buffer.alloc(offset + 3, 0xff);
+  bytes[0] = 0xff;
+  bytes[1] = 0xd8;
+  bytes[offset] = 0xe1;
+  return bytes;
+}
 
 describe("AttachmentStore", () => {
   const stores: AttachmentStore[] = [];
@@ -110,12 +121,17 @@ describe("AttachmentStore", () => {
       mediaType: "image/jpeg",
       data: JPEG,
     });
+    const jpegWithFill = await store.store("owner", {
+      mediaType: "image/jpeg",
+      data: JPEG_WITH_FILL,
+    });
     const webp = await store.store("owner", {
       mediaType: "image/webp",
       data: WEBP,
     });
-    expect([png.mediaType, jpeg.mediaType, webp.mediaType]).toEqual([
+    expect([png.mediaType, jpeg.mediaType, jpegWithFill.mediaType, webp.mediaType]).toEqual([
       "image/png",
+      "image/jpeg",
       "image/jpeg",
       "image/webp",
     ]);
@@ -129,12 +145,58 @@ describe("AttachmentStore", () => {
       data: PNG,
     })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
     await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xe0]),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), JPEG]),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: Buffer.concat([Buffer.from([0x00]), JPEG]),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    await expect(store.store("owner", {
       mediaType: "image/png; charset=binary",
       data: PNG,
     })).rejects.toMatchObject({ code: "unsupportedMediaType", statusCode: 415 });
     await expect(store.store("owner", {
       mediaType: "image/png",
       data: PNG.subarray(0, 16),
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+    const badWebp = Buffer.from(WEBP);
+    badWebp[4] = 0x09;
+    await expect(store.store("owner", {
+      mediaType: "image/webp",
+      data: badWebp,
+    })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
+  });
+
+  it("bounds JPEG fill-byte detection to a 4 KiB prefix", async () => {
+    const store = await createStore({
+      limits: limits({
+        maxAttachmentBytes: 8 * 1024,
+        maxBytesPerOwner: 16 * 1024,
+        maxStoredBytes: 32 * 1024,
+      }),
+    });
+
+    const withinWindow = await store.store("owner", {
+      mediaType: "image/jpeg",
+      data: jpegWithMarkerAt(4 * 1024 - 1),
+    });
+    expect(withinWindow.mediaType).toBe("image/jpeg");
+    await expect(store.store("owner", {
+      mediaType: "image/jpeg",
+      data: jpegWithMarkerAt(4 * 1024),
     })).rejects.toMatchObject({ code: "mediaTypeMismatch", statusCode: 415 });
   });
 
