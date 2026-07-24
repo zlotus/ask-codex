@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   commandApprovalTarget,
   extractInitialTurnsPage,
+  normalizeItemsPage,
   normalizeTurnsPage,
   sandboxMode,
 } from "./protocol";
@@ -105,5 +106,41 @@ describe("turn page normalization", () => {
     });
     expect(normalizeTurnsPage({ data: "not-an-array" })).toBeNull();
     expect(extractInitialTurnsPage({ initialTurnsPage: null })).toBeNull();
+  });
+});
+
+describe("item page normalization", () => {
+  it("normalizes item entries without changing protocol order", () => {
+    expect(normalizeItemsPage({
+      data: [
+        { turnId: "turn-1", item: { id: "user-1", type: "userMessage" } },
+        { turnId: "turn-1", item: { id: "agent-1", type: "agentMessage" } },
+      ],
+      nextCursor: "next-item-page",
+      backwardsCursor: "newer-item-page",
+    })).toEqual({
+      data: [
+        { turnId: "turn-1", item: { id: "user-1", type: "userMessage" } },
+        { turnId: "turn-1", item: { id: "agent-1", type: "agentMessage" } },
+      ],
+      nextCursor: "next-item-page",
+      backwardsCursor: "newer-item-page",
+    });
+  });
+
+  it("rejects malformed entries and cursors instead of treating a partial page as complete", () => {
+    expect(normalizeItemsPage({
+      data: [{ turnId: 2, item: { id: "invalid-turn", type: "agentMessage" } }],
+      nextCursor: null,
+      backwardsCursor: null,
+    })).toBeNull();
+    expect(normalizeItemsPage({
+      data: [{ turnId: "turn-1", item: { type: "missing-id" } }],
+      nextCursor: null,
+      backwardsCursor: null,
+    })).toBeNull();
+    expect(normalizeItemsPage({ data: [], nextCursor: 2, backwardsCursor: null })).toBeNull();
+    expect(normalizeItemsPage({ data: [], nextCursor: null })).toBeNull();
+    expect(normalizeItemsPage({ data: "not-an-array" })).toBeNull();
   });
 });

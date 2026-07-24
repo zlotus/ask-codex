@@ -75,6 +75,16 @@ export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
   const [groupOpenIds, setGroupOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const [itemOpenIds, setItemOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const historyDetail = turn.historyDetail;
+  const hasItemPages = historyDetail?.nextItemCursor !== undefined;
+  const detailButtonLabel = turn.status === "inProgress"
+    ? "Waiting for completion"
+    : historyDetail?.status === "unavailable"
+      ? "Detail unavailable"
+      : historyDetail?.status === "loading"
+        ? hasItemPages ? "Loading more detail" : "Loading full detail"
+        : historyDetail?.status === "error"
+          ? hasItemPages ? "Retry more detail" : "Retry full detail"
+          : hasItemPages ? "Load more detail" : "Load full detail";
   const omissions = turn.recoveryOmissions ?? [];
 
   const updateOpenIds = (
@@ -114,20 +124,22 @@ export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
       )}
       {turn.itemsView === "summary" && (
         <div className="turn-history-notice">
-          <span>Large turn loaded as a summary</span>
+          <span>{hasItemPages ? "Large turn detail loaded in parts" : "Large turn loaded as a summary"}</span>
           {historyDetail && onLoadFullDetail && (
             <button
               className="button"
               type="button"
-              disabled={historyDetail.status === "loading"}
+              disabled={
+                turn.status === "inProgress" ||
+                historyDetail.status === "loading" ||
+                historyDetail.status === "unavailable"
+              }
               onClick={() => onLoadFullDetail(turn.id)}
             >
               {historyDetail.status === "loading" && (
                 <LoaderCircle size={14} className="spin" aria-hidden="true" />
               )}
-              {historyDetail.status === "loading"
-                ? "Loading full detail"
-                : historyDetail.status === "error" ? "Retry full detail" : "Load full detail"}
+              {detailButtonLabel}
             </button>
           )}
           {historyDetail?.error && <span role="alert">Could not load full detail: {historyDetail.error}</span>}

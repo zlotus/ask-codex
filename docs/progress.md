@@ -1,115 +1,102 @@
-# Project Progress
+# 项目进度
 
-Last reviewed: 2026-07-23
+**简体中文** | [English](progress.en.md)
 
-## Current Milestone
+最后审阅：2026-07-24
 
-The conversation-density and thread-setting refinement is implemented and
-verified. The next milestone first closes the remaining item-level recovery gap
-for oversized turns, then returns to project-oriented navigation and read-only
-discovery without changing the manual-approval or remote-access trust model.
+## 当前里程碑
 
-## Current Baseline
+超大轮次的条目级恢复已经实现。下一个里程碑加入范围受控的图片输入 MVP，之后回到
+面向项目的导航和只读发现功能，同时不改变人工审批或远程访问的信任模型。
 
-The implementation currently provides:
+## 当前基线
 
-- React desktop and mobile layouts for listing, searching, creating, resuming,
-  and refreshing native Codex threads, with a 44-pixel conversation header and
-  a responsive one-line composer.
-- Incremental recent-turn loading through `thread/turns/list`, adaptive page
-  sizing, retryable older pages, summary fallback, and per-turn detail retry.
-- Streamed messages, reasoning, plans, command output, file changes, MCP calls,
-  web searches, turn diffs, and unknown-item fallback rendering, with explicit
-  stream and message-size bounds.
-- Reusable syntax-highlighted code blocks, copy and wrap controls, structured
-  unified/split diffs, safe raw-diff fallback, and bounded two-level tool
-  disclosures that group consecutive commands, file changes, MCP calls, and
-  searches while keeping assistant messages prominent.
-- Browser handling for command and file-change approvals and structured
-  `request_user_input` requests. Captured command approval reasons remain
-  attached to the exact command item for the current browser session.
-- New-thread working-directory and sandbox settings, explicit idle-thread
-  sandbox overrides, next-turn model and reasoning controls beside the
-  composer, and active-turn interruption. Initial model and effort selections
-  come from a strictly filtered effective Codex config read; alternatives come
-  from `model/list`. Existing thread cwd is read-only and routine resume no
-  longer resends flattened sandbox state.
-- An Express/WebSocket gateway that starts `codex app-server` over JSONL stdio,
-  rebuilds parameters for an explicit RPC allowlist, and routes app-server
-  requests to the owning browser.
-- Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
-  backpressure eviction; approval rerouting; and snapshot-based recovery when
-  an oversized notification cannot be forwarded.
-- Enforced `on-request` user approval, fail-closed unsupported permissions,
-  loopback defaults, token and Origin checks, connection and request limits,
-  and exact trusted-public-origin support.
-- An English and Chinese Cloudflare Tunnel deployment guide for loopback-hosted
-  Cloudflare Access plus an independent Ask Codex token gate.
-- Deterministic desktop and mobile production visual fixtures that do not
-  create a real Codex turn.
+当前实现包括：
 
-This file describes the handoff baseline on `main`. After pulling the latest
-`origin/main`, another device can resume from the ordered outcomes in `Next`
-without relying on prior chat history.
+- 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
+  包括 44 像素高的对话标题栏和响应式单行输入框。
+- 通过 `thread/turns/list` 增量加载近期轮次，支持自适应分页大小、可重试的更早页面和
+  摘要降级。新线程固定使用 `paginated` 历史契约，超大轮次可通过严格受限的
+  `thread/items/list` 按升序逐页恢复；旧 `legacy` 线程保留单轮完整详情重试。
+- 流式显示消息、推理、计划、命令输出、文件变更、MCP 调用、网页搜索、轮次 diff，
+  并为未知条目提供降级渲染；流和消息大小均有明确边界。
+- 可复用的语法高亮代码块、复制和换行控件、结构化统一/并排 diff、安全的原始 diff
+  降级，以及有界的两级工具折叠区；它会分组连续的命令、文件变更、MCP 调用和搜索，
+  同时突出显示助手消息。
+- 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。捕获到
+  的命令审批理由会在当前浏览器会话中继续绑定到对应的确切命令条目。
+- 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
+  控件，以及中断活跃轮次。初始模型和推理强度取自经过严格过滤的 Codex 有效配置；
+  备选项来自 `model/list`。已有线程的 cwd 只读，常规恢复不再重新发送扁平化的沙箱
+  状态。
+- Express/WebSocket 网关：通过 JSONL stdio 启动 `codex app-server`，根据显式 RPC
+  allowlist 重建参数，并将 app-server 请求路由到所属浏览器。
+- 有界的浏览器、网关和 app-server 消息；线性 JSONL 累积；背压驱逐；审批重路由；
+  以及超大通知无法转发时基于快照的恢复。
+- 强制执行 `on-request` 用户审批、不支持的权限失败时关闭、默认只绑定回环地址、
+  token 和 Origin 检查、连接与请求限制，以及对精确受信任公共 Origin 的支持。
+- 中英文 Cloudflare Tunnel 部署指南，用于仅绑定回环地址的 Cloudflare Access，
+  并保留独立的 Ask Codex token 关卡。
+- 确定性的桌面端和移动端生产环境视觉夹具，不会创建真实 Codex 轮次。
 
-## Known Gaps
+本文档描述 `main` 上的交接基线。在拉取最新 `origin/main` 后，另一台设备无需依赖
+之前的聊天记录，即可按“后续步骤”中的顺序继续。
 
-- A single turn whose full payload exceeds the gateway limit can fall back to a
-  summary, and its one-turn detail retry can still exceed the same limit. The
-  installed protocol provides `thread/items/list`, but it is not yet exposed by
-  the browser RPC policy or represented as item-level pagination.
-- Loaded history pages remain mounted. Heavy closed disclosures are lazy and
-  Markdown/diff work is bounded, but very long manually expanded histories do
-  not yet use viewport virtualization or an aggregate DOM budget.
-- Completed `commandExecution` history does not contain approval reasons in
-  Codex CLI 0.144.5. Ask Codex can retain reasons captured during the current
-  browser session and through in-session resync, but cannot reconstruct them
-  after a page reload or on another device from native thread history alone.
-- The sidebar is a flat thread list. There are no project groups, Skills view,
-  Activity view, usage panel, or thread-management actions.
-- Turn steering, image input, persistent cross-device message queues, fixed host
-  actions, and an embedded PTY are not implemented.
+## 已知缺口
 
-## Next
+- 现有 `legacy` 线程没有官方迁移方式，也不支持 `thread/items/list`；如果它的单轮
+  完整载荷仍超过网关上限，就只能保留摘要。分页线程中的单个条目若自身超过 1 MiB，
+  同样无法通过缩小页面恢复。
+- Codex CLI 0.145.0 的分页线程不支持 fork、rollback 和 detached review。Ask Codex
+  当前没有公开这些操作，但其他客户端操作同一原生线程时仍受此限制。
+- 已加载的历史页面会一直挂载。内容较重但已折叠的区域采用惰性处理，Markdown/diff
+  工作量也有边界，但在手动展开大量历史时，尚未使用视口虚拟化或整体 DOM 预算。
+- Codex CLI 0.145.0 的已完成 `commandExecution` 历史不包含审批理由。Ask Codex
+  可以保留当前浏览器会话期间捕获的理由，并在会话内重新同步时保留它们，但页面刷新
+  后或换到另一台设备时，无法从原生线程历史重建这些理由。
+- 侧边栏仍是扁平线程列表。尚无项目分组、Skills 视图、Activity 视图、用量面板或
+  线程管理操作。
+- 轮次 steering、图片输入、跨设备持久消息队列、固定宿主机操作和嵌入式 PTY 尚未
+  实现。
 
-1. Add a strict `thread/items/list` policy and item-level pagination so an
-   oversized single turn can recover full detail without raising message caps.
-2. Group threads by working directory and add a read-only Skills catalog backed
-   only by the official `skills/list` method.
-3. Add a read-only Activity surface before considering any new host execution
-   capability.
+## 后续步骤
 
-Later candidates remain in [`ideas.md`](ideas.md); their presence there is not
-a delivery commitment.
+1. 通过官方 `localImage` 输入增加图片输入 MVP，并明确限制类型、大小、数量、存储
+   和生命周期。
+2. 按工作目录对线程分组，并增加只由官方 `skills/list` 方法提供数据的只读 Skills
+   目录。
+3. 在考虑任何新的宿主机执行能力之前，增加只读 Activity 界面。
 
-## Risks And Watchpoints
+更远期的候选项保留在 [`ideas.md`](ideas.md) 中；出现在该文档中并不代表交付承诺。
 
-- The installed Codex CLI defines an evolving protocol. Protocol work must
-  compare generated bindings and update normalization and tests together.
-- Rich rendering must treat all agent, command, diff, and ANSI content as
-  untrusted text and must bound memory and DOM growth.
-- Modern approval rationale must remain keyed by thread, turn, and item id;
-  legacy call ids are attached only when they identify one command uniquely.
-- `config/read` results must remain projected at the gateway to model and
-  reasoning effort only; never forward the complete Codex configuration.
-- Skills and future host tools must not introduce path or command pass-through
-  around the gateway allowlists.
-- Automatic recovery and read-only views must not claim thread ownership or
-  redirect approval requests away from the browser that started or resumed it.
-- A browser terminal would bypass Codex approval and therefore requires a
-  separate threat model, isolation boundary, and explicit opt-in.
+## 风险与注意事项
 
-## Verification
+- 已安装的 Codex CLI 定义持续演进的协议。协议工作必须比较生成的 bindings，并同时
+  更新规范化逻辑和测试。
+- `paginated` 历史仍是实验性持久化契约；升级 CLI 时必须重新核对条目分页以及 fork、
+  rollback 和 detached review 的支持情况。
+- 富文本渲染必须把所有智能体、命令、diff 和 ANSI 内容视为不可信文本，并限制内存
+  和 DOM 增长。
+- 现代审批理由必须继续以线程、轮次和条目 ID 为键；只有旧版 call ID 能唯一标识一个
+  命令时才附加它。
+- 网关必须继续把 `config/read` 结果投影为仅包含模型和推理强度；绝不能转发完整的
+  Codex 配置。
+- Skills 和未来的宿主机工具不得绕过网关 allowlist，引入路径或命令透传。
+- 自动恢复和只读视图不得声称拥有线程，也不得把审批请求从启动或恢复该线程的浏览器
+  重定向出去。
+- 浏览器终端会绕过 Codex 审批，因此需要独立的威胁模型、隔离边界和显式启用机制。
 
-Verified on 2026-07-23 with Node.js `v24.13.1`, npm `11.12.1`, and Codex CLI
-`0.144.5`:
+## 验证
 
-- `npm run typecheck` passed.
-- `npm run lint` passed.
-- `npm test` passed: 21 files, 178 tests. The server tests were run in an
-  environment that permits loopback socket binding.
-- `npm run build` passed.
-- `npm run check:visual` passed against the production build on port 4173 with
-  deterministic desktop and mobile fixtures, including the new-thread dialog,
-  configured model selections, grouped tools, and a simulated approval reason:
-  no horizontal overflow, clipped rich content, console errors, or page errors.
+已于 2026-07-24 使用 Node.js `v24.13.0`、npm `11.18.0` 和 Codex CLI
+`0.145.0` 完成验证：
+
+- `npm run typecheck` 通过。
+- `npm run lint` 通过。
+- `npm test` 通过：21 个文件、214 项测试。服务端测试在允许绑定回环套接字的环境中
+  运行。
+- `npm run build` 通过。
+- `node scripts/visual-check.mjs`（即 `npm run check:visual` 的底层脚本）针对 4173
+  端口上的生产构建通过；测试使用确定性的桌面端和移动端夹具，覆盖新线程对话框、
+  已配置模型选择、工具分组和模拟审批理由：未发现水平溢出、富内容被裁切、控制台错误
+  或页面错误。

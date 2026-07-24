@@ -1,7 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
-import { requestFullTurnPage, requestTurnPage, resumeThreadForHistory } from "./turnHistory";
+import {
+  isOversizedHistoryResponseError,
+  requestFullTurnPage,
+  isThreadItemPaginationUnsupported,
+  requestTurnItemPage,
+  requestTurnPage,
+  resumeThreadForHistory,
+} from "./turnHistory";
 
 describe("turn history loading", () => {
+  it("recognizes the app-server unsupported item pagination error", () => {
+    expect(isThreadItemPaginationUnsupported(
+      new Error("thread/items/list is not supported yet"),
+    )).toBe(true);
+    expect(isThreadItemPaginationUnsupported(new Error("Method not found: thread/items/list")))
+      .toBe(true);
+    expect(isThreadItemPaginationUnsupported(new Error("thread/turns/list is not supported")))
+      .toBe(false);
+  });
+
+  it("recognizes both gateway and app-server history response limits", () => {
+    expect(isOversizedHistoryResponseError(
+      new Error("Codex response exceeded the 1 MiB gateway message limit"),
+    )).toBe(true);
+    expect(isOversizedHistoryResponseError(
+      new Error("Codex app-server stdout JSONL line exceeded 8388608 byte limit"),
+    )).toBe(true);
+    expect(isOversizedHistoryResponseError(new Error("Connection closed"))).toBe(false);
+  });
+
   it("retries resume without an initial page when the combined response is oversized", async () => {
     const rpc = vi.fn()
       .mockRejectedValueOnce(new Error("Codex response exceeded the 1 MiB gateway message limit"))
@@ -94,5 +121,103 @@ describe("turn history loading", () => {
       sortDirection: "desc",
       itemsView: "full",
     });
+  });
+
+  it("requests an ascending item page with a bounded limit and preserves an empty cursor", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ turnId: "turn-large", item: { id: "item-1", type: "agentMessage" } }],
+      nextCursor: "next-item-page",
+      backwardsCursor: "newer-item-page",
+    });
+
+    const page = await requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "",
+      preferredLimit: 250,
+    });
+
+    expect(page.data[0]?.item.id).toBe("item-1");
+    expect(rpc).toHaveBeenCalledWith("thread/items/list", {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "",
+      limit: 100,
+      sortDirection: "asc",
+    });
+  });
+
+  it("reduces an item page after gateway size errors", async () => {
+    const sizeError = new Error("Codex response exceeded the 1 MiB gateway message limit");
+    const rpc = vi.fn()
+      .mockRejectedValueOnce(sizeError)
+      .mockRejectedValueOnce(sizeError)
+      .mockResolvedValueOnce({ data: [], nextCursor: null, backwardsCursor: null });
+
+    await requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      preferredLimit: 25,
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(1, "thread/items/list", expect.objectContaining({ limit: 25 }));
+    expect(rpc).toHaveBeenNthCalledWith(2, "thread/items/list", expect.objectContaining({ limit: 12 }));
+    expect(rpc).toHaveBeenNthCalledWith(3, "thread/items/list", expect.objectContaining({ limit: 1 }));
+  });
+
+  it("reduces an item page after the app-server stdout line limit restarts the process", async () => {
+    const rpc = vi.fn()
+      .mockRejectedValueOnce(new Error(
+        "Codex app-server stdout JSONL line exceeded 8388608 byte limit",
+      ))
+      .mockResolvedValueOnce({ data: [], nextCursor: null, backwardsCursor: null });
+
+    await requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      preferredLimit: 10,
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(1, "thread/items/list", expect.objectContaining({ limit: 10 }));
+    expect(rpc).toHaveBeenNthCalledWith(2, "thread/items/list", expect.objectContaining({ limit: 5 }));
+  });
+
+  it("reports when one item still exceeds the gateway limit", async () => {
+    const sizeError = new Error("Codex response exceeded the 1 MiB gateway message limit");
+    const rpc = vi.fn().mockRejectedValue(sizeError);
+
+    await expect(requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      preferredLimit: 10,
+    })).rejects.toThrow("A single Codex item still exceeds Ask Codex transport limits");
+    expect(rpc).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects item pages for another turn without retrying", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ turnId: "turn-other", item: { id: "item-1", type: "agentMessage" } }],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+
+    await expect(requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      preferredLimit: 25,
+    })).rejects.toThrow("Codex returned an item for a different turn");
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a non-advancing item cursor, including an empty opaque cursor", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: [], nextCursor: "", backwardsCursor: null });
+
+    await expect(requestTurnItemPage(rpc, {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "",
+      preferredLimit: 25,
+    })).rejects.toThrow("Codex returned a non-advancing item cursor");
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

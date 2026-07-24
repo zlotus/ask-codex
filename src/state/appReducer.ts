@@ -40,9 +40,10 @@ export type AppAction =
   | { type: "loadOlderTurnsStarted"; threadId: string; cursor: string }
   | { type: "prependOlderTurns"; threadId: string; cursor: string; turns: CodexTurn[]; nextCursor: string | null }
   | { type: "loadOlderTurnsFailed"; threadId: string; cursor: string; error: string }
-  | { type: "loadTurnDetailStarted"; threadId: string; turnId: string; cursor: string | null }
-  | { type: "loadTurnDetailSucceeded"; threadId: string; turnId: string; cursor: string | null; turn: CodexTurn }
-  | { type: "loadTurnDetailFailed"; threadId: string; turnId: string; cursor: string | null; error: string }
+  | { type: "loadTurnDetailStarted"; threadId: string; turnId: string; cursor: string | null; itemCursor?: string }
+  | { type: "loadTurnItemPageSucceeded"; threadId: string; turnId: string; cursor: string | null; itemCursor?: string; items: CodexItem[]; nextItemCursor: string | null }
+  | { type: "loadTurnDetailSucceeded"; threadId: string; turnId: string; cursor: string | null; itemCursor?: string; turn: CodexTurn }
+  | { type: "loadTurnDetailFailed"; threadId: string; turnId: string; cursor: string | null; itemCursor?: string; error: string; unavailable?: boolean }
   | { type: "upsertThread"; thread: CodexThread }
   | { type: "upsertTurn"; turn: CodexTurn; threadId?: string }
   | { type: "setTurnStatus"; turnId: string; status: string; error?: unknown }
@@ -390,6 +391,27 @@ function prependUniqueTurns(existing: CodexTurn[], older: CodexTurn[]): CodexTur
   return [...uniqueOlder, ...existing];
 }
 
+function uniqueItemsInOrder(items: CodexItem[]): CodexItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function appendUniqueItems(existing: CodexItem[], later: CodexItem[]): CodexItem[] {
+  const seen = new Set(existing.map((item) => item.id));
+  return [
+    ...existing,
+    ...later.filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    }),
+  ];
+}
+
 function resetTurnDetailLoading(thread: CodexThread | null): CodexThread | null {
   if (!thread?.turns?.some((turn) => turn.historyDetail?.status === "loading")) return thread;
   return {
@@ -538,7 +560,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         currentThread: updateTurn(state.currentThread, action.turnId, (turn) => {
-          if (!turn.historyDetail || turn.historyDetail.cursor !== action.cursor) return turn;
+          if (
+            !turn.historyDetail ||
+            turn.historyDetail.cursor !== action.cursor ||
+            turn.historyDetail.nextItemCursor !== action.itemCursor ||
+            turn.status === "inProgress" ||
+            turn.historyDetail.status === "loading" ||
+            turn.historyDetail.status === "unavailable"
+          ) {
+            return turn;
+          }
           return {
             ...turn,
             historyDetail: {
@@ -549,6 +580,45 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           };
         }),
       };
+    case "loadTurnItemPageSucceeded":
+      if (state.currentThread?.id !== action.threadId) return state;
+      {
+        const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
+          if (
+            !turn.historyDetail ||
+            turn.historyDetail.cursor !== action.cursor ||
+            turn.historyDetail.nextItemCursor !== action.itemCursor ||
+            turn.historyDetail.status !== "loading"
+          ) {
+            return turn;
+          }
+          const items = action.itemCursor === undefined
+            ? uniqueItemsInOrder(action.items)
+            : appendUniqueItems(turn.items, action.items);
+          if (action.nextItemCursor === null) {
+            const complete = { ...turn, items, itemsView: "full" };
+            delete complete.historyDetail;
+            return complete;
+          }
+          return {
+            ...turn,
+            items,
+            historyDetail: {
+              ...turn.historyDetail,
+              nextItemCursor: action.nextItemCursor,
+              status: "idle",
+              error: null,
+            },
+          };
+        });
+        if (!currentThread) return { ...state, currentThread };
+        const projection = projectApprovalReasons(currentThread, state.commandApprovalReasons);
+        return {
+          ...state,
+          commandApprovalReasons: projection.reasonsByItem,
+          currentThread: projection.thread,
+        };
+      }
     case "loadTurnDetailSucceeded":
       if (state.currentThread?.id !== action.threadId || action.turn.id !== action.turnId) return state;
       {
@@ -556,6 +626,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           if (
             !turn.historyDetail ||
             turn.historyDetail.cursor !== action.cursor ||
+            turn.historyDetail.nextItemCursor !== action.itemCursor ||
             turn.historyDetail.status !== "loading"
           ) {
             return turn;
@@ -580,6 +651,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           if (
             !turn.historyDetail ||
             turn.historyDetail.cursor !== action.cursor ||
+            turn.historyDetail.nextItemCursor !== action.itemCursor ||
             turn.historyDetail.status !== "loading"
           ) {
             return turn;
@@ -588,7 +660,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ...turn,
             historyDetail: {
               ...turn.historyDetail,
-              status: "error",
+              status: action.unavailable ? "unavailable" : "error",
               error: action.error,
             },
           };
@@ -613,11 +685,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const index = turns.findIndex((turn) => turn.id === incomingTurn.id);
       const nextTurns = [...turns];
       if (index < 0) nextTurns.push(incomingTurn);
-      else nextTurns[index] = {
-        ...nextTurns[index],
-        ...incomingTurn,
-        items: incomingTurn.items.length > 0 ? incomingTurn.items : nextTurns[index].items,
-      };
+      else nextTurns[index] = reconcileSnapshotTurn(nextTurns[index], incomingTurn);
       const projection = projectApprovalReasons(
         { ...state.currentThread, turns: nextTurns },
         state.commandApprovalReasons,

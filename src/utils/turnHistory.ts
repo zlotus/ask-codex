@@ -1,5 +1,5 @@
-import type { CodexTurnsPage } from "../types/protocol";
-import { errorMessage, normalizeTurnsPage } from "./protocol";
+import type { CodexItemsPage, CodexTurnsPage } from "../types/protocol";
+import { errorMessage, normalizeItemsPage, normalizeTurnsPage } from "./protocol";
 
 export type RpcClient = (method: string, params?: unknown) => Promise<unknown>;
 
@@ -14,8 +14,28 @@ interface FullTurnPageRequest {
   cursor?: string;
 }
 
-export function isGatewayMessageLimitError(error: unknown): boolean {
-  return errorMessage(error).includes("gateway message limit");
+interface TurnItemPageRequest {
+  threadId: string;
+  turnId: string;
+  cursor?: string;
+  preferredLimit: number;
+}
+
+export function isOversizedHistoryResponseError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("gateway message limit") ||
+    (message.includes("codex app-server stdout jsonl line exceeded") &&
+      message.includes("byte limit"));
+}
+
+export class TurnDetailUnavailableError extends Error {
+  override name = "TurnDetailUnavailableError";
+}
+
+export function isThreadItemPaginationUnsupported(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("thread/items/list") &&
+    (message.includes("not supported") || message.includes("method not found"));
 }
 
 export async function resumeThreadForHistory(
@@ -34,7 +54,7 @@ export async function resumeThreadForHistory(
       },
     });
   } catch (error) {
-    if (!isGatewayMessageLimitError(error)) throw error;
+    if (!isOversizedHistoryResponseError(error)) throw error;
     return rpc("thread/resume", { threadId, excludeTurns: true });
   }
 }
@@ -62,7 +82,7 @@ export async function requestTurnPage(
       if (!page) throw new Error("Codex returned an invalid turn page");
       return page;
     } catch (error) {
-      if (!isGatewayMessageLimitError(error)) throw error;
+      if (!isOversizedHistoryResponseError(error)) throw error;
       limitError = error;
     }
   }
@@ -78,7 +98,7 @@ export async function requestTurnPage(
     if (!page) throw new Error("Codex returned an invalid turn summary page");
     return page;
   } catch (error) {
-    if (isGatewayMessageLimitError(error) && limitError) throw limitError;
+    if (isOversizedHistoryResponseError(error) && limitError) throw limitError;
     throw error;
   }
 }
@@ -96,4 +116,48 @@ export async function requestFullTurnPage(
   }));
   if (!page) throw new Error("Codex returned an invalid full turn page");
   return page;
+}
+
+export async function requestTurnItemPage(
+  rpc: RpcClient,
+  { threadId, turnId, cursor, preferredLimit }: TurnItemPageRequest,
+): Promise<CodexItemsPage> {
+  const boundedLimit = Math.min(100, Math.max(1, Math.floor(preferredLimit)));
+  const limits = [...new Set([
+    boundedLimit,
+    Math.max(1, Math.floor(boundedLimit / 2)),
+    1,
+  ])];
+  let limitError: unknown;
+
+  for (const limit of limits) {
+    try {
+      const page = normalizeItemsPage(await rpc("thread/items/list", {
+        threadId,
+        turnId,
+        ...(cursor !== undefined ? { cursor } : {}),
+        limit,
+        sortDirection: "asc",
+      }));
+      if (!page) throw new Error("Codex returned an invalid item page");
+      if (page.data.some((entry) => entry.turnId !== turnId)) {
+        throw new Error("Codex returned an item for a different turn");
+      }
+      if (cursor !== undefined && page.nextCursor === cursor) {
+        throw new Error("Codex returned a non-advancing item cursor");
+      }
+      return page;
+    } catch (error) {
+      if (!isOversizedHistoryResponseError(error)) throw error;
+      limitError = error;
+    }
+  }
+
+  if (limitError) {
+    throw new TurnDetailUnavailableError(
+      "A single Codex item still exceeds Ask Codex transport limits",
+      { cause: limitError },
+    );
+  }
+  throw new Error("Codex item page exceeded the gateway message limit");
 }

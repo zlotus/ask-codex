@@ -1,66 +1,72 @@
-# Project Documentation
+# 项目文档
 
-This directory carries the durable context needed to continue Ask Codex work
-from another device or in a new Codex session. It complements Git; it does not
-replace committed source, tests, issues, or pull requests.
+**简体中文** | [English](README.en.md)
 
-## Reading Order
+本仓库的现行项目文档以简体中文为主：无语言后缀的路径存放中文主版本，
+对应的 `.en.md` 文件是同步维护的英文镜像。
 
-For non-trivial implementation work:
+本目录保存从其他设备或新的 Codex 会话继续开发 Ask Codex 所需的持久上下文。
+它是 Git 的补充，不能取代已经提交的源码、测试、issue 或 pull request。
 
-1. Read [`context.md`](context.md) for the stable product and engineering
-   boundaries.
-2. Read [`progress.md`](progress.md) for the implemented baseline, current
-   milestone, known gaps, and next work.
-3. Use the [decision index](decisions/README.md) to open only ADRs relevant to
-   the task.
-4. Read [`ideas.md`](ideas.md) only when planning product direction. Its entries
-   are candidates, not commitments.
+## 阅读顺序
 
-Deployment documentation remains in the operator guides:
+进行非琐碎的实现工作时：
 
-- [`cloudflare-tunnel.md`](cloudflare-tunnel.md)
-- [`cloudflare-tunnel.zh-CN.md`](cloudflare-tunnel.zh-CN.md)
+1. 阅读 [`context.md`](context.md)，了解稳定的产品和工程边界。
+2. 阅读 [`progress.md`](progress.md)，了解已实现的基线、当前里程碑、已知缺口和
+   后续工作。
+3. 使用[决策索引](decisions/README.md)，只打开与当前任务有关的 ADR。
+4. 仅在规划产品方向时阅读 [`ideas.md`](ideas.md)。其中的条目是候选想法，
+   不是承诺。
 
-## Source Responsibilities
+部署文档仍位于运维指南中：
 
-- `AGENTS.md` defines mandatory repository instructions and security
-  invariants.
-- The installed CLI-generated schema defines the current Codex app-server
-  protocol.
-- Code, tests, and configuration define implemented behavior.
-- `context.md` records stable purpose, goals, non-goals, and constraints.
-- `progress.md` is a replaceable current-state handoff, not a cumulative log.
-- `decisions/` records durable choices, their rationale, and alternatives.
-- `ideas.md` holds undecided possibilities without assigning delivery dates.
-- README and deployment guides provide user and operator instructions.
+- [中文版](cloudflare-tunnel.md)
+- [English](cloudflare-tunnel.en.md)
 
-When sources disagree, verify against the appropriate authority and update the
-stale documentation in the same change.
+## 语言与历史 ADR
 
-## Cross-Device Handoff
+现行上下文文档遵循上述“无后缀中文主版本、`.en.md` 英文镜像”的命名规则。
+ADR `0001` 至 `0006` 早于这项规则，而且是只追加、不改写的历史记录，因此保留
+无语言后缀的英文原件，中文译本使用 `.zh-CN.md` 后缀。不要仅为了统一文件名而
+重命名或改写这些英文原件。新 ADR 使用无后缀的中文主版本和 `.en.md` 英文镜像；
+决策索引本身也采用这项新规则。
 
-Before switching devices:
+## 各资料的职责
 
-1. Finish or deliberately stop at a coherent boundary.
-2. Update `progress.md` only when the implemented state, milestone, material
-   risk, or immediate next steps changed.
-3. Add an ADR when the work accepted or replaced a durable design decision.
-4. Record only checks that actually ran.
-5. Commit the source and related documentation together, then push the branch.
+- `AGENTS.md` 定义强制性的仓库指令和安全不变量。
+- 已安装 CLI 生成的 schema 定义当前 Codex app-server 协议。
+- 代码、测试和配置定义已经实现的行为。
+- `context.md` 记录稳定的项目目的、目标、非目标和约束。
+- `progress.md` 是可替换的当前状态交接文档，不是累积日志。
+- `decisions/` 记录持久决策、决策理由和备选方案。
+- `ideas.md` 保存尚未决定的可能方向，不为其指定交付日期。
+- README 和部署指南提供用户与运维说明。
 
-After switching devices, fetch the branch and follow the reading order above.
-Do not use these documents to describe uncommitted files that exist on only one
-device. These are developer handoff steps; an AI assistant must not commit or
-push unless the user explicitly requests it.
+当不同资料相互矛盾时，应根据相应的权威来源核实，并在同一次变更中更新过时的
+文档。
 
-## Editing Rules
+## 跨设备交接
 
-Keep the documents short and explain why the project is shaped as it is. Avoid
-duplicating code, issue backlogs, release notes, or routine implementation
-details. Small fixes, renames, formatting changes, and unresolved discussion do
-not require context-document updates.
+切换设备前：
 
-ADRs are append-only historical records. If an accepted decision changes, add a
-new ADR, mark the old ADR `Superseded`, and link both records. Do not rewrite the
-old rationale to make it match the new decision.
+1. 完成当前工作，或有意识地停在一个连贯的边界上。
+2. 仅在已实现状态、里程碑、重大风险或近期步骤发生变化时更新 `progress.md`。
+3. 工作接受或取代了一项持久设计决策时，添加 ADR。
+4. 只记录实际运行过的检查。
+5. 将源码与相关文档一起提交，再推送分支。
+
+切换设备后，拉取分支并按上述顺序阅读。不要用这些文档描述只存在于某一台设备、
+尚未提交的文件。这些是开发者交接步骤；除非用户明确要求，否则 AI 助手不得提交
+或推送。
+
+## 编辑规则
+
+文档应保持简洁，并解释项目为何采用当前形态。避免重复代码、issue 待办、发布说明
+或日常实现细节。小修复、重命名、格式调整和未有结论的讨论不需要更新上下文文档。
+
+内容发生变化时，应同步维护中文主版本与英文镜像。仅修正翻译措辞，不代表底层决策
+或实现状态发生变化。
+
+ADR 是只追加的历史记录。如果一项已接受决策发生变化，应新增 ADR，将旧 ADR 标记为
+`Superseded`，并在两份记录间相互链接。不要为了让旧理由符合新决策而改写旧记录。

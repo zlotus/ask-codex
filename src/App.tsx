@@ -45,7 +45,15 @@ import {
   nextTurnOverrides,
   normalizeEffortForModel,
 } from "./utils/threadSettings";
-import { requestFullTurnPage, requestTurnPage, resumeThreadForHistory } from "./utils/turnHistory";
+import {
+  isOversizedHistoryResponseError,
+  isThreadItemPaginationUnsupported,
+  requestFullTurnPage,
+  requestTurnItemPage,
+  requestTurnPage,
+  resumeThreadForHistory,
+  TurnDetailUnavailableError,
+} from "./utils/turnHistory";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -56,6 +64,7 @@ function paramsRecord(value: unknown): Record<string, unknown> {
 }
 
 const TURN_PAGE_SIZE = 10;
+const TURN_ITEM_PAGE_SIZE = 10;
 const MAX_REASONING_PARTS = 16;
 
 interface ThreadDialogState {
@@ -604,20 +613,63 @@ export default function App() {
     const thread = state.currentThread;
     const turn = thread?.turns?.find((entry) => entry.id === turnId);
     const detail = turn?.historyDetail;
-    if (!thread || !detail || detail.status === "loading") return;
+    if (
+      !thread ||
+      !detail ||
+      turn.status === "inProgress" ||
+      detail.status === "loading" ||
+      detail.status === "unavailable"
+    ) return;
 
-    const { cursor } = detail;
-    const requestKey = JSON.stringify([thread.id, turnId, cursor]);
+    const { cursor, nextItemCursor: itemCursor } = detail;
+    const requestKey = JSON.stringify([thread.id, turnId, cursor, itemCursor ?? null]);
     if (detailLoadsRef.current.has(requestKey)) return;
     const generation = selectionGenerationRef.current;
     detailLoadsRef.current.add(requestKey);
-    dispatch({ type: "loadTurnDetailStarted", threadId: thread.id, turnId, cursor });
+    dispatch({ type: "loadTurnDetailStarted", threadId: thread.id, turnId, cursor, itemCursor });
     try {
-      const page = await requestFullTurnPage(rpc, {
-        threadId: thread.id,
-        ...(cursor !== null ? { cursor } : {}),
-      });
-      const fullTurn = page.data.find((entry) => entry.id === turnId);
+      let itemPaginationUnsupported = thread.historyMode === "legacy";
+      if (!itemPaginationUnsupported) {
+        try {
+          const page = await requestTurnItemPage(rpc, {
+            threadId: thread.id,
+            turnId,
+            ...(itemCursor !== undefined ? { cursor: itemCursor } : {}),
+            preferredLimit: TURN_ITEM_PAGE_SIZE,
+          });
+          if (generation !== selectionGenerationRef.current) return;
+          dispatch({
+            type: "loadTurnItemPageSucceeded",
+            threadId: thread.id,
+            turnId,
+            cursor,
+            itemCursor,
+            items: page.data.map((entry) => entry.item),
+            nextItemCursor: page.nextCursor,
+          });
+          return;
+        } catch (error) {
+          if (!isThreadItemPaginationUnsupported(error)) throw error;
+          itemPaginationUnsupported = true;
+        }
+      }
+
+      let fullPage: CodexTurnsPage;
+      try {
+        fullPage = await requestFullTurnPage(rpc, {
+          threadId: thread.id,
+          ...(cursor !== null ? { cursor } : {}),
+        });
+      } catch (error) {
+        if (itemPaginationUnsupported && isOversizedHistoryResponseError(error)) {
+          throw new TurnDetailUnavailableError(
+            "This legacy Codex thread cannot load item pages, and its full detail exceeds the gateway limit",
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      const fullTurn = fullPage.data.find((entry) => entry.id === turnId);
       if (!fullTurn || fullTurn.itemsView !== "full") {
         throw new Error("Codex did not return full detail for this turn");
       }
@@ -627,6 +679,7 @@ export default function App() {
         threadId: thread.id,
         turnId,
         cursor,
+        itemCursor,
         turn: fullTurn,
       });
     } catch (error) {
@@ -636,7 +689,9 @@ export default function App() {
           threadId: thread.id,
           turnId,
           cursor,
+          itemCursor,
           error: errorMessage(error),
+          unavailable: error instanceof TurnDetailUnavailableError,
         });
       }
     } finally {

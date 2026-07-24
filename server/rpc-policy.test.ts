@@ -91,6 +91,47 @@ describe("browser RPC policy", () => {
     });
   });
 
+  it("allows bounded item pagination for one explicit turn", () => {
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("thread/items/list")).toBe(true);
+    expect(sanitizeBrowserRpcParams("thread/items/list", {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "next-item-page",
+      limit: 100,
+      sortDirection: "asc",
+    })).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "next-item-page",
+      limit: 100,
+      sortDirection: "asc",
+    });
+
+    expect(sanitizeBrowserRpcParams("thread/items/list", {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "",
+      limit: null,
+      sortDirection: "desc",
+    })).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "",
+      limit: null,
+      sortDirection: "desc",
+    });
+
+    expect(sanitizeBrowserRpcParams("thread/items/list", {
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: null,
+    })).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: null,
+    });
+  });
+
   it("allows resume to exclude turns or request an initial turn page", () => {
     expect(sanitizeBrowserRpcParams("thread/resume", {
       threadId: "thread-1",
@@ -123,6 +164,38 @@ describe("browser RPC policy", () => {
     });
   });
 
+  it("enforces paginated history for new threads without browser control", () => {
+    expect(sanitizeBrowserRpcParams("thread/start", {
+      cwd: "/workspace/project",
+    })).toEqual({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      historyMode: "paginated",
+      cwd: "/workspace/project",
+    });
+    expect(() => sanitizeBrowserRpcParams("thread/start", {
+      cwd: "/workspace/project",
+      historyMode: "legacy",
+    })).toThrow("does not allow param: historyMode");
+  });
+
+  it.each([
+    ["thread/start", { approvalPolicy: "never" }, "approvalPolicy must be on-request"],
+    ["thread/start", { approvalsReviewer: "model" }, "approvalsReviewer must be user"],
+    [
+      "thread/resume",
+      { threadId: "thread-1", approvalPolicy: "never" },
+      "approvalPolicy must be on-request",
+    ],
+    [
+      "thread/resume",
+      { threadId: "thread-1", approvalsReviewer: "model" },
+      "approvalsReviewer must be user",
+    ],
+  ])("rejects unsafe thread policy override for %s", (method, params, message) => {
+    expect(() => sanitizeBrowserRpcParams(method, params)).toThrow(message);
+  });
+
   it.each([
     [{ threadId: "", limit: 25 }, "threadId must be a non-empty string"],
     [{ threadId: "thread-1", cursor: 1 }, "cursor must be a string or null"],
@@ -134,6 +207,23 @@ describe("browser RPC policy", () => {
     [{ threadId: "thread-1", includeTurns: true }, "does not allow param: includeTurns"],
   ])("rejects invalid turn pagination params %#", (params, message) => {
     expect(() => sanitizeBrowserRpcParams("thread/turns/list", params)).toThrow(message);
+  });
+
+  it.each([
+    [{ turnId: "turn-1" }, "threadId must be a non-empty string"],
+    [{ threadId: "", turnId: "turn-1" }, "threadId must be a non-empty string"],
+    [{ threadId: "thread-1" }, "turnId must be a non-empty string"],
+    [{ threadId: "thread-1", turnId: null }, "turnId must be a non-empty string"],
+    [{ threadId: "thread-1", turnId: "" }, "turnId must be a non-empty string"],
+    [{ threadId: "thread-1", turnId: "turn-1", cursor: 1 }, "cursor must be a string or null"],
+    [{ threadId: "thread-1", turnId: "turn-1", limit: 0 }, "limit must be an integer between 1 and 100"],
+    [{ threadId: "thread-1", turnId: "turn-1", limit: 1.5 }, "limit must be an integer between 1 and 100"],
+    [{ threadId: "thread-1", turnId: "turn-1", limit: 101 }, "limit must be an integer between 1 and 100"],
+    [{ threadId: "thread-1", turnId: "turn-1", sortDirection: "newest" }, "sortDirection is invalid"],
+    [{ threadId: "thread-1", turnId: "turn-1", itemsView: "full" }, "does not allow param: itemsView"],
+    [{ threadId: "thread-1", turnId: "turn-1", includeTurns: true }, "does not allow param: includeTurns"],
+  ])("rejects invalid item pagination params %#", (params, message) => {
+    expect(() => sanitizeBrowserRpcParams("thread/items/list", params)).toThrow(message);
   });
 
   it.each([

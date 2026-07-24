@@ -566,6 +566,7 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
+      historyMode: "paginated",
     });
 
     gateway.emit(
@@ -599,7 +600,7 @@ describe("AskCodexServer", () => {
     ]);
   });
 
-  it("does not change approval ownership when another client reads a thread", async () => {
+  it("does not change approval ownership when another client reads thread data", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
@@ -631,6 +632,52 @@ describe("AskCodexServer", () => {
       reader.messages,
       (message) => message.type === "rpcResult" && message.id === "read-passively",
     );
+
+    reader.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "read-turns-passively",
+      method: "thread/turns/list",
+      params: {
+        threadId: "thread-owned",
+        limit: 10,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+    }));
+    await waitForMessage(
+      reader.messages,
+      (message) => message.type === "rpcResult" && message.id === "read-turns-passively",
+    );
+    expect(gateway.request).toHaveBeenCalledWith("thread/turns/list", {
+      threadId: "thread-owned",
+      limit: 10,
+      sortDirection: "desc",
+      itemsView: "summary",
+    });
+
+    reader.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "read-items-passively",
+      method: "thread/items/list",
+      params: {
+        threadId: "thread-owned",
+        turnId: "turn-large",
+        cursor: "",
+        limit: 25,
+        sortDirection: "asc",
+      },
+    }));
+    await waitForMessage(
+      reader.messages,
+      (message) => message.type === "rpcResult" && message.id === "read-items-passively",
+    );
+    expect(gateway.request).toHaveBeenCalledWith("thread/items/list", {
+      threadId: "thread-owned",
+      turnId: "turn-large",
+      cursor: "",
+      limit: 25,
+      sortDirection: "asc",
+    });
 
     gateway.emit(
       "request",

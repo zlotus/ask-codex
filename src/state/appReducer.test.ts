@@ -906,6 +906,170 @@ describe("appReducer", () => {
     expect(loaded.currentThread?.turns?.[0]?.historyDetail).toBeUndefined();
   });
 
+  it("does not start history pagination while a summary turn is still running", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-running",
+          status: "inProgress",
+          items: [{ id: "live", type: "agentMessage", text: "Streaming" }],
+          itemsView: "summary",
+          historyDetail: { cursor: null, status: "idle", error: null },
+        }],
+      },
+    });
+
+    const ignored = appReducer(hydrated, {
+      type: "loadTurnDetailStarted",
+      threadId: "thread-1",
+      turnId: "turn-running",
+      cursor: null,
+    });
+
+    expect(ignored.currentThread?.turns?.[0]?.historyDetail?.status).toBe("idle");
+    expect(ignored.currentThread?.turns?.[0]?.items[0]).toEqual(expect.objectContaining({
+      id: "live",
+      text: "Streaming",
+    }));
+  });
+
+  it("keeps a permanent detail failure unavailable instead of retrying it", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-large",
+          items: [],
+          itemsView: "summary",
+          historyDetail: { cursor: null, status: "idle", error: null },
+        }],
+      },
+    });
+    const loading = appReducer(hydrated, {
+      type: "loadTurnDetailStarted",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: null,
+    });
+    const unavailable = appReducer(loading, {
+      type: "loadTurnDetailFailed",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: null,
+      error: "One item is too large",
+      unavailable: true,
+    });
+    const ignored = appReducer(unavailable, {
+      type: "loadTurnDetailStarted",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: null,
+    });
+
+    expect(ignored.currentThread?.turns?.[0]?.historyDetail).toEqual(expect.objectContaining({
+      status: "unavailable",
+      error: "One item is too large",
+    }));
+  });
+
+  it("hydrates a summary turn through ordered item pages", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-large",
+          items: [{ id: "summary", type: "agentMessage", text: "Summary only" }],
+          itemsView: "summary",
+          historyDetail: { cursor: "turn-page", status: "idle", error: null },
+        }],
+      },
+    });
+    const firstLoading = appReducer(hydrated, {
+      type: "loadTurnDetailStarted",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "turn-page",
+    });
+    const firstPage = appReducer(firstLoading, {
+      type: "loadTurnItemPageSucceeded",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "turn-page",
+      items: [
+        { id: "user", type: "userMessage", text: "Question" },
+        { id: "user", type: "userMessage", text: "Duplicate" },
+        { id: "agent", type: "agentMessage", text: "Answer" },
+      ],
+      nextItemCursor: "item-page-2",
+    });
+
+    expect(firstPage.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      itemsView: "summary",
+      items: [
+        expect.objectContaining({ id: "user", text: "Question" }),
+        expect.objectContaining({ id: "agent", text: "Answer" }),
+      ],
+      historyDetail: expect.objectContaining({
+        nextItemCursor: "item-page-2",
+        status: "idle",
+        error: null,
+      }),
+    }));
+
+    const afterSummaryNotification = appReducer(firstPage, {
+      type: "upsertTurn",
+      threadId: "thread-1",
+      turn: {
+        id: "turn-large",
+        status: "completed",
+        itemsView: "summary",
+        items: [{ id: "summary", type: "agentMessage", text: "Late summary" }],
+      },
+    });
+
+    expect(afterSummaryNotification.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      items: [
+        expect.objectContaining({ id: "user" }),
+        expect.objectContaining({ id: "agent" }),
+      ],
+      historyDetail: expect.objectContaining({ nextItemCursor: "item-page-2" }),
+    }));
+
+    const secondLoading = appReducer(afterSummaryNotification, {
+      type: "loadTurnDetailStarted",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "turn-page",
+      itemCursor: "item-page-2",
+    });
+    const complete = appReducer(secondLoading, {
+      type: "loadTurnItemPageSucceeded",
+      threadId: "thread-1",
+      turnId: "turn-large",
+      cursor: "turn-page",
+      itemCursor: "item-page-2",
+      items: [
+        { id: "agent", type: "agentMessage", text: "Duplicate anchor" },
+        { id: "command", type: "commandExecution", command: "pwd" },
+      ],
+      nextItemCursor: null,
+    });
+
+    expect(complete.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      itemsView: "full",
+      items: [
+        expect.objectContaining({ id: "user" }),
+        expect.objectContaining({ id: "agent", text: "Answer" }),
+        expect.objectContaining({ id: "command" }),
+      ],
+    }));
+    expect(complete.currentThread?.turns?.[0]?.historyDetail).toBeUndefined();
+  });
+
   it("keeps indexed reasoning parts separate while streaming", () => {
     const first = appReducer(stateWithTurn(), {
       type: "appendIndexedItemDelta",

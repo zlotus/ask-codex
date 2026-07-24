@@ -1,24 +1,22 @@
-# Architecture Decision Records
+# 架构决策记录
 
-ADRs preserve durable project decisions and the reasons behind them. Read only
-the records relevant to the current task.
+架构决策记录（ADR）用于保存项目的长期决策及其理由。只需阅读与当前任务相关的记录。
 
-| ADR | Status | Decision |
+| ADR | 状态 | 决策 |
 | --- | --- | --- |
-| [0001](0001-codex-app-server-stdio.md) | Accepted | Use the documented Codex app-server protocol over JSONL stdio. |
-| [0002](0002-security-gateway-and-manual-approval.md) | Accepted | Keep the gateway as a strict policy boundary and enforce manual approval. |
-| [0003](0003-cloudflare-access-dual-gate.md) | Accepted | Use Cloudflare Access and the Ask Codex token as independent remote-access gates. |
-| [0004](0004-versioned-project-context.md) | Accepted | Keep concise cross-device development context in versioned documents. |
-| [0005](0005-thread-and-turn-settings.md) | Accepted; amended by 0006 | Separate thread identity and sandbox settings from next-turn model controls. |
-| [0006](0006-configured-turn-defaults.md) | Accepted | Amend model defaults to use filtered effective Codex configuration. |
+| [0001](0001-codex-app-server-stdio.zh-CN.md) | 已接受 | 通过 JSONL stdio 使用有文档支持的 Codex app-server 协议。 |
+| [0002](0002-security-gateway-and-manual-approval.zh-CN.md) | 已接受 | 将网关维持为严格的策略边界，并强制执行人工审批。 |
+| [0003](0003-cloudflare-access-dual-gate.zh-CN.md) | 已接受 | 将 Cloudflare Access 与 Ask Codex 令牌作为彼此独立的远程访问关卡。 |
+| [0004](0004-versioned-project-context.zh-CN.md) | 已接受 | 在纳入版本控制的文档中维护简明的跨设备开发上下文。 |
+| [0005](0005-thread-and-turn-settings.zh-CN.md) | 已接受；由 0006 修订 | 将线程身份和沙箱设置与下一轮的模型控制分开。 |
+| [0006](0006-configured-turn-defaults.zh-CN.md) | 已接受 | 修订模型默认值，使其采用经过筛选的 Codex 有效配置。 |
+| [0007](0007-document-language.md) | 已接受 | 以简体中文作为项目文档的主要语言，并维护对应英文版本。 |
+| [0008](0008-paginated-thread-history.md) | 已接受 | 新线程使用分页历史，并以条目页恢复超大轮次。 |
 
-## Lifecycle
+英文索引见 [README.en.md](README.en.md)。
 
-Each ADR has a status of `Proposed`, `Accepted`, `Rejected`, `Deprecated`, or
-`Superseded`. Accepted records are historical and must not be deleted or
-rewritten when the decision changes. Add a replacement ADR, mark the earlier
-record `Superseded by ADR NNNN`, and link the two records.
+## 生命周期
 
-Use an ADR for a lasting architecture, security, protocol, dependency, product,
-or workflow choice with meaningful alternatives. Do not create one for routine
-implementation changes or temporary task planning.
+每份 ADR 的状态为 `提议`、`已接受`、`已拒绝`、`已弃用` 或 `已取代`。已接受的记录属于历史记录；决策发生变化时，不得删除或重写这些记录。应新增一份替代 ADR，将较早的记录标记为“由 ADR NNNN 取代”，并在两份记录之间互相链接。
+
+当架构、安全、协议、依赖、产品或工作流程方面存在具有实质性替代方案的长期选择时，应使用 ADR。不要为常规实现变更或临时任务规划创建 ADR。

@@ -1,5 +1,7 @@
 import type {
   CodexItem,
+  CodexItemEntry,
+  CodexItemsPage,
   CodexThread,
   CodexTurn,
   CodexTurnsPage,
@@ -162,6 +164,29 @@ export function normalizeTurnsPage(value: unknown): CodexTurnsPage | null {
     data,
     nextCursor: readString(value.nextCursor) ?? null,
     backwardsCursor: readString(value.backwardsCursor) ?? null,
+  };
+}
+
+function normalizeItemEntry(value: unknown): CodexItemEntry | null {
+  if (!isRecord(value) || typeof value.turnId !== "string") return null;
+  const item = normalizeItem(value.item);
+  return item ? { turnId: value.turnId, item } : null;
+}
+
+export function normalizeItemsPage(value: unknown): CodexItemsPage | null {
+  if (!isRecord(value) || !Array.isArray(value.data)) return null;
+  if (
+    (value.nextCursor !== null && typeof value.nextCursor !== "string") ||
+    (value.backwardsCursor !== null && typeof value.backwardsCursor !== "string")
+  ) {
+    return null;
+  }
+  const data = value.data.map(normalizeItemEntry);
+  if (!data.every((entry): entry is CodexItemEntry => entry !== null)) return null;
+  return {
+    data,
+    nextCursor: value.nextCursor,
+    backwardsCursor: value.backwardsCursor,
   };
 }
 

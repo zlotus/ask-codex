@@ -1,47 +1,40 @@
-# Product Ideas
+# 产品构想
 
-Last reviewed: 2026-07-23
+**简体中文** | [English](ideas.en.md)
 
-These are candidates for future planning, not promises, accepted decisions, or
-an ordered roadmap. Move an idea into `progress.md` only when it becomes near
-term work, and use an issue or ADR when implementation is accepted and needs
-tracking or durable rationale.
+最后审阅：2026-07-24
 
-## Conversation And Rendering
+以下内容是未来规划的候选想法，不是承诺、已接受的决策或有序路线图。只有当一个想法
+成为近期工作时，才将它移入 `progress.md`；实现获准且需要跟踪或记录持久理由时，
+使用 issue 或 ADR。
 
-- Viewport virtualization or an aggregate render budget for users who expand
-  many history pages and large disclosures in one browser session.
-- Optional safe ANSI color rendering for command output; control sequences are
-  currently stripped to readable text.
-- Native turn steering using `expectedTurnId`, plus thread rename, archive,
-  unarchive, and fork actions.
-- Token usage and rate-limit views that remain useful on mobile.
+## 对话与渲染
 
-## Navigation And Skills
+- 为在一次浏览器会话中展开许多历史页面和大型折叠区的用户提供视口虚拟化或整体
+  渲染预算。
+- 为命令输出提供可选的安全 ANSI 颜色渲染；目前控制序列会被移除，只保留可读文本。
+- 使用 `expectedTurnId` 的原生轮次 steering，以及线程重命名、归档、取消归档和
+  fork 操作。
+- 在移动端仍然实用的 token 用量和速率限制视图。
 
-- Server-side resolution of a selected skill identifier to its catalog entry so
-  the browser cannot supply an arbitrary skill path.
-- Skill installation or configuration only after a separate security and
-  protocol design; skill-triggered commands must continue through normal Codex
-  approval.
+## 导航与 Skills
 
-## Cross-Device Workflow
+- 在服务端将选中的 skill 标识符解析到目录条目，防止浏览器提供任意 skill 路径。
+- 只有在完成独立的安全和协议设计后才安装或配置 skill；由 skill 触发的命令必须
+  继续经过正常的 Codex 审批。
 
-- Image attachment and official `localImage` input with explicit size, type,
-  storage, and lifecycle limits.
-- A persistent message queue that can be prepared on one device and consumed by
-  the active thread without duplicate or stale-turn delivery.
-- Connection recovery that makes long-running turns and pending approvals clear
-  after a mobile browser sleeps or reconnects.
+## 跨设备工作流
 
-## Host Capabilities
+- 持久消息队列：可以在一台设备上准备消息，再由活跃线程消费，同时避免重复或过期
+  轮次投递。
+- 连接恢复：移动浏览器休眠或重新连接后，清楚呈现长时间运行的轮次和待处理审批。
 
-- Fixed host actions may expose server-configured action identifiers, never a
-  browser-provided command string. Actions that execute repository code still
-  require explicit confirmation and bounded output.
-- An external browser-rendered SSH application on a separate Access-protected
-  hostname may provide terminal access without embedding a shell in Ask Codex.
-- A full embedded PTY, if pursued, must default off and use a separate endpoint,
-  unprivileged user or container, environment allowlist, concurrency and idle
-  limits, process-tree cleanup, and output backpressure. It does not inherit
-  Codex approvals and therefore needs its own threat model.
+## 宿主机能力
+
+- 固定宿主机操作可以公开服务端配置的操作标识符，但绝不能公开由浏览器提供的命令
+  字符串。执行仓库代码的操作仍需明确确认，并限制输出。
+- 在另一个受 Access 保护的主机名上部署由浏览器呈现的外部 SSH 应用，可以提供终端
+  访问，而无需在 Ask Codex 中嵌入 shell。
+- 如果实现完整的嵌入式 PTY，必须默认关闭，并使用独立端点、非特权用户或容器、环境
+  allowlist、并发和空闲限制、进程树清理及输出背压。它不继承 Codex 审批，因此需要
+  自己的威胁模型。

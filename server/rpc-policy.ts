@@ -7,6 +7,7 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "thread/resume",
   "thread/read",
   "thread/turns/list",
+  "thread/items/list",
   "turn/start",
   "turn/interrupt",
   "model/list",
@@ -101,13 +102,16 @@ function optionalBoolean(
 function optionalLimit(
   method: string,
   params: Record<string, unknown>,
+  maximum = 1_000,
 ): number | undefined {
   const value = params.limit;
   if (value === undefined || value === null) {
     return undefined;
   }
-  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 1_000) {
-    throw new ClientInputError(`${method} limit must be an integer between 1 and 1000`);
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > maximum) {
+    throw new ClientInputError(
+      `${method} limit must be an integer between 1 and ${maximum}`,
+    );
   }
   return value as number;
 }
@@ -115,11 +119,12 @@ function optionalLimit(
 function optionalNullableLimit(
   method: string,
   params: Record<string, unknown>,
+  maximum = 1_000,
 ): number | null | undefined {
   if (params.limit === null) {
     return null;
   }
-  return optionalLimit(method, params);
+  return optionalLimit(method, params, maximum);
 }
 
 function optionalNullableEnum(
@@ -232,6 +237,37 @@ function sanitizeThreadTurnsList(params: unknown): Record<string, unknown> {
   return output;
 }
 
+function sanitizeThreadItemsList(params: unknown): Record<string, unknown> {
+  const method = "thread/items/list";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, [
+    "threadId",
+    "turnId",
+    "cursor",
+    "limit",
+    "sortDirection",
+  ]);
+
+  const output: Record<string, unknown> = {
+    threadId: requiredString(method, input, "threadId"),
+    turnId: requiredString(method, input, "turnId"),
+  };
+  const cursor = input.cursor;
+  if (cursor !== undefined) {
+    if (cursor !== null && typeof cursor !== "string") {
+      throw new ClientInputError(`${method} cursor must be a string or null`);
+    }
+    output.cursor = cursor;
+  }
+  assignDefined(output, "limit", optionalNullableLimit(method, input, 100));
+  assignDefined(
+    output,
+    "sortDirection",
+    optionalNullableEnum(method, input, "sortDirection", SORT_DIRECTIONS),
+  );
+  return output;
+}
+
 function sanitizeInitialTurnsPage(value: unknown): Record<string, unknown> | null | undefined {
   if (value === undefined || value === null) {
     return value;
@@ -286,6 +322,8 @@ function sanitizeThreadSettings(
       "initialTurnsPage",
       sanitizeInitialTurnsPage(input.initialTurnsPage),
     );
+  } else {
+    output.historyMode = "paginated";
   }
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));
@@ -381,6 +419,8 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
     }
     case "thread/turns/list":
       return sanitizeThreadTurnsList(params);
+    case "thread/items/list":
+      return sanitizeThreadItemsList(params);
     case "turn/start":
       return sanitizeTurnStart(params);
     case "turn/interrupt": {

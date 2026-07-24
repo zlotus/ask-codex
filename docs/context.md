@@ -1,65 +1,59 @@
-# Project Context
+# 项目上下文
 
-Last reviewed: 2026-07-23
+**简体中文** | [English](context.en.md)
 
-## Purpose
+最后审阅：2026-07-23
 
-Ask Codex is a single-user, local-first browser client for Codex. It gives one
-developer a responsive desktop and mobile interface to native Codex threads
-while the Codex process, credentials, and workspace remain on the host.
+## 项目目的
 
-The primary use case includes continuing development from another device and
-reaching a trusted host through Cloudflare Zero Trust. Remote convenience must
-not weaken manual approvals or turn the browser gateway into a general-purpose
-remote execution API.
+Ask Codex 是一个面向单用户、以本地为中心的 Codex 浏览器客户端。它为一名开发者
+提供响应式的桌面端和移动端界面，用于访问 Codex 原生线程，同时 Codex 进程、凭据
+和工作区仍保留在宿主机上。
 
-## Product Goals
+主要使用场景包括从另一台设备继续开发，以及通过 Cloudflare Zero Trust 访问受信任
+的宿主机。远程访问的便利性不得削弱人工审批，也不得把浏览器网关变成通用远程执行
+API。
 
-- Provide a polished Codex-only conversation and development interface in a
-  browser, including streamed messages, plans, tools, code, diffs, and approval
-  requests.
-- Preserve Codex-native thread history so CLI, editor, and browser workflows can
-  continue the same conversations.
-- Keep consequential actions visible and subject to the user's manual approval.
-- Remain practical on a small always-on Linux host, including ARM64, and usable
-  from desktop and mobile browsers.
-- Add rich client capabilities incrementally without broadening the gateway's
-  authority by accident.
+## 产品目标
 
-## Non-Goals
+- 在浏览器中提供精致且仅面向 Codex 的对话与开发界面，包括流式消息、计划、工具、
+  代码、diff 和审批请求。
+- 保留 Codex 原生线程历史，让 CLI、编辑器和浏览器工作流能够继续同一组对话。
+- 让有实际影响的操作保持可见，并须经用户人工审批。
+- 能够切实运行在小型常开 Linux 主机（包括 ARM64）上，并可从桌面端和移动端浏览器
+  使用。
+- 逐步增加丰富的客户端能力，避免意外扩大网关权限。
 
-- A multi-user service, hosted SaaS product, or role-based collaboration system.
-- A provider-neutral agent frontend or a replacement session database.
-- A wrapper around the Codex terminal UI or Codex Desktop private IPC.
-- An arbitrary browser-to-Codex RPC proxy, file server, or remote shell.
-- Treating the initial workspace directory as a filesystem security boundary.
-- Synchronizing uncommitted work between devices; Git remains the handoff
-  mechanism for source and project documentation.
+## 非目标
 
-## System Shape
+- 多用户服务、托管 SaaS 产品或基于角色的协作系统。
+- 与模型提供商无关的智能体前端，或替代性的会话数据库。
+- Codex 终端 UI 的包装器，或对 Codex Desktop 私有 IPC 的封装。
+- 任意的浏览器到 Codex RPC 代理、文件服务器或远程 shell。
+- 把初始工作区目录视为文件系统安全边界。
+- 在设备间同步未提交的工作；源码和项目文档仍通过 Git 交接。
+
+## 系统形态
 
 ```text
-Browser UI
-  -> Ask Codex HTTP/WebSocket gateway
-  -> codex app-server (JSONL over stdio)
-  -> local workspace and Codex credentials
+浏览器 UI
+  -> Ask Codex HTTP/WebSocket 网关
+  -> codex app-server（通过 stdio 传输 JSONL）
+  -> 本地工作区和 Codex 凭据
 ```
 
-The React client owns presentation and normalized streamed state. The gateway
-owns authentication, Origin and Host validation, request limits, RPC policy,
-approval routing, and the Codex child process. Codex remains the authority for
-threads, turns, items, models, and protocol behavior.
+React 客户端负责呈现和规范化的流式状态。网关负责身份验证、Origin 和 Host 校验、
+请求限制、RPC 策略、审批路由以及 Codex 子进程。Codex 仍是线程、轮次、条目、模型
+和协议行为的权威来源。
 
-For public-hostname deployments, Cloudflare Access is an outer identity gate,
-the Ask Codex token is an independent application gate, and Codex approval is
-the execution gate. The service remains bound to loopback behind the tunnel.
+使用公共主机名部署时，Cloudflare Access 是外层身份关卡，Ask Codex token 是独立的
+应用关卡，Codex 审批是执行关卡。服务在隧道后方仍只绑定回环地址。
 
-## Long-Term Constraints
+## 长期约束
 
-- Follow the documented `codex app-server` interface and generate bindings from
-  the installed CLI when protocol details change.
-- Treat the security invariants in `AGENTS.md` as normative. Product evolution
-  must preserve the gateway policy boundary, manual approval, fail-closed
-  behavior, and independent remote-access gates.
-- Prefer focused, auditable features over embedding a broad browser IDE. A full
-  PTY, if ever added, must be treated as a separate high-risk host capability.
+- 遵循有文档记录的 `codex app-server` 接口；协议细节变化时，从已安装的 CLI 生成
+  bindings。
+- 将 `AGENTS.md` 中的安全不变量视为规范要求。产品演进必须保留网关策略边界、人工
+  审批、失败时关闭的行为，以及彼此独立的远程访问关卡。
+- 与其嵌入一个宽泛的浏览器 IDE，不如优先实现范围明确、可审计的功能。完整 PTY
+  即使将来加入，也必须被视为独立的高风险宿主机能力。

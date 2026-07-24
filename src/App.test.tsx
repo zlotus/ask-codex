@@ -272,4 +272,121 @@ describe("App thread settings lifecycle", () => {
       cwd: "/workspace/draft",
     }));
   });
+
+  it("hydrates a large summary turn through item pages", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === "thread/resume") {
+        return {
+          thread: existingThread,
+          cwd: existingThread.cwd,
+          model: existingThread.model,
+          sandbox: { type: "workspaceWrite" },
+          initialTurnsPage: {
+            data: [{
+              id: "turn-large",
+              status: "completed",
+              itemsView: "summary",
+              items: [{ id: "summary", type: "agentMessage", text: "Summary only" }],
+            }],
+            nextCursor: null,
+            backwardsCursor: null,
+          },
+        };
+      }
+      if (method === "thread/items/list") {
+        const request = params as { cursor?: string };
+        return request.cursor === "item-page-2"
+          ? {
+              data: [{
+                turnId: "turn-large",
+                item: { id: "agent", type: "agentMessage", text: "Second item page" },
+              }],
+              nextCursor: null,
+              backwardsCursor: "item-page-2-backwards",
+            }
+          : {
+              data: [{
+                turnId: "turn-large",
+                item: { id: "user", type: "userMessage", text: "First item page" },
+              }],
+              nextCursor: "item-page-2",
+              backwardsCursor: "item-page-1-backwards",
+            };
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    fireEvent.click(await screen.findByRole("button", { name: "Load full detail" }));
+
+    expect(await screen.findByText("First item page")).toBeInTheDocument();
+    expect(screen.queryByText("Summary only")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more detail" }));
+
+    expect(await screen.findByText("Second item page")).toBeInTheDocument();
+    expect(screen.queryByText("Large turn detail loaded in parts")).not.toBeInTheDocument();
+    expect(socket.rpc).toHaveBeenCalledWith("thread/items/list", {
+      threadId: "thread-existing",
+      turnId: "turn-large",
+      limit: 10,
+      sortDirection: "asc",
+    });
+    expect(socket.rpc).toHaveBeenCalledWith("thread/items/list", {
+      threadId: "thread-existing",
+      turnId: "turn-large",
+      cursor: "item-page-2",
+      limit: 10,
+      sortDirection: "asc",
+    });
+  });
+
+  it("falls back to a full-turn retry when item pagination is unsupported", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === "thread/resume") {
+        return {
+          thread: { ...existingThread, historyMode: "legacy" },
+          initialTurnsPage: {
+            data: [{
+              id: "turn-legacy",
+              status: "completed",
+              itemsView: "summary",
+              items: [],
+            }],
+            nextCursor: null,
+            backwardsCursor: null,
+          },
+        };
+      }
+      if (method === "thread/turns/list") {
+        return {
+          data: [{
+            id: "turn-legacy",
+            status: "completed",
+            itemsView: "full",
+            items: [{ id: "agent", type: "agentMessage", text: "Legacy full detail" }],
+          }],
+          nextCursor: null,
+          backwardsCursor: null,
+        };
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    fireEvent.click(await screen.findByRole("button", { name: "Load full detail" }));
+
+    expect(await screen.findByText("Legacy full detail")).toBeInTheDocument();
+    expect(socket.rpc).toHaveBeenCalledWith("thread/turns/list", expect.objectContaining({
+      threadId: "thread-existing",
+      limit: 1,
+      itemsView: "full",
+    }));
+    expect(socket.rpc).not.toHaveBeenCalledWith("thread/items/list", expect.anything());
+  });
 });

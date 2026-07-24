@@ -95,7 +95,8 @@ export interface CodexTurn {
   recoveryOmissions?: string[];
   historyDetail?: {
     cursor: string | null;
-    status: "idle" | "loading" | "error";
+    nextItemCursor?: string;
+    status: "idle" | "loading" | "error" | "unavailable";
     error: string | null;
   };
   [key: string]: unknown;
@@ -103,6 +104,17 @@ export interface CodexTurn {
 
 export interface CodexTurnsPage {
   data: CodexTurn[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
+}
+
+export interface CodexItemEntry {
+  turnId: string;
+  item: CodexItem;
+}
+
+export interface CodexItemsPage {
+  data: CodexItemEntry[];
   nextCursor: string | null;
   backwardsCursor: string | null;
 }
@@ -115,6 +127,7 @@ export interface CodexThread {
   model?: string;
   createdAt?: number | string;
   updatedAt?: number | string;
+  historyMode?: "legacy" | "paginated";
   status?: string | Record<string, unknown>;
   turns?: CodexTurn[];
   [key: string]: unknown;
