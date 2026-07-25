@@ -37,6 +37,11 @@ import {
   sandboxMode,
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
+import {
+  SessionImagePreviewRegistry,
+  sessionImagePreviewKey,
+  type SessionImagePreviewSnapshot,
+} from "./utils/sessionImagePreviews";
 import { filterSnapshotCoveredNotifications, ResyncCoordinator } from "./utils/resyncCoordinator";
 import {
   configuredTurnSettings,
@@ -117,6 +122,7 @@ export default function App() {
   const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
   const [sandboxOverride, setSandboxOverride] = useState<ThreadSettings["sandbox"] | null>(null);
+  const [imagePreviews, setImagePreviews] = useState<SessionImagePreviewSnapshot>({});
   const toastIdRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
@@ -127,6 +133,11 @@ export default function App() {
   const bootstrapCwdInitializedRef = useRef(false);
   const nextTurnSettingsInitializedRef = useRef(false);
   const settingsLoadGenerationRef = useRef(0);
+  const imagePreviewsMountedRef = useRef(false);
+  const imagePreviewRegistryRef = useRef<SessionImagePreviewRegistry | null>(null);
+  if (imagePreviewRegistryRef.current === null) {
+    imagePreviewRegistryRef.current = new SessionImagePreviewRegistry();
+  }
   const composerSettings = useMemo<ThreadSettings>(
     () => ({ ...state.settings, ...nextTurnSettings }),
     [nextTurnSettings, state.settings],
@@ -136,6 +147,31 @@ export default function App() {
     selectedThreadIdRef.current = state.selectedThreadId;
     currentThreadRef.current = state.currentThread;
   }, [state.currentThread, state.selectedThreadId]);
+
+  useEffect(() => {
+    imagePreviewsMountedRef.current = true;
+    return () => {
+      imagePreviewsMountedRef.current = false;
+      imagePreviewRegistryRef.current?.clear();
+    };
+  }, []);
+
+  const rememberImagePreviews = useCallback((
+    threadId: string,
+    turnId: string,
+    images: readonly File[],
+    attachments: readonly UploadedAttachment[],
+  ) => {
+    const registry = imagePreviewRegistryRef.current;
+    if (!imagePreviewsMountedRef.current || !registry || images.length === 0) return;
+    const previewBlobs = images.map((image, index) => {
+      const mediaType = attachments[index]?.mediaType;
+      return mediaType && image.type !== mediaType
+        ? image.slice(0, image.size, mediaType)
+        : image;
+    });
+    setImagePreviews(registry.remember(sessionImagePreviewKey(threadId, turnId), previewBlobs));
+  }, []);
 
   const showToast = useCallback((message: string, tone: ToastMessage["tone"] = "error") => {
     const id = ++toastIdRef.current;
@@ -808,6 +844,7 @@ export default function App() {
       });
       turnAccepted = true;
       const turn = extractTurn(result);
+      if (turn) rememberImagePreviews(thread.id, turn.id, images, uploaded);
       if (turn && selectionGeneration === selectionGenerationRef.current) {
         dispatch({ type: "upsertTurn", turn, threadId: thread.id });
       }
@@ -819,7 +856,7 @@ export default function App() {
       showToast(errorMessage(error));
       throw error;
     }
-  }, [nextTurnSettings, refreshThreads, rpc, sandboxOverride, showToast, state.currentThread, state.settings, token]);
+  }, [nextTurnSettings, refreshThreads, rememberImagePreviews, rpc, sandboxOverride, showToast, state.currentThread, state.settings, token]);
 
   const stopTurn = useCallback(async () => {
     if (!state.currentThread || !state.activeTurnId) return;
@@ -894,6 +931,7 @@ export default function App() {
           historyLoading={state.turnHistory.status === "loading"}
           hasMore={state.turnHistory.nextCursor !== null}
           historyError={state.turnHistory.error}
+          imagePreviews={imagePreviews}
           onLoadEarlier={() => void loadEarlierTurns()}
           onLoadTurnDetail={(turnId) => void loadTurnDetail(turnId)}
           onRetryThread={() => {

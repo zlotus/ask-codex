@@ -1,6 +1,7 @@
 import { Bot, LoaderCircle } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { CodexThread } from "../types/protocol";
+import { sessionImagePreviewKey, type SessionImagePreviewSnapshot } from "../utils/sessionImagePreviews";
 import { TurnView } from "./TurnView";
 
 interface ConversationProps {
@@ -10,6 +11,7 @@ interface ConversationProps {
   historyLoading: boolean;
   hasMore: boolean;
   historyError: string | null;
+  imagePreviews?: SessionImagePreviewSnapshot;
   onLoadEarlier: () => void;
   onLoadTurnDetail: (turnId: string) => void;
   onRetryThread: () => void;
@@ -22,6 +24,7 @@ export function Conversation({
   historyLoading,
   hasMore,
   historyError,
+  imagePreviews = {},
   onLoadEarlier,
   onLoadTurnDetail,
   onRetryThread,
@@ -73,7 +76,12 @@ export function Conversation({
             )}
             {turns.length > 0 ? (
               turns.map((turn) => (
-                <TurnView key={turn.id} turn={turn} onLoadFullDetail={onLoadTurnDetail} />
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  imagePreviewUrls={thread ? imagePreviews[sessionImagePreviewKey(thread.id, turn.id)] : undefined}
+                  onLoadFullDetail={onLoadTurnDetail}
+                />
               ))
             ) : (
               <div className="conversation-empty">

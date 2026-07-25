@@ -33,8 +33,11 @@ events, but it does not get a general-purpose file-serving endpoint.
   Initial selections come from Codex's effective configuration; alternatives
   come from `model/list`.
 - Select or paste PNG, JPEG, and WebP images, preview them, and send them with
-  text or on their own. Temporary uploads, count, size, and lifecycle are
-  bounded at the gateway, and image bytes do not enter WebSocket JSON.
+  text or on their own. After a successful send, the current page retains
+  bounded, clickable thumbnails; a reload or another device falls back to a
+  safe placeholder that exposes no path. Temporary uploads, count, size, and
+  lifecycle are bounded at the gateway, and image bytes do not enter WebSocket
+  JSON.
 - Interrupt an active turn.
 - Responsive desktop and mobile layouts.
 - Optional web access token, Origin checks, and loopback-only defaults.

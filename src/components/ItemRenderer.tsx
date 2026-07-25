@@ -35,6 +35,7 @@ const FAILURE_PREVIEW_MAX_LINES = 3;
 
 interface ItemRendererProps {
   disclosureOpen?: boolean;
+  imagePreviewUrls?: readonly string[];
   item: CodexItem;
   onDisclosureOpenChange?: (open: boolean) => void;
 }
@@ -118,7 +119,7 @@ function ToolDisclosureSummary({
   );
 }
 
-function UserMessage({ item }: ItemRendererProps) {
+function UserMessage({ imagePreviewUrls, item }: ItemRendererProps) {
   const orderedContent = userMessageContent(item);
   const fallbackText = orderedContent.length === 0 ? itemText(item) : "";
   const imageCount = orderedContent.filter((part) => part.type !== "text").length;
@@ -134,12 +135,36 @@ function UserMessage({ item }: ItemRendererProps) {
         const imageNumber = orderedContent
           .slice(0, index + 1)
           .filter((candidate) => candidate.type !== "text").length;
+        const localImageIndex = orderedContent
+          .slice(0, index + 1)
+          .filter((candidate) => candidate.type === "localImage").length - 1;
+        const previewUrl = part.type === "localImage" && localImageIndex >= 0
+          ? imagePreviewUrls?.[localImageIndex]
+          : undefined;
         return (
           <div className="message-images" key={`${part.type}:${part.detail ?? "auto"}:${index}`}>
-            <span className="message-image" aria-label={`Image ${imageNumber} of ${imageCount}`}>
-              <ImageIcon size={15} aria-hidden="true" />
-              <span>Image {imageCount > 1 ? imageNumber : "attachment"}</span>
-            </span>
+            {previewUrl ? (
+              <a
+                className="message-image-preview"
+                href={previewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open uploaded image"
+                aria-label={`Open uploaded image ${imageNumber} of ${imageCount}`}
+              >
+                <img
+                  src={previewUrl}
+                  alt={`Uploaded image ${imageNumber} of ${imageCount}`}
+                  loading="lazy"
+                  decoding="async"
+                />
+              </a>
+            ) : (
+              <span className="message-image" aria-label={`Image ${imageNumber} of ${imageCount}`}>
+                <ImageIcon size={15} aria-hidden="true" />
+                <span>Image {imageCount > 1 ? imageNumber : "attachment"}</span>
+              </span>
+            )}
           </div>
         );
       })}
@@ -394,7 +419,7 @@ export function ItemRenderer(props: ItemRendererProps) {
   const { item } = props;
   switch (item.type) {
     case "userMessage":
-      return <UserMessage item={item} />;
+      return <UserMessage {...props} />;
     case "agentMessage":
       return <AgentMessage item={item} />;
     case "reasoning":

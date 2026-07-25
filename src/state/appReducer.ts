@@ -340,8 +340,23 @@ function uniqueTurnsInOrder(turns: CodexTurn[]): CodexTurn[] {
   });
 }
 
+function itemsViewRank(value: unknown): number {
+  if (value === "full") return 3;
+  if (value === "summary") return 2;
+  if (value === "notLoaded") return 1;
+  return 0;
+}
+
+function moreCompleteItemsView(existing: unknown, snapshot: unknown): unknown {
+  const existingRank = itemsViewRank(existing);
+  const snapshotRank = itemsViewRank(snapshot);
+  if (snapshotRank > existingRank) return snapshot;
+  if (existingRank > snapshotRank) return existing;
+  return existing ?? snapshot;
+}
+
 function reconcileSnapshotTurn(existing: CodexTurn, snapshot: CodexTurn): CodexTurn {
-  if (snapshot.itemsView !== "summary" && snapshot.itemsView !== undefined) {
+  if (snapshot.itemsView === "full") {
     const reconciled = { ...existing, ...snapshot };
     delete reconciled.historyDetail;
     return reconciled;
@@ -352,12 +367,13 @@ function reconcileSnapshotTurn(existing: CodexTurn, snapshot: CodexTurn): CodexT
     ...snapshot,
     items: existing.items,
   };
-  if (existing.itemsView !== undefined) {
-    reconciled.itemsView = existing.itemsView;
-  }
+  const itemsView = moreCompleteItemsView(existing.itemsView, snapshot.itemsView);
+  if (itemsView === undefined) delete reconciled.itemsView;
+  else reconciled.itemsView = itemsView;
   if (existing.historyDetail !== undefined) {
     reconciled.historyDetail = existing.historyDetail;
-  } else if (existing.itemsView === "full") {
+  }
+  if (itemsView === "full") {
     delete reconciled.historyDetail;
   }
   return reconciled;

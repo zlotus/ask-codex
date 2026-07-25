@@ -27,7 +27,9 @@ The implementation currently provides:
   threads retain the one-turn full-detail retry.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering, with explicit
-  stream and message-size bounds.
+  stream and message-size bounds. Non-full completion or resync snapshots do
+  not erase already materialized streamed content; only an explicit `full`
+  snapshot may replace items.
 - Reusable syntax-highlighted code blocks, copy and wrap controls, structured
   unified/split diffs, safe raw-diff fallback, and bounded two-level tool
   disclosures that group consecutive commands, file changes, MCP calls, and
@@ -50,7 +52,9 @@ The implementation currently provides:
   a temporary HTTP attachment endpoint governed by the existing HTTP token and
   Origin/Host policy. One-use IDs are rebuilt into official `localImage` paths
   at the gateway; count, byte, concurrency, storage, and lifecycle limits are
-  explicit, and history uses safe image placeholders.
+  explicit. Successfully sent local images remain available as clickable
+  thumbnails for the current page session; after a reload, on another device,
+  or after browser-memory eviction, history falls back to safe placeholders.
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
@@ -88,8 +92,10 @@ without relying on prior chat history.
 - Image attachments are deleted after a turn completes. Normal subsequent
   Codex context is unaffected, but another native client cannot use the deleted
   `localImage.path` to edit history and reattach the original image; persistent
-  attachment ownership and garbage collection are not designed. General file
-  and audio input are also not exposed.
+  attachment ownership and garbage collection are not designed. Current-page
+  thumbnails exist only in browser memory, are capped at 8 images and 40 MiB,
+  and do not persist across reloads or devices. General file and audio input
+  are also not exposed.
 - Turn steering, persistent cross-device message queues, fixed host actions,
   and an embedded PTY are not implemented.
 
@@ -134,16 +140,19 @@ Verified on 2026-07-25 with Node.js `v24.13.1`, npm `11.12.1`, and Codex CLI
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 23 files, 270 tests. The server tests were run in an
+- `npm test` passed: 24 files, 277 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
+- Current CLI bindings were generated and checked: `TurnItemsView` is
+  `notLoaded | summary | full`, and `turn/completed` carries a `Turn` object.
+  No real turn was created.
 - A direct app-server protocol smoke check passed: an ephemeral `thread/start`
   without `historyMode` returned `historyMode: "legacy"`; no real turn was
   created.
-- This change does not modify the interface, so the visual check was not rerun.
-  The most recent visual check passed on 2026-07-24: `node
-  scripts/visual-check.mjs` exercised the production build on port 4173 with
-  deterministic desktop and mobile fixtures, including the new-thread dialog,
-  configured model selections, image previews, grouped tools, and a simulated
-  approval reason, with no horizontal overflow, overlapping controls, clipped
-  rich content, console errors, or page errors.
+- `CHROME_BIN=/usr/bin/chromium-browser npm run check:visual` passed against the
+  production build on port 4173. Deterministic desktop and 390x844 mobile
+  fixtures covered the new-thread dialog, configured model selections, draft
+  image previews, sent-image thumbnails and their new-tab behavior, grouped
+  tools, and a simulated approval reason. They created no real Codex turn and
+  found no horizontal overflow, overlapping controls, clipped rich content,
+  console errors, or page errors.

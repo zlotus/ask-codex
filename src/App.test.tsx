@@ -1,22 +1,33 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import type { NotificationMessage } from "./types/protocol";
 
 const socket = vi.hoisted(() => ({
   connection: "connected",
   rpc: vi.fn(),
   respond: vi.fn(),
+  onNotification: null as ((message: NotificationMessage) => void) | null,
 }));
 
 vi.mock("./hooks/useCodexSocket", () => ({
-  useCodexSocket: () => ({
-    connection: socket.connection,
-    connectionDetail: "Ready",
-    rpc: socket.rpc,
-    respond: socket.respond,
-    reconnect: vi.fn(),
-  }),
+  useCodexSocket: (options: { onNotification: (message: NotificationMessage) => void }) => {
+    socket.onNotification = options.onNotification;
+    return {
+      connection: socket.connection,
+      connectionDetail: "Ready",
+      rpc: socket.rpc,
+      respond: socket.respond,
+      reconnect: vi.fn(),
+    };
+  },
 }));
+
+let objectUrlSequence = 0;
+const createObjectURL = vi.fn((blob: Blob) => (
+  `blob:${blob instanceof File ? blob.name : blob.type}:${++objectUrlSequence}`
+));
+const revokeObjectURL = vi.fn();
 
 const existingThread = {
   id: "thread-existing",
@@ -113,14 +124,18 @@ describe("App thread settings lifecycle", () => {
     });
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn((file: File) => `blob:${file.name}`),
+      value: createObjectURL,
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn(),
+      value: revokeObjectURL,
     });
+    objectUrlSequence = 0;
+    createObjectURL.mockClear();
+    revokeObjectURL.mockClear();
     socket.rpc.mockReset();
     socket.respond.mockReset();
+    socket.onNotification = null;
     socket.connection = "connected";
     installRpcFixture();
   });
@@ -145,7 +160,7 @@ describe("App thread settings lifecycle", () => {
     }));
   });
 
-  it("uploads image bytes over authenticated HTTP and sends only attachment IDs to the gateway", async () => {
+  it("uploads generic-MIME image bytes and retains a preview with the detected MIME", async () => {
     sessionStorage.setItem("ASK_CODEX_TOKEN", "browser-token");
     const attachmentId = "a".repeat(32);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -170,6 +185,25 @@ describe("App thread settings lifecycle", () => {
       throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/start"
+        ? Promise.resolve({
+            turn: {
+              id: "turn-image",
+              status: "inProgress",
+              items: [{
+                id: "user-image",
+                type: "userMessage",
+                content: [
+                  { type: "text", text: "Inspect this", text_elements: [] },
+                  { type: "localImage", path: "/private/server/screen.png" },
+                ],
+              }],
+            },
+          })
+        : baseRpc?.(method, params)
+    ));
     render(<App />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/bootstrap",
@@ -177,7 +211,7 @@ describe("App thread settings lifecycle", () => {
         headers: { Authorization: "Bearer browser-token" },
       }),
     ));
-    const file = new File([PNG], "screen.png", { type: "image/png" });
+    const file = new File([PNG], "screen.png", { type: "application/octet-stream" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "Inspect this" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -201,6 +235,64 @@ describe("App thread settings lifecycle", () => {
       }),
     }));
     await waitFor(() => expect(screen.queryByText("screen.png")).not.toBeInTheDocument());
+    const preview = await screen.findByRole("link", { name: "Open uploaded image 1 of 1" });
+    expect(preview).toHaveAttribute("href", "blob:image/png:2");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:screen.png:1");
+    expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:image/png:2");
+    expect(createObjectURL.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      size: file.size,
+      type: "image/png",
+    }));
+    expect(document.body).not.toHaveTextContent("/private/server/screen.png");
+  });
+
+  it("keeps streamed conversation visible after a notLoaded completion notification", async () => {
+    const fetchMock = installBootstrapFixture();
+    render(<App />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "item/started",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-new",
+        item: { id: "agent-stream", type: "agentMessage" },
+      },
+    }));
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-new",
+        itemId: "agent-stream",
+        delta: "Streamed response remains visible",
+      },
+    }));
+    expect(await screen.findByText("Streamed response remains visible")).toBeInTheDocument();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: "thread-existing",
+        turn: {
+          id: "turn-new",
+          status: "completed",
+          itemsView: "notLoaded",
+          items: [],
+        },
+      },
+    }));
+
+    expect(screen.getByText("Streamed response remains visible")).toBeInTheDocument();
+    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
   });
 
   it("cancels a prepared image turn when thread selection changes during upload", async () => {

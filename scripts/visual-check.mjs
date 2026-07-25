@@ -8,6 +8,7 @@ const fixtureImage = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 );
+const fixtureAttachmentId = "visualfixtureattachmentid0000001";
 
 await mkdir(outputDirectory, { recursive: true });
 
@@ -114,6 +115,18 @@ async function installFixture(page) {
       codexVersion: "codex-cli/visual-fixture",
     }),
   }));
+  await page.route("**/api/attachments", (route) => route.fulfill({
+    status: 201,
+    contentType: "application/json",
+    body: JSON.stringify({
+      attachment: {
+        id: fixtureAttachmentId,
+        mediaType: "image/png",
+        size: fixtureImage.byteLength,
+        expiresAt: Date.now() + 60_000,
+      },
+    }),
+  }));
 
   await page.routeWebSocket("**/ws", (socket) => {
     globalThis.setTimeout(() => socket.send(JSON.stringify({
@@ -160,6 +173,26 @@ async function installFixture(page) {
         };
       } else if (message.method === "thread/turns/list") {
         result = { data: [], nextCursor: null, backwardsCursor: null };
+      } else if (message.method === "turn/start") {
+        result = {
+          turn: {
+            id: "turn-image-preview",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "user-image-preview",
+                type: "userMessage",
+                content: [{ type: "localImage" }],
+              },
+              {
+                id: "agent-image-preview",
+                type: "agentMessage",
+                text: "The uploaded image is available in this browser session.",
+              },
+            ],
+          },
+        };
       }
       socket.send(JSON.stringify({ type: "rpcResult", id: message.id, result }));
       if (message.method === "thread/resume") {
@@ -295,6 +328,47 @@ async function inspectComposerImage(page) {
   });
 }
 
+async function sendAndInspectFixtureImage(page) {
+  await addFixtureImage(page);
+  await page.getByRole("button", { name: "Send message" }).click();
+  const preview = page.getByRole("link", { name: "Open uploaded image 1 of 1" });
+  await preview.waitFor();
+  await page.waitForFunction(() => {
+    const image = document.querySelector(".message-image-preview img");
+    return image?.complete && image.naturalWidth > 0;
+  });
+  await page.waitForTimeout(100);
+  await preview.scrollIntoViewIfNeeded();
+  const [openedPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    preview.click(),
+  ]);
+  await openedPage.waitForLoadState("domcontentloaded");
+  const opened = openedPage.url().startsWith("blob:");
+  await openedPage.close();
+  const layout = await page.evaluate(() => {
+    const link = document.querySelector(".message-image-preview");
+    const image = link?.querySelector("img");
+    const linkBox = link?.getBoundingClientRect();
+    const imageBox = image?.getBoundingClientRect();
+    const conversationBox = document.querySelector(".conversation-scroll")?.getBoundingClientRect();
+    return {
+      count: document.querySelectorAll(".message-image-preview").length,
+      loaded: image?.complete && image.naturalWidth > 0,
+      openable: link?.tagName === "A" && link.target === "_blank" && link.href.startsWith("blob:"),
+      contained: Boolean(linkBox && imageBox && conversationBox &&
+        linkBox.left >= conversationBox.left && linkBox.right <= conversationBox.right &&
+        linkBox.top >= conversationBox.top && linkBox.bottom <= conversationBox.bottom &&
+        imageBox.left >= linkBox.left && imageBox.right <= linkBox.right &&
+        imageBox.top >= linkBox.top && imageBox.bottom <= linkBox.bottom),
+      dimensionsStable: Boolean(linkBox && linkBox.width > 0 && linkBox.height > 0),
+      objectFit: image ? window.getComputedStyle(image).objectFit : null,
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  return { ...layout, opened };
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await installFixture(page);
@@ -337,6 +411,8 @@ try {
   await page.screenshot({ path: `${outputDirectory}/desktop-new-thread.png`, fullPage: true });
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await selectFixture(page);
+  const desktopSentImage = await sendAndInspectFixtureImage(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-sent-image.png`, fullPage: true });
   await page.locator(".conversation-scroll").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: `${outputDirectory}/desktop-code.png`, fullPage: true });
   await openRichDetails(page);
@@ -379,6 +455,8 @@ try {
   const sidebarBox = await page.locator(".sidebar--open").boundingBox();
   await page.screenshot({ path: `${outputDirectory}/mobile-sidebar.png`, fullPage: true });
   await selectFixture(page);
+  const mobileSentImage = await sendAndInspectFixtureImage(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
   await openRichDetails(page);
   await page.locator(".file-change-entry").scrollIntoViewIfNeeded();
   const mobileRich = await inspectRichLayout(page);
@@ -391,12 +469,14 @@ try {
     desktop: {
       ...desktop,
       composerImage: desktopComposerImage,
+      sentImage: desktopSentImage,
       dialog: desktopDialog,
       rich: desktopRich,
     },
     mobile: {
       ...mobileBefore,
       composerImage: mobileComposerImage,
+      sentImage: mobileSentImage,
       dialog: mobileDialog,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -425,6 +505,14 @@ try {
     !desktopComposerImage.removeVisible ||
     !desktopComposerImage.compactControlsUsable ||
     desktopComposerImage.horizontalOverflow ||
+    desktopSentImage.count !== 1 ||
+    !desktopSentImage.loaded ||
+    !desktopSentImage.openable ||
+    !desktopSentImage.opened ||
+    !desktopSentImage.contained ||
+    !desktopSentImage.dimensionsStable ||
+    desktopSentImage.objectFit !== "contain" ||
+    desktopSentImage.horizontalOverflow ||
     desktop.connection === "error" ||
     !desktopDialog.fitsViewport ||
     !desktopDialog.cwdEditable ||
@@ -447,6 +535,14 @@ try {
     !mobileComposerImage.removeVisible ||
     !mobileComposerImage.compactControlsUsable ||
     mobileComposerImage.horizontalOverflow ||
+    mobileSentImage.count !== 1 ||
+    !mobileSentImage.loaded ||
+    !mobileSentImage.openable ||
+    !mobileSentImage.opened ||
+    !mobileSentImage.contained ||
+    !mobileSentImage.dimensionsStable ||
+    mobileSentImage.objectFit !== "contain" ||
+    mobileSentImage.horizontalOverflow ||
     !mobileDialog.fitsViewport ||
     !mobileDialog.cwdEditable ||
     !mobileDialog.sandboxEnabled ||

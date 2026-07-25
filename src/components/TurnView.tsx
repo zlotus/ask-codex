@@ -1,7 +1,7 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { CodexItem, CodexTurn } from "../types/protocol";
-import { errorMessage } from "../utils/protocol";
+import { errorMessage, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
 import { ItemRenderer } from "./ItemRenderer";
@@ -11,6 +11,7 @@ import { StatusPill } from "./StatusPill";
 import { isToolActivityItem } from "./activityUtils";
 
 interface TurnViewProps {
+  imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
   onLoadFullDetail?: (turnId: string) => void;
 }
@@ -23,14 +24,24 @@ interface ActivityDisclosureState {
   onStandaloneOpenChange: (itemId: string, open: boolean) => void;
 }
 
-function renderItems(items: CodexItem[], disclosure: ActivityDisclosureState) {
+function renderItems(
+  items: CodexItem[],
+  disclosure: ActivityDisclosureState,
+  imagePreviewUrls: readonly string[],
+) {
   const rendered = [];
   let index = 0;
+  let previewOffset = 0;
 
   while (index < items.length) {
     const item = items[index];
     if (!isToolActivityItem(item)) {
-      rendered.push(<ItemRenderer key={item.id} item={item} />);
+      const localImageCount = item.type === "userMessage"
+        ? userMessageImages(item).filter((image) => image.type === "localImage").length
+        : 0;
+      const itemPreviewUrls = imagePreviewUrls.slice(previewOffset, previewOffset + localImageCount);
+      previewOffset += localImageCount;
+      rendered.push(<ItemRenderer key={item.id} item={item} imagePreviewUrls={itemPreviewUrls} />);
       index += 1;
       continue;
     }
@@ -71,7 +82,7 @@ function renderItems(items: CodexItem[], disclosure: ActivityDisclosureState) {
   return rendered;
 }
 
-export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
+export function TurnView({ imagePreviewUrls = [], turn, onLoadFullDetail }: TurnViewProps) {
   const [groupOpenIds, setGroupOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const [itemOpenIds, setItemOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const historyDetail = turn.historyDetail;
@@ -146,7 +157,7 @@ export function TurnView({ turn, onLoadFullDetail }: TurnViewProps) {
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {renderItems(turn.items, disclosure)}
+      {renderItems(turn.items, disclosure, imagePreviewUrls)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />

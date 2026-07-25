@@ -40,6 +40,31 @@ describe("ItemRenderer", () => {
     expect(document.body).not.toHaveTextContent("private.example");
   });
 
+  it("renders browser-session local images as clickable previews", () => {
+    render(<ItemRenderer
+      imagePreviewUrls={["blob:local-first", "blob:local-second"]}
+      item={{
+        id: "user-preview-images",
+        type: "userMessage",
+        content: [
+          { type: "localImage", path: "/private/first.png" },
+          { type: "text", text: "Compare all three", text_elements: [] },
+          { type: "image", url: "https://private.example/remote.jpg" },
+          { type: "localImage", path: "/private/second.png" },
+        ],
+      }}
+    />);
+
+    const previews = screen.getAllByRole("link", { name: /Open uploaded image/ });
+    expect(previews).toHaveLength(2);
+    expect(previews[0]).toHaveAttribute("href", "blob:local-first");
+    expect(previews[0]).toHaveAttribute("target", "_blank");
+    expect(previews[1]).toHaveAttribute("href", "blob:local-second");
+    expect(screen.getByLabelText("Image 2 of 3")).toHaveTextContent("Image 2");
+    expect(document.body).not.toHaveTextContent("/private/first.png");
+    expect(document.body).not.toHaveTextContent("private.example");
+  });
+
   it("defers completed command output and strips terminal control sequences", () => {
     const { container } = render(<ItemRenderer item={{
       id: "command-1",

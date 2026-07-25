@@ -229,6 +229,57 @@ describe("appReducer", () => {
     }));
   });
 
+  it("promotes notLoaded streamed state to summary without allowing unknown views to downgrade it", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "notLoaded",
+          items: [{ id: "partial-item", type: "agentMessage", text: "streamed" }],
+        }],
+      },
+    });
+    const summarized = appReducer(hydrated, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          itemsView: "summary",
+          items: [],
+          historyDetail: { cursor: "turn-page", status: "idle", error: null },
+        }],
+      },
+    });
+    const unknown = appReducer(summarized, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          itemsView: "futureView",
+          items: [],
+        }],
+      },
+    });
+
+    expect(summarized.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      itemsView: "summary",
+      items: [expect.objectContaining({ id: "partial-item", text: "streamed" })],
+      historyDetail: { cursor: "turn-page", status: "idle", error: null },
+    }));
+    expect(unknown.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      itemsView: "summary",
+      items: [expect.objectContaining({ id: "partial-item", text: "streamed" })],
+      historyDetail: { cursor: "turn-page", status: "idle", error: null },
+    }));
+  });
+
   it("treats a legacy snapshot without itemsView as a conservative summary", () => {
     const hydrated = appReducer(initialState, {
       type: "setCurrentThread",
@@ -1125,15 +1176,69 @@ describe("appReducer", () => {
     expect(diffed.currentThread?.turns?.[0]?.diff).toContain("fixed");
   });
 
-  it("clears the active turn when turn/completed carries a full turn", () => {
-    const completed = appReducer({ ...stateWithTurn(), activeTurnId: "turn-1" }, {
+  it("keeps streamed items when turn/completed carries a notLoaded turn", () => {
+    const streaming = stateWithTurn();
+    streaming.currentThread = {
+      ...streaming.currentThread!,
+      turns: [{
+        id: "turn-1",
+        status: "inProgress",
+        items: [{
+          id: "agent-stream",
+          type: "agentMessage",
+          text: "Visible streamed answer",
+          streamOmittedCharacters: { text: 12 },
+        }],
+      }],
+    };
+    const completed = appReducer({ ...streaming, activeTurnId: "turn-1" }, {
       type: "upsertTurn",
       threadId: "thread-1",
-      turn: { id: "turn-1", status: "completed", items: [] },
+      turn: { id: "turn-1", status: "completed", itemsView: "notLoaded", items: [] },
     });
 
     expect(completed.activeTurnId).toBeNull();
-    expect(completed.currentThread?.turns?.[0]?.status).toBe("completed");
+    expect(completed.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      status: "completed",
+      items: [expect.objectContaining({
+        id: "agent-stream",
+        text: "Visible streamed answer",
+        streamOmittedCharacters: { text: 12 },
+      })],
+    }));
+  });
+
+  it("keeps materialized items when resync returns a notLoaded turn", () => {
+    const streaming = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ id: "agent-stream", type: "agentMessage", text: "Still here" }],
+        }],
+      },
+    });
+    const reconciled = appReducer(streaming, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          itemsView: "notLoaded",
+          items: [],
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      status: "completed",
+      itemsView: "full",
+      items: [expect.objectContaining({ id: "agent-stream", text: "Still here" })],
+    }));
   });
 
   it("sorts Unix-second and millisecond thread timestamps consistently", () => {
