@@ -6,11 +6,11 @@ Last reviewed: 2026-07-25
 
 ## Current Milestone
 
-The bounded image-input MVP is implemented, and new threads again use the
-app-server default history contract. Existing paginated threads retain
-item-level recovery for oversized turns. The next milestone returns to
-project-oriented navigation and read-only discovery without changing the
-manual-approval or remote-access trust model.
+The bounded image-input MVP and same-Origin browser-local reload previews are
+implemented, and new threads again use the app-server default history contract.
+Existing paginated threads retain item-level recovery for oversized turns. The
+next milestone returns to project-oriented navigation and read-only discovery
+without changing the manual-approval or remote-access trust model.
 
 ## Current Baseline
 
@@ -52,9 +52,12 @@ The implementation currently provides:
   a temporary HTTP attachment endpoint governed by the existing HTTP token and
   Origin/Host policy. One-use IDs are rebuilt into official `localImage` paths
   at the gateway; count, byte, concurrency, storage, and lifecycle limits are
-  explicit. Successfully sent local images remain available as clickable
-  thumbnails for the current page session; after a reload, on another device,
-  or after browser-memory eviction, history falls back to safe placeholders.
+  explicit. Successfully sent images retain bounded browser-local previews in
+  IndexedDB. The same browser profile and Origin can restore clickable
+  thumbnails after a page or thread reload and a browser restart. Local copies
+  have a default 30-day TTL and an eight-image/40-MiB limit; clearing site data,
+  browser storage reclamation, or using another device, browser, profile, or
+  Origin makes history fall back to safe placeholders.
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
@@ -66,9 +69,9 @@ The implementation currently provides:
 - Deterministic desktop and mobile production visual fixtures that do not
   create a real Codex turn.
 
-This file describes the handoff baseline on `main`. After pulling the latest
-`origin/main`, another device can resume from the ordered outcomes in `Next`
-without relying on prior chat history.
+This file describes the current verified handoff baseline on `main`. After
+pulling the latest `origin/main`, another device can resume from the ordered
+outcomes in `Next` without relying on prior chat history.
 
 ## Known Gaps
 
@@ -92,10 +95,11 @@ without relying on prior chat history.
 - Image attachments are deleted after a turn completes. Normal subsequent
   Codex context is unaffected, but another native client cannot use the deleted
   `localImage.path` to edit history and reattach the original image; persistent
-  attachment ownership and garbage collection are not designed. Current-page
-  thumbnails exist only in browser memory, are capped at 8 images and 40 MiB,
-  and do not persist across reloads or devices. General file and audio input
-  are also not exposed.
+  attachment ownership and garbage collection are not designed. Browser-local
+  previews are not cross-device attachment storage: they are available only in
+  the same browser profile and Origin and may become placeholders because of
+  the 30-day TTL, eight-image/40-MiB limit, site-data clearing, or browser
+  reclamation. General file and audio input are also not exposed.
 - Turn steering, persistent cross-device message queues, fixed host actions,
   and an embedded PTY are not implemented.
 
@@ -126,6 +130,10 @@ not a delivery commitment.
 - Image bytes must remain outside WebSocket JSON. The browser must not provide
   host paths, and temporary-attachment format checks, quotas, one-use
   consumption, and cleanup backstops must remain enforced.
+- IndexedDB previews may store only the thread/turn key, Blobs, media types,
+  sizes, ordering, and lifecycle metadata needed for restoration, never the
+  token, host paths, original filenames, or one-use attachment ids;
+  local-storage failure must not affect an accepted turn.
 - Skills and future host tools must not introduce path or command pass-through
   around the gateway allowlists.
 - Automatic recovery and read-only views must not claim thread ownership or
@@ -135,24 +143,29 @@ not a delivery commitment.
 
 ## Verification
 
-Verified on 2026-07-25 with Node.js `v24.13.1`, npm `11.12.1`, and Codex CLI
-`0.145.0`:
+This round of code verification was completed on 2026-07-25 with Node.js
+`v24.13.1`, npm `11.12.1`, and Codex CLI `0.145.0`:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 24 files, 277 tests. The server tests were run in an
+- `npm test` passed: 25 files, 288 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
+- `CHROME_BIN=/usr/bin/chromium-browser ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174 npm run check:visual`
+  passed against the current production build. Deterministic desktop and
+  390x844 mobile fixtures covered the new-thread dialog, configured model
+  selections, draft image previews, thumbnail loading, bounded layout, and
+  new-tab behavior both after sending and after a page reload, grouped tools,
+  and a simulated approval reason. They created no real Codex turn and found no
+  horizontal overflow, overlapping controls, clipped rich content, console
+  errors, or page errors.
+
+The protocol verification recorded earlier the same day still applies to the
+protocol paths unchanged in this round:
+
 - Current CLI bindings were generated and checked: `TurnItemsView` is
   `notLoaded | summary | full`, and `turn/completed` carries a `Turn` object.
   No real turn was created.
 - A direct app-server protocol smoke check passed: an ephemeral `thread/start`
   without `historyMode` returned `historyMode: "legacy"`; no real turn was
   created.
-- `CHROME_BIN=/usr/bin/chromium-browser npm run check:visual` passed against the
-  production build on port 4173. Deterministic desktop and 390x844 mobile
-  fixtures covered the new-thread dialog, configured model selections, draft
-  image previews, sent-image thumbnails and their new-tab behavior, grouped
-  tools, and a simulated approval reason. They created no real Codex turn and
-  found no horizontal overflow, overlapping controls, clipped rich content,
-  console errors, or page errors.

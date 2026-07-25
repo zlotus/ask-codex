@@ -1,5 +1,5 @@
-const DEFAULT_MAX_IMAGES = 8;
-const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
+export const MAX_IMAGE_PREVIEW_COUNT = 8;
+export const MAX_IMAGE_PREVIEW_BYTES = 40 * 1024 * 1024;
 
 interface PreviewGroup {
   urls: string[];
@@ -20,6 +20,18 @@ export function sessionImagePreviewKey(threadId: string, turnId: string): string
   return JSON.stringify([threadId, turnId]);
 }
 
+export function isSessionImagePreviewKey(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      parsed.every((part) => typeof part === "string" && part.length > 0) &&
+      JSON.stringify(parsed) === value;
+  } catch {
+    return false;
+  }
+}
+
 export class SessionImagePreviewRegistry {
   readonly #entries = new Map<string, PreviewGroup>();
   readonly #maxImages: number;
@@ -30,8 +42,8 @@ export class SessionImagePreviewRegistry {
   #byteSize = 0;
 
   constructor(options: SessionImagePreviewRegistryOptions = {}) {
-    this.#maxImages = options.maxImages ?? DEFAULT_MAX_IMAGES;
-    this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.#maxImages = options.maxImages ?? MAX_IMAGE_PREVIEW_COUNT;
+    this.#maxBytes = options.maxBytes ?? MAX_IMAGE_PREVIEW_BYTES;
     this.#createObjectURL = options.createObjectURL ?? ((blob) => URL.createObjectURL(blob));
     this.#revokeObjectURL = options.revokeObjectURL ?? ((url) => URL.revokeObjectURL(url));
   }

@@ -38,10 +38,13 @@ import {
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
 import {
+  MAX_IMAGE_PREVIEW_BYTES,
+  MAX_IMAGE_PREVIEW_COUNT,
   SessionImagePreviewRegistry,
   sessionImagePreviewKey,
   type SessionImagePreviewSnapshot,
 } from "./utils/sessionImagePreviews";
+import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
 import { filterSnapshotCoveredNotifications, ResyncCoordinator } from "./utils/resyncCoordinator";
 import {
   configuredTurnSettings,
@@ -82,6 +85,11 @@ interface ThreadDialogState {
   settings: ThreadSettings;
 }
 
+interface PendingImagePreviewGroup {
+  blobs: readonly Blob[];
+  byteSize: number;
+}
+
 type NextTurnSettings = Pick<ThreadSettings, "model" | "effort">;
 
 function reasoningPartIndex(value: unknown): number | null {
@@ -101,6 +109,30 @@ function turnsForDisplay(page: CodexTurnsPage, cursor: string | null): CodexTurn
         },
       }
     : turn);
+}
+
+function queuePendingImagePreview(
+  groups: Map<string, PendingImagePreviewGroup>,
+  key: string,
+  blobs: readonly Blob[],
+): void {
+  groups.delete(key);
+  groups.set(key, {
+    blobs,
+    byteSize: blobs.reduce((total, blob) => total + blob.size, 0),
+  });
+  let imageCount = [...groups.values()]
+    .reduce((total, group) => total + group.blobs.length, 0);
+  let byteSize = [...groups.values()]
+    .reduce((total, group) => total + group.byteSize, 0);
+  while (imageCount > MAX_IMAGE_PREVIEW_COUNT || byteSize > MAX_IMAGE_PREVIEW_BYTES) {
+    const oldestKey = groups.keys().next().value as string | undefined;
+    if (oldestKey === undefined) break;
+    const oldest = groups.get(oldestKey)!;
+    groups.delete(oldestKey);
+    imageCount -= oldest.blobs.length;
+    byteSize -= oldest.byteSize;
+  }
 }
 
 export default function App() {
@@ -135,6 +167,9 @@ export default function App() {
   const settingsLoadGenerationRef = useRef(0);
   const imagePreviewsMountedRef = useRef(false);
   const imagePreviewRegistryRef = useRef<SessionImagePreviewRegistry | null>(null);
+  const imagePreviewStoreRef = useRef<BrowserImagePreviewStore | null>(null);
+  const imagePreviewHydratedRef = useRef(false);
+  const pendingImagePreviewGroupsRef = useRef(new Map<string, PendingImagePreviewGroup>());
   if (imagePreviewRegistryRef.current === null) {
     imagePreviewRegistryRef.current = new SessionImagePreviewRegistry();
   }
@@ -149,10 +184,52 @@ export default function App() {
   }, [state.currentThread, state.selectedThreadId]);
 
   useEffect(() => {
+    const registry = imagePreviewRegistryRef.current!;
+    const store = new BrowserImagePreviewStore();
+    const pendingGroups = pendingImagePreviewGroupsRef.current;
+    let active = true;
+
+    registry.clear();
+    setImagePreviews(registry.snapshot());
     imagePreviewsMountedRef.current = true;
+    imagePreviewHydratedRef.current = false;
+    pendingGroups.clear();
+    imagePreviewStoreRef.current = store;
+    void (async () => {
+      let entries: Awaited<ReturnType<BrowserImagePreviewStore["loadAll"]>> | null = null;
+      try {
+        entries = await store.loadAll();
+      } catch {
+        // Browser storage is optional; current-page previews remain in memory.
+      }
+      if (!active) return;
+
+      const pending = [...pendingGroups];
+      if (entries) {
+        registry.clear();
+        for (const entry of entries) registry.remember(entry.key, entry.blobs);
+        for (const [key, group] of pending) registry.remember(key, group.blobs);
+        setImagePreviews(registry.snapshot());
+      }
+      pendingGroups.clear();
+      imagePreviewHydratedRef.current = true;
+      for (const [key, group] of pending) {
+        void store.remember(key, group.blobs).catch(() => {
+          // A local preview write never changes the accepted Codex turn.
+        });
+      }
+    })();
+
     return () => {
+      active = false;
       imagePreviewsMountedRef.current = false;
-      imagePreviewRegistryRef.current?.clear();
+      if (imagePreviewStoreRef.current === store) {
+        imagePreviewStoreRef.current = null;
+        imagePreviewHydratedRef.current = false;
+        pendingGroups.clear();
+      }
+      store.close();
+      registry.clear();
     };
   }, []);
 
@@ -161,16 +238,25 @@ export default function App() {
     turnId: string,
     images: readonly File[],
     attachments: readonly UploadedAttachment[],
-  ) => {
+  ): void => {
     const registry = imagePreviewRegistryRef.current;
-    if (!imagePreviewsMountedRef.current || !registry || images.length === 0) return;
-    const previewBlobs = images.map((image, index) => {
-      const mediaType = attachments[index]?.mediaType;
-      return mediaType && image.type !== mediaType
-        ? image.slice(0, image.size, mediaType)
-        : image;
-    });
-    setImagePreviews(registry.remember(sessionImagePreviewKey(threadId, turnId), previewBlobs));
+    if (!registry || !imagePreviewsMountedRef.current || images.length === 0) return;
+    try {
+      const previewBlobs = images.map((image, index) => (
+        image.slice(0, image.size, attachments[index]?.mediaType ?? image.type)
+      ));
+      const key = sessionImagePreviewKey(threadId, turnId);
+      setImagePreviews(registry.remember(key, previewBlobs));
+      if (!imagePreviewHydratedRef.current) {
+        queuePendingImagePreview(pendingImagePreviewGroupsRef.current, key, previewBlobs);
+        return;
+      }
+      void imagePreviewStoreRef.current?.remember(key, previewBlobs).catch(() => {
+        // A local preview write never changes the accepted Codex turn.
+      });
+    } catch {
+      // Object URL and Blob failures fall back to the existing image placeholder.
+    }
   }, []);
 
   const showToast = useCallback((message: string, tone: ToastMessage["tone"] = "error") => {

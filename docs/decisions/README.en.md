@@ -15,6 +15,7 @@ the records relevant to the current task.
 | [0008](0008-paginated-thread-history.en.md) | Superseded by 0010 | Use paginated history for new threads and recover oversized turns through item pages. |
 | [0009](0009-temporary-image-attachments.en.md) | Accepted | Submit images to Codex through constrained temporary HTTP attachments and one-use IDs. |
 | [0010](0010-app-server-default-thread-history.en.md) | Accepted | Use the app-server default history contract for new threads while retaining read recovery for paginated threads. |
+| [0011](0011-browser-local-image-previews.en.md) | Accepted | Retain bounded sent-image previews in IndexedDB for the same browser profile and Origin. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

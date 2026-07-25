@@ -104,7 +104,26 @@ const fixtureTurns = [
   },
 ];
 
+const fixtureImageTurn = {
+  id: "turn-image-preview",
+  status: "completed",
+  itemsView: "full",
+  items: [
+    {
+      id: "user-image-preview",
+      type: "userMessage",
+      content: [{ type: "localImage" }],
+    },
+    {
+      id: "agent-image-preview",
+      type: "agentMessage",
+      text: "The uploaded image is available in this browser session.",
+    },
+  ],
+};
+
 async function installFixture(page) {
+  let imageTurnStarted = false;
   await page.route("**/api/bootstrap", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -166,7 +185,7 @@ async function installFixture(page) {
           reasoningEffort: "high",
           sandbox: { type: "workspaceWrite" },
           initialTurnsPage: {
-            data: fixtureTurns,
+            data: imageTurnStarted ? [fixtureImageTurn, ...fixtureTurns] : fixtureTurns,
             nextCursor: "older-page",
             backwardsCursor: null,
           },
@@ -174,25 +193,8 @@ async function installFixture(page) {
       } else if (message.method === "thread/turns/list") {
         result = { data: [], nextCursor: null, backwardsCursor: null };
       } else if (message.method === "turn/start") {
-        result = {
-          turn: {
-            id: "turn-image-preview",
-            status: "completed",
-            itemsView: "full",
-            items: [
-              {
-                id: "user-image-preview",
-                type: "userMessage",
-                content: [{ type: "localImage" }],
-              },
-              {
-                id: "agent-image-preview",
-                type: "agentMessage",
-                text: "The uploaded image is available in this browser session.",
-              },
-            ],
-          },
-        };
+        imageTurnStarted = true;
+        result = { turn: fixtureImageTurn };
       }
       socket.send(JSON.stringify({ type: "rpcResult", id: message.id, result }));
       if (message.method === "thread/resume") {
@@ -331,6 +333,11 @@ async function inspectComposerImage(page) {
 async function sendAndInspectFixtureImage(page) {
   await addFixtureImage(page);
   await page.getByRole("button", { name: "Send message" }).click();
+  await page.getByRole("button", { name: "Remove visual-fixture.png" }).waitFor({ state: "hidden" });
+  return inspectSentFixtureImage(page);
+}
+
+async function inspectSentFixtureImage(page) {
   const preview = page.getByRole("link", { name: "Open uploaded image 1 of 1" });
   await preview.waitFor();
   await page.waitForFunction(() => {
@@ -367,6 +374,15 @@ async function sendAndInspectFixtureImage(page) {
     };
   });
   return { ...layout, opened };
+}
+
+async function reloadAndInspectFixtureImage(page) {
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".app-shell").waitFor();
+  const openThreads = page.getByRole("button", { name: "Open threads" });
+  if (await openThreads.isVisible()) await openThreads.click();
+  await selectFixture(page);
+  return inspectSentFixtureImage(page);
 }
 
 try {
@@ -413,6 +429,8 @@ try {
   await selectFixture(page);
   const desktopSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-sent-image.png`, fullPage: true });
+  const desktopReloadedImage = await reloadAndInspectFixtureImage(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-reloaded-image.png`, fullPage: true });
   await page.locator(".conversation-scroll").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: `${outputDirectory}/desktop-code.png`, fullPage: true });
   await openRichDetails(page);
@@ -457,6 +475,8 @@ try {
   await selectFixture(page);
   const mobileSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
+  const mobileReloadedImage = await reloadAndInspectFixtureImage(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-reloaded-image.png`, fullPage: true });
   await openRichDetails(page);
   await page.locator(".file-change-entry").scrollIntoViewIfNeeded();
   const mobileRich = await inspectRichLayout(page);
@@ -470,6 +490,7 @@ try {
       ...desktop,
       composerImage: desktopComposerImage,
       sentImage: desktopSentImage,
+      reloadedImage: desktopReloadedImage,
       dialog: desktopDialog,
       rich: desktopRich,
     },
@@ -477,6 +498,7 @@ try {
       ...mobileBefore,
       composerImage: mobileComposerImage,
       sentImage: mobileSentImage,
+      reloadedImage: mobileReloadedImage,
       dialog: mobileDialog,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -513,6 +535,14 @@ try {
     !desktopSentImage.dimensionsStable ||
     desktopSentImage.objectFit !== "contain" ||
     desktopSentImage.horizontalOverflow ||
+    desktopReloadedImage.count !== 1 ||
+    !desktopReloadedImage.loaded ||
+    !desktopReloadedImage.openable ||
+    !desktopReloadedImage.opened ||
+    !desktopReloadedImage.contained ||
+    !desktopReloadedImage.dimensionsStable ||
+    desktopReloadedImage.objectFit !== "contain" ||
+    desktopReloadedImage.horizontalOverflow ||
     desktop.connection === "error" ||
     !desktopDialog.fitsViewport ||
     !desktopDialog.cwdEditable ||
@@ -543,6 +573,14 @@ try {
     !mobileSentImage.dimensionsStable ||
     mobileSentImage.objectFit !== "contain" ||
     mobileSentImage.horizontalOverflow ||
+    mobileReloadedImage.count !== 1 ||
+    !mobileReloadedImage.loaded ||
+    !mobileReloadedImage.openable ||
+    !mobileReloadedImage.opened ||
+    !mobileReloadedImage.contained ||
+    !mobileReloadedImage.dimensionsStable ||
+    mobileReloadedImage.objectFit !== "contain" ||
+    mobileReloadedImage.horizontalOverflow ||
     !mobileDialog.fitsViewport ||
     !mobileDialog.cwdEditable ||
     !mobileDialog.sandboxEnabled ||

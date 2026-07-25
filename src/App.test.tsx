@@ -1,7 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
+import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { NotificationMessage } from "./types/protocol";
+import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
+import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
 
 const socket = vi.hoisted(() => ({
   connection: "connected",
@@ -25,7 +30,7 @@ vi.mock("./hooks/useCodexSocket", () => ({
 
 let objectUrlSequence = 0;
 const createObjectURL = vi.fn((blob: Blob) => (
-  `blob:${blob instanceof File ? blob.name : blob.type}:${++objectUrlSequence}`
+  `blob:${"name" in blob && typeof blob.name === "string" ? blob.name : blob.type}:${++objectUrlSequence}`
 ));
 const revokeObjectURL = vi.fn();
 
@@ -98,6 +103,55 @@ function installBootstrapFixture() {
   return fetchMock;
 }
 
+function delayOpen(indexedDB: IDBFactory): {
+  factory: IDBFactory;
+  ready: Promise<void>;
+  release: () => void;
+} {
+  let markReady!: () => void;
+  let releaseOpen: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  const factory = {
+    open(name: string, version?: number) {
+      const source = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
+      const proxy: Record<string, unknown> = {
+        onblocked: null,
+        onerror: null,
+        onsuccess: null,
+        onupgradeneeded: null,
+      };
+      Object.defineProperties(proxy, {
+        error: { get: () => source.error },
+        result: { get: () => source.result },
+      });
+      const callHandler = (name: string, event: Event) => {
+        const handler = proxy[name];
+        if (typeof handler === "function") handler.call(proxy, event);
+      };
+      source.onblocked = (event) => callHandler("onblocked", event);
+      source.onerror = (event) => callHandler("onerror", event);
+      source.onupgradeneeded = (event) => callHandler("onupgradeneeded", event);
+      source.onsuccess = (event) => {
+        releaseOpen = () => callHandler("onsuccess", event);
+        markReady();
+      };
+      return proxy as unknown as IDBOpenDBRequest;
+    },
+  } as IDBFactory;
+  return {
+    factory,
+    ready,
+    release: () => {
+      if (!releaseOpen) throw new Error("IndexedDB open is not ready to release");
+      const release = releaseOpen;
+      releaseOpen = undefined;
+      release();
+    },
+  };
+}
+
 async function changeConnectionToken(fetchMock: ReturnType<typeof vi.fn>) {
   fireEvent.click(screen.getByRole("button", { name: "Connection token" }));
   fireEvent.change(screen.getByLabelText("Token"), { target: { value: "new-token" } });
@@ -161,6 +215,15 @@ describe("App thread settings lifecycle", () => {
   });
 
   it("uploads generic-MIME image bytes and retains a preview with the detected MIME", async () => {
+    const indexedDB = new FakeIDBFactory();
+    const existingPreviewKey = sessionImagePreviewKey("thread-existing", "turn-existing-image");
+    const seeder = new BrowserImagePreviewStore({ indexedDB });
+    await seeder.remember(existingPreviewKey, [
+      new NodeBlob([PNG], { type: "image/png" }) as unknown as Blob,
+    ]);
+    seeder.close();
+    const delayedOpen = delayOpen(indexedDB);
+    vi.stubGlobal("indexedDB", delayedOpen.factory);
     sessionStorage.setItem("ASK_CODEX_TOKEN", "browser-token");
     const attachmentId = "a".repeat(32);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -205,13 +268,18 @@ describe("App thread settings lifecycle", () => {
         : baseRpc?.(method, params)
     ));
     render(<App />);
+    await delayedOpen.ready;
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/bootstrap",
       expect.objectContaining({
         headers: { Authorization: "Bearer browser-token" },
       }),
     ));
-    const file = new File([PNG], "screen.png", { type: "application/octet-stream" });
+    const file = new NodeFile(
+      [PNG],
+      "screen.png",
+      { type: "application/octet-stream" },
+    ) as unknown as File;
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "Inspect this" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -235,15 +303,151 @@ describe("App thread settings lifecycle", () => {
       }),
     }));
     await waitFor(() => expect(screen.queryByText("screen.png")).not.toBeInTheDocument());
+    expect(await screen.findByRole("link", { name: "Open uploaded image 1 of 1" }))
+      .toHaveAttribute("href", expect.stringMatching(/^blob:image\/png:/));
+    delayedOpen.release();
+
+    const persistedStore = new BrowserImagePreviewStore({ indexedDB });
+    const sentPreviewKey = sessionImagePreviewKey("thread-new", "turn-image");
+    await waitFor(async () => {
+      expect((await persistedStore.loadAll()).map((entry) => entry.key))
+        .toEqual([existingPreviewKey, sentPreviewKey]);
+    });
     const preview = await screen.findByRole("link", { name: "Open uploaded image 1 of 1" });
-    expect(preview).toHaveAttribute("href", "blob:image/png:2");
+    const previewUrl = preview.getAttribute("href");
+    expect(previewUrl).toMatch(/^blob:image\/png:/);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:screen.png:1");
-    expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:image/png:2");
-    expect(createObjectURL.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+    expect(revokeObjectURL).not.toHaveBeenCalledWith(previewUrl);
+    expect(createObjectURL.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       size: file.size,
       type: "image/png",
     }));
     expect(document.body).not.toHaveTextContent("/private/server/screen.png");
+
+    const persisted = await persistedStore.loadAll();
+    const sentPreview = persisted.find((entry) => entry.key === sentPreviewKey);
+    expect(sentPreview?.blobs).toHaveLength(1);
+    expect(sentPreview?.blobs[0]).toEqual(expect.objectContaining({
+      size: file.size,
+      type: "image/png",
+    }));
+    expect("name" in sentPreview!.blobs[0]).toBe(false);
+    persistedStore.close();
+  });
+
+  it("does not block an accepted image turn when browser persistence stalls", async () => {
+    const stalledRequest = {} as IDBOpenDBRequest;
+    vi.stubGlobal("indexedDB", {
+      open: vi.fn(() => stalledRequest),
+    } as unknown as IDBFactory);
+    const attachmentId = "d".repeat(32);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/bootstrap") {
+        return new Response(JSON.stringify({
+          ready: true,
+          defaultCwd: "/workspace/default-one",
+          authRequired: false,
+        }), { status: 200 });
+      }
+      if (url === "/api/attachments" && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          attachment: {
+            id: attachmentId,
+            mediaType: "image/png",
+            size: PNG.byteLength,
+            expiresAt: Date.now() + 60_000,
+          },
+        }), { status: 201 });
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/start"
+        ? Promise.resolve({
+            turn: {
+              id: "turn-storage-disabled",
+              status: "inProgress",
+              items: [{
+                id: "user-storage-disabled",
+                type: "userMessage",
+                content: [{ type: "localImage", path: "/private/server/image.png" }],
+              }],
+            },
+          })
+        : baseRpc?.(method, params)
+    ));
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add images" })).toBeEnabled());
+    const file = new File([PNG], "storage-disabled.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    const preview = await screen.findByRole("link", { name: "Open uploaded image 1 of 1" });
+    expect(preview).toHaveAttribute("href", "blob:image/png:2");
+    await waitFor(() => expect(screen.queryByText("storage-disabled.png")).not.toBeInTheDocument());
+    expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.any(Object));
+  });
+
+  it("restores persisted previews after StrictMode remounts, reloads, and thread switches", async () => {
+    const indexedDB = new FakeIDBFactory();
+    vi.stubGlobal("indexedDB", indexedDB);
+    const previewKey = sessionImagePreviewKey("thread-existing", "turn-persisted-image");
+    const seeder = new BrowserImagePreviewStore({ indexedDB });
+    await seeder.remember(previewKey, [
+      new NodeBlob([PNG], { type: "image/png" }) as unknown as Blob,
+    ]);
+    seeder.close();
+
+    const imageTurn = {
+      id: "turn-persisted-image",
+      status: "completed",
+      itemsView: "full",
+      items: [{
+        id: "user-persisted-image",
+        type: "userMessage",
+        content: [{ type: "localImage", path: "/private/server/reloaded.png" }],
+      }],
+    };
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/resume" && (params as { initialTurnsPage?: unknown })?.initialTurnsPage) {
+        return Promise.resolve({
+          thread: existingThread,
+          cwd: existingThread.cwd,
+          model: existingThread.model,
+          sandbox: { type: "workspaceWrite" },
+          initialTurnsPage: {
+            data: [imageTurn],
+            nextCursor: null,
+            backwardsCursor: null,
+          },
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+
+    const firstPage = render(<StrictMode><App /></StrictMode>);
+    fireEvent.click(await screen.findByText("Existing thread"));
+    const initialPreview = await screen.findByRole("link", { name: "Open uploaded image 1 of 1" });
+    expect(initialPreview.getAttribute("href")).toMatch(/^blob:image\/png:/);
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    expect(screen.queryByRole("link", { name: "Open uploaded image 1 of 1" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText("Existing thread"));
+    expect(await screen.findByRole("link", { name: "Open uploaded image 1 of 1" })).toBeInTheDocument();
+
+    firstPage.unmount();
+    render(<StrictMode><App /></StrictMode>);
+    fireEvent.click(await screen.findByText("Existing thread"));
+    const reloadedPreview = await screen.findByRole("link", { name: "Open uploaded image 1 of 1" });
+    expect(reloadedPreview.getAttribute("href")).toMatch(/^blob:image\/png:/);
+    expect(document.body).not.toHaveTextContent("/private/server/reloaded.png");
   });
 
   it("keeps streamed conversation visible after a notLoaded completion notification", async () => {
