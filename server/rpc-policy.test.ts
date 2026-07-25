@@ -196,19 +196,20 @@ describe("browser RPC policy", () => {
     });
   });
 
-  it("enforces paginated history for new threads without browser control", () => {
+  it("uses the app-server history default without browser control", () => {
     expect(sanitizeBrowserRpcParams("thread/start", {
       cwd: "/workspace/project",
     })).toEqual({
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      historyMode: "paginated",
       cwd: "/workspace/project",
     });
-    expect(() => sanitizeBrowserRpcParams("thread/start", {
-      cwd: "/workspace/project",
-      historyMode: "legacy",
-    })).toThrow("does not allow param: historyMode");
+    for (const historyMode of ["legacy", "paginated"]) {
+      expect(() => sanitizeBrowserRpcParams("thread/start", {
+        cwd: "/workspace/project",
+        historyMode,
+      })).toThrow("does not allow param: historyMode");
+    }
   });
 
   it.each([

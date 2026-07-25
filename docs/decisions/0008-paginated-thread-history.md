@@ -1,6 +1,6 @@
 # ADR 0008：新线程使用分页历史契约
 
-- 状态：已接受
+- 状态：由 [ADR 0010](0010-app-server-default-thread-history.md) 取代
 - 决策日期：2026-07-24
 
 ## 背景

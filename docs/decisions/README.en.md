@@ -12,8 +12,9 @@ the records relevant to the current task.
 | [0005](0005-thread-and-turn-settings.md) | Accepted; amended by 0006 | Separate thread identity and sandbox settings from next-turn model controls. |
 | [0006](0006-configured-turn-defaults.md) | Accepted | Amend model defaults to use filtered effective Codex configuration. |
 | [0007](0007-document-language.en.md) | Accepted | Use Simplified Chinese as the primary project documentation language and maintain corresponding English versions. |
-| [0008](0008-paginated-thread-history.en.md) | Accepted | Use paginated history for new threads and recover oversized turns through item pages. |
+| [0008](0008-paginated-thread-history.en.md) | Superseded by 0010 | Use paginated history for new threads and recover oversized turns through item pages. |
 | [0009](0009-temporary-image-attachments.en.md) | Accepted | Submit images to Codex through constrained temporary HTTP attachments and one-use IDs. |
+| [0010](0010-app-server-default-thread-history.en.md) | Accepted | Use the app-server default history contract for new threads while retaining read recovery for paginated threads. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

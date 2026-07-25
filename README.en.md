@@ -18,9 +18,9 @@ events, but it does not get a general-purpose file-serving endpoint.
 ## Features
 
 - Create, search, resume, and refresh Codex threads.
-- Load long thread histories incrementally. New threads use paginated history
-  to recover oversized turns by item, while old history keeps bounded fallback
-  behavior.
+- Load long thread histories incrementally. Default history keeps bounded
+  fallback behavior, while existing paginated history can recover oversized
+  turns by item.
 - Stream agent messages, reasoning summaries, plans, command output, file
   changes, MCP calls, and turn diffs.
 - Render syntax-highlighted code blocks with copy and wrap controls, structured
@@ -52,7 +52,7 @@ events, but it does not get a general-purpose file-serving endpoint.
 ## Requirements
 
 - Node.js 22.12 or newer.
-- A recent Codex CLI with paginated thread-history support; the current
+- A recent Codex CLI with the documented app-server interface; the current
   implementation is verified with 0.145.0.
 - An existing Codex login. Run `codex login` first if needed.
 

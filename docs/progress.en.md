@@ -2,14 +2,15 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-07-24
+Last reviewed: 2026-07-25
 
 ## Current Milestone
 
-Item-level recovery for oversized turns and a bounded image-input MVP are
-implemented. The next milestone returns to project-oriented navigation and
-read-only discovery without changing the manual-approval or remote-access
-trust model.
+The bounded image-input MVP is implemented, and new threads again use the
+app-server default history contract. Existing paginated threads retain
+item-level recovery for oversized turns. The next milestone returns to
+project-oriented navigation and read-only discovery without changing the
+manual-approval or remote-access trust model.
 
 ## Current Baseline
 
@@ -19,10 +20,11 @@ The implementation currently provides:
   and refreshing native Codex threads, with a 44-pixel conversation header and
   a responsive one-line composer.
 - Incremental recent-turn loading through `thread/turns/list`, adaptive page
-  sizing, retryable older pages, and summary fallback. New threads are fixed to
-  the `paginated` history contract so oversized turns can recover through a
-  narrowly allowed ascending `thread/items/list`; old `legacy` threads retain
-  the one-turn full-detail retry.
+  sizing, retryable older pages, and summary fallback. App-server chooses the
+  default history contract for new threads instead of Ask Codex forcing the
+  experimental `paginated` mode. Existing paginated threads can still recover
+  through a narrowly allowed ascending `thread/items/list`; default or `legacy`
+  threads retain the one-turn full-detail retry.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering, with explicit
   stream and message-size bounds.
@@ -66,10 +68,10 @@ without relying on prior chat history.
 
 ## Known Gaps
 
-- Existing `legacy` threads have no official migration path and do not support
-  `thread/items/list`; they remain summary-only when a full single turn still
-  exceeds the gateway limit. A paginated thread also cannot recover an item
-  that by itself exceeds 1 MiB by shrinking the page further.
+- Default and existing `legacy` threads have no official migration path and do
+  not support `thread/items/list`; they remain summary-only when a full single
+  turn still exceeds the gateway limit. A paginated thread also cannot recover
+  an item that by itself exceeds 1 MiB by shrinking the page further.
 - Paginated threads in Codex CLI 0.145.0 do not support fork, rollback, or
   detached review. Ask Codex does not currently expose those operations, but
   the restriction still applies to another client operating on the same
@@ -105,9 +107,10 @@ not a delivery commitment.
 
 - The installed Codex CLI defines an evolving protocol. Protocol work must
   compare generated bindings and update normalization and tests together.
-- `paginated` history remains an experimental persistence contract. CLI
-  upgrades must recheck item pagination plus fork, rollback, and detached
-  review support.
+- `paginated` history remains an experimental persistence contract. Do not
+  force it for new threads until app-server advertises an explicit capability
+  and the real first-turn path is verified. CLI upgrades must still recheck item
+  pagination plus fork, rollback, and detached review support.
 - Rich rendering must treat all agent, command, diff, and ANSI content as
   untrusted text and must bound memory and DOM growth.
 - Modern approval rationale must remain keyed by thread, turn, and item id;
@@ -126,7 +129,7 @@ not a delivery commitment.
 
 ## Verification
 
-Verified on 2026-07-24 with Node.js `v24.13.0`, npm `11.18.0`, and Codex CLI
+Verified on 2026-07-25 with Node.js `v24.13.1`, npm `11.12.1`, and Codex CLI
 `0.145.0`:
 
 - `npm run typecheck` passed.
@@ -134,9 +137,13 @@ Verified on 2026-07-24 with Node.js `v24.13.0`, npm `11.18.0`, and Codex CLI
 - `npm test` passed: 23 files, 270 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
-- `node scripts/visual-check.mjs` (the script behind `npm run check:visual`)
-  passed against the production build on port 4173 with deterministic desktop
-  and mobile fixtures, including the new-thread dialog, configured model
-  selections, image previews, grouped tools, and a simulated approval reason:
-  no horizontal overflow, overlapping controls, clipped rich content, console
-  errors, or page errors.
+- A direct app-server protocol smoke check passed: an ephemeral `thread/start`
+  without `historyMode` returned `historyMode: "legacy"`; no real turn was
+  created.
+- This change does not modify the interface, so the visual check was not rerun.
+  The most recent visual check passed on 2026-07-24: `node
+  scripts/visual-check.mjs` exercised the production build on port 4173 with
+  deterministic desktop and mobile fixtures, including the new-thread dialog,
+  configured model selections, image previews, grouped tools, and a simulated
+  approval reason, with no horizontal overflow, overlapping controls, clipped
+  rich content, console errors, or page errors.

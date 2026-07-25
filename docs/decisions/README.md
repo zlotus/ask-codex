@@ -11,8 +11,9 @@
 | [0005](0005-thread-and-turn-settings.zh-CN.md) | 已接受；由 0006 修订 | 将线程身份和沙箱设置与下一轮的模型控制分开。 |
 | [0006](0006-configured-turn-defaults.zh-CN.md) | 已接受 | 修订模型默认值，使其采用经过筛选的 Codex 有效配置。 |
 | [0007](0007-document-language.md) | 已接受 | 以简体中文作为项目文档的主要语言，并维护对应英文版本。 |
-| [0008](0008-paginated-thread-history.md) | 已接受 | 新线程使用分页历史，并以条目页恢复超大轮次。 |
+| [0008](0008-paginated-thread-history.md) | 由 0010 取代 | 新线程使用分页历史，并以条目页恢复超大轮次。 |
 | [0009](0009-temporary-image-attachments.md) | 已接受 | 通过受限的临时 HTTP 附件和一次性 ID 向 Codex 提交图片。 |
+| [0010](0010-app-server-default-thread-history.md) | 已接受 | 新线程使用 app-server 的默认历史契约，同时保留分页线程的只读恢复能力。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

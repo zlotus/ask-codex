@@ -325,8 +325,6 @@ function sanitizeThreadSettings(
       "initialTurnsPage",
       sanitizeInitialTurnsPage(input.initialTurnsPage),
     );
-  } else {
-    output.historyMode = "paginated";
   }
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));

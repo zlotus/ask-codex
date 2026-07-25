@@ -901,7 +901,6 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      historyMode: "paginated",
     });
 
     gateway.emit(

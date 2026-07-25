@@ -1,6 +1,6 @@
 # ADR 0008: Use paginated history for new threads
 
-- Status: Accepted
+- Status: Superseded by [ADR 0010](0010-app-server-default-thread-history.en.md)
 - Decision date: 2026-07-24
 
 ## Context
