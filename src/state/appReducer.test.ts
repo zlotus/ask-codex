@@ -106,6 +106,144 @@ describe("appReducer", () => {
     expect(updated.currentThread?.turns?.map((turn) => turn.id)).toEqual(["turn-1"]);
   });
 
+  it("moves an active thread to the archived list and clears its selected state", () => {
+    const state: AppState = {
+      ...initialState,
+      threads: [
+        { id: "thread-target", name: "Target", updatedAt: 3 },
+        { id: "thread-active", name: "Still active", updatedAt: 2 },
+      ],
+      archivedThreads: [{ id: "thread-archived", name: "Already archived", updatedAt: 1 }],
+      selectedThreadId: "thread-target",
+      currentThread: {
+        id: "thread-target",
+        turns: [{ id: "turn-active", status: "inProgress", items: [] }],
+      },
+      activeTurnId: "turn-active",
+      turnHistory: {
+        threadId: "thread-target",
+        nextCursor: "older-page",
+        loadingCursor: "older-page",
+        status: "loading",
+        error: null,
+      },
+    };
+
+    const archived = appReducer(state, {
+      type: "archiveThread",
+      threadId: "thread-target",
+    });
+
+    expect(archived.threads.map((thread) => thread.id)).toEqual(["thread-active"]);
+    expect(archived.archivedThreads.map((thread) => thread.id)).toEqual([
+      "thread-target",
+      "thread-archived",
+    ]);
+    expect(archived.archivedThreads[0]?.turns).toBeUndefined();
+    expect(archived.selectedThreadId).toBeNull();
+    expect(archived.currentThread).toBeNull();
+    expect(archived.activeTurnId).toBeNull();
+    expect(archived.turnHistory).toEqual({
+      threadId: null,
+      nextCursor: null,
+      loadingCursor: null,
+      status: "idle",
+      error: null,
+    });
+  });
+
+  it("moves an archived thread back to the active list without disturbing other threads", () => {
+    const state: AppState = {
+      ...initialState,
+      threads: [{ id: "thread-active", name: "Still active", updatedAt: 2 }],
+      archivedThreads: [
+        { id: "thread-target", name: "Restore me", updatedAt: 3 },
+        { id: "thread-archived", name: "Keep archived", updatedAt: 1 },
+      ],
+    };
+
+    const restored = appReducer(state, {
+      type: "unarchiveThread",
+      threadId: "thread-target",
+    });
+
+    expect(restored.threads.map((thread) => thread.id)).toEqual([
+      "thread-target",
+      "thread-active",
+    ]);
+    expect(restored.archivedThreads.map((thread) => thread.id)).toEqual([
+      "thread-archived",
+    ]);
+  });
+
+  it("permanently deletes one thread and its pending approval state", () => {
+    const targetReason = JSON.stringify(["thread-target", "turn-1", "command-1"]);
+    const targetLegacyReason = JSON.stringify(["thread-target", null, "legacy-command"]);
+    const retainedReason = JSON.stringify(["thread-active", "turn-2", "command-2"]);
+    const state: AppState = {
+      ...initialState,
+      threads: [
+        { id: "thread-target", updatedAt: 3 },
+        { id: "thread-active", updatedAt: 2 },
+      ],
+      archivedThreads: [
+        { id: "thread-target", updatedAt: 3 },
+        { id: "thread-archived", updatedAt: 1 },
+      ],
+      selectedThreadId: "thread-target",
+      currentThread: {
+        id: "thread-target",
+        turns: [{ id: "turn-active", status: "inProgress", items: [] }],
+      },
+      activeTurnId: "turn-active",
+      turnHistory: {
+        threadId: "thread-target",
+        nextCursor: "older-page",
+        loadingCursor: null,
+        status: "error",
+        error: "retry me",
+      },
+      pendingRequests: [
+        { id: "target-modern", method: "approval", params: { threadId: "thread-target" }, receivedAt: 1 },
+        { id: "target-legacy", method: "approval", params: { conversationId: "thread-target" }, receivedAt: 2 },
+        { id: "other-thread", method: "approval", params: { threadId: "thread-active" }, receivedAt: 3 },
+        { id: "unscoped", method: "approval", params: {}, receivedAt: 4 },
+      ],
+      commandApprovalReasons: {
+        [targetReason]: ["Target reason"],
+        [targetLegacyReason]: ["Target legacy reason"],
+        [retainedReason]: ["Retained reason"],
+        "unparseable-key": ["Retained malformed key"],
+      },
+    };
+
+    const deleted = appReducer(state, {
+      type: "deleteThread",
+      threadId: "thread-target",
+    });
+
+    expect(deleted.threads.map((thread) => thread.id)).toEqual(["thread-active"]);
+    expect(deleted.archivedThreads.map((thread) => thread.id)).toEqual(["thread-archived"]);
+    expect(deleted.selectedThreadId).toBeNull();
+    expect(deleted.currentThread).toBeNull();
+    expect(deleted.activeTurnId).toBeNull();
+    expect(deleted.turnHistory).toEqual({
+      threadId: null,
+      nextCursor: null,
+      loadingCursor: null,
+      status: "idle",
+      error: null,
+    });
+    expect(deleted.pendingRequests.map((request) => request.id)).toEqual([
+      "other-thread",
+      "unscoped",
+    ]);
+    expect(deleted.commandApprovalReasons).toEqual({
+      [retainedReason]: ["Retained reason"],
+      "unparseable-key": ["Retained malformed key"],
+    });
+  });
+
   it("reconciles a full snapshot without losing older history or approvals", () => {
     const hydrated = appReducer({
       ...initialState,

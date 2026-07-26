@@ -18,12 +18,14 @@ describe("browser RPC policy", () => {
       sortKey: "updated_at",
       sortDirection: "desc",
       sourceKinds: [],
+      archived: true,
     })).toEqual({
       cursor: "next-thread-page",
       limit: 100,
       sortKey: "updated_at",
       sortDirection: "desc",
       sourceKinds: [],
+      archived: true,
     });
     expect(sanitizeBrowserRpcParams("model/list", {
       cursor: "next-model-page",
@@ -35,6 +37,43 @@ describe("browser RPC policy", () => {
     expect(() => sanitizeBrowserRpcParams("thread/list", { config: {} }))
       .toThrow("does not allow param: config");
   });
+
+  it("rejects invalid or expanded archived list filters", () => {
+    expect(() => sanitizeBrowserRpcParams("thread/list", { archived: "true" }))
+      .toThrow("thread/list archived must be a boolean");
+    expect(() => sanitizeBrowserRpcParams("thread/list", {
+      archived: true,
+      includeArchived: true,
+    })).toThrow("thread/list does not allow param: includeArchived");
+  });
+
+  it.each(["thread/archive", "thread/unarchive", "thread/delete"])(
+    "allows %s and rebuilds its thread-only params",
+    (method) => {
+      const params = { threadId: "thread-1" };
+
+      expect(ALLOWED_BROWSER_RPC_METHODS.has(method)).toBe(true);
+      const sanitized = sanitizeBrowserRpcParams(method, params);
+      expect(sanitized).toEqual({ threadId: "thread-1" });
+      expect(sanitized).not.toBe(params);
+    },
+  );
+
+  it.each(["thread/archive", "thread/unarchive", "thread/delete"])(
+    "rejects invalid or expanded params for %s",
+    (method) => {
+      expect(() => sanitizeBrowserRpcParams(method, {}))
+        .toThrow(`${method} threadId must be a non-empty string`);
+      expect(() => sanitizeBrowserRpcParams(method, { threadId: "" }))
+        .toThrow(`${method} threadId must be a non-empty string`);
+      expect(() => sanitizeBrowserRpcParams(method, { threadId: 1 }))
+        .toThrow(`${method} threadId must be a non-empty string`);
+      expect(() => sanitizeBrowserRpcParams(method, {
+        threadId: "thread-1",
+        includeTurns: true,
+      })).toThrow(`${method} does not allow param: includeTurns`);
+    },
+  );
 
   it("allows a parameter-free effective model settings read", () => {
     expect(ALLOWED_BROWSER_RPC_METHODS.has("config/read")).toBe(true);

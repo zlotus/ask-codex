@@ -7,6 +7,7 @@ import {
   isSessionImagePreviewKey,
   MAX_IMAGE_PREVIEW_BYTES,
   MAX_IMAGE_PREVIEW_COUNT,
+  sessionImagePreviewThreadId,
 } from "./sessionImagePreviews";
 
 const DATABASE_VERSION = 1;
@@ -215,6 +216,19 @@ export class BrowserImagePreviewStore {
         blobs: [...group.blobs],
         storedAt: group.storedAt,
       }));
+    });
+  }
+
+  async removeThread(threadId: string): Promise<void> {
+    if (!threadId) throw new TypeError("threadId must not be empty");
+    const now = this.#readNow();
+    await this.#mutate((objectStore, rawRecords) => {
+      const groups = this.#cleanAndCollect(objectStore, rawRecords, now);
+      for (const group of groups) {
+        if (sessionImagePreviewThreadId(group.key) === threadId) {
+          objectStore.delete(group.key);
+        }
+      }
     });
   }
 

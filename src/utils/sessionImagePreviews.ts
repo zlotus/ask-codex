@@ -20,16 +20,25 @@ export function sessionImagePreviewKey(threadId: string, turnId: string): string
   return JSON.stringify([threadId, turnId]);
 }
 
-export function isSessionImagePreviewKey(value: string): boolean {
+export function sessionImagePreviewThreadId(value: string): string | null {
   try {
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) &&
-      parsed.length === 2 &&
-      parsed.every((part) => typeof part === "string" && part.length > 0) &&
-      JSON.stringify(parsed) === value;
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      !parsed.every((part) => typeof part === "string" && part.length > 0) ||
+      JSON.stringify(parsed) !== value
+    ) {
+      return null;
+    }
+    return parsed[0] as string;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function isSessionImagePreviewKey(value: string): boolean {
+  return sessionImagePreviewThreadId(value) !== null;
 }
 
 export class SessionImagePreviewRegistry {
@@ -81,6 +90,13 @@ export class SessionImagePreviewRegistry {
     return Object.fromEntries(
       [...this.#entries].map(([key, group]) => [key, [...group.urls]]),
     );
+  }
+
+  removeThread(threadId: string): SessionImagePreviewSnapshot {
+    for (const key of [...this.#entries.keys()]) {
+      if (sessionImagePreviewThreadId(key) === threadId) this.#remove(key);
+    }
+    return this.snapshot();
   }
 
   clear(): void {

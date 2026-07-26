@@ -18,6 +18,11 @@ events, but it does not get a general-purpose file-serving endpoint.
 ## Features
 
 - Create, search, resume, and refresh Codex threads.
+- Manage threads in Active and Archived views. Desktop right-click, mobile long
+  press, and the `...` menu can archive an idle thread from Active, restore a
+  thread from Archived, or permanently delete an idle thread from either view
+  after confirmation. Archive and delete stay unavailable while a thread has a
+  turn in progress.
 - Load long thread histories incrementally. Default history keeps bounded
   fallback behavior, while existing paginated history can recover oversized
   turns by item.
@@ -101,7 +106,8 @@ Configuration:
 
 Do not expose this service directly to the public internet. Anyone who can use
 the UI can instruct Codex to read files, modify the selected workspace, run
-commands, and present requests for broader access.
+commands, and present requests for broader access. They can also permanently
+delete threads and possible descendant sessions without a Codex approval.
 
 Treat `ASK_CODEX_TOKEN` like a password for the operating-system account that
 runs Ask Codex. `ASK_CODEX_WORKSPACE` selects the initial directory; it is not

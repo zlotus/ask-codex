@@ -2,15 +2,18 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-07-25
+Last reviewed: 2026-07-26
 
 ## Current Milestone
 
-The bounded image-input MVP and same-Origin browser-local reload previews are
-implemented, and new threads again use the app-server default history contract.
-Existing paginated threads retain item-level recovery for oversized turns. The
-next milestone returns to project-oriented navigation and read-only discovery
-without changing the manual-approval or remote-access trust model.
+Bounded thread lifecycle management is implemented. The sidebar separates
+unarchived and archived threads into Active and Archived views, and opens one
+shared action menu from desktop right-click, mobile long press, or an explicit
+action button; a long press never deletes by itself. Idle threads can be
+archived or unarchived, and can be permanently deleted after confirmation,
+while threads with a turn in progress are protected. The next milestone returns
+to project-oriented navigation and read-only discovery without changing the
+manual-approval or remote-access trust model.
 
 ## Current Baseline
 
@@ -19,6 +22,15 @@ The implementation currently provides:
 - React desktop and mobile layouts for listing, searching, creating, resuming,
   and refreshing native Codex threads, with a 44-pixel conversation header and
   a responsive one-line composer.
+- Active and Archived views with one thread-action menu: desktop right-click,
+  a 550 ms mobile long press, and an explicit `...` entry point all open the
+  same actions. Threads with a turn in progress cannot be archived or deleted;
+  other idle threads can be archived, archived threads can be restored, and
+  either kind of idle thread can be deleted after a confirmation warns that the
+  thread and descendant sessions may be permanently removed. Cross-client
+  archive, restore, and delete notifications reconcile the lists and current
+  selection. Deletion also removes that thread's browser-local image previews
+  from memory and IndexedDB.
 - Incremental recent-turn loading through `thread/turns/list`, adaptive page
   sizing, retryable older pages, and summary fallback. App-server chooses the
   default history contract for new threads instead of Ask Codex forcing the
@@ -90,8 +102,9 @@ outcomes in `Next` without relying on prior chat history.
   Codex CLI 0.145.0. Ask Codex can retain reasons captured during the current
   browser session and through in-session resync, but cannot reconstruct them
   after a page reload or on another device from native thread history alone.
-- The sidebar is a flat thread list. There are no project groups, Skills view,
-  Activity view, usage panel, or thread-management actions.
+- The sidebar still lists individual threads without project grouping. There is
+  no Skills view, independent cross-thread Activity view, usage panel, thread
+  rename, or fork action.
 - Image attachments are deleted after a turn completes. Normal subsequent
   Codex context is unaffected, but another native client cannot use the deleted
   `localImage.path` to edit history and reattach the original image; persistent
@@ -143,24 +156,26 @@ not a delivery commitment.
 
 ## Verification
 
-This round of code verification was completed on 2026-07-25 with Node.js
+This round of code verification was completed on 2026-07-26 with Node.js
 `v24.13.1`, npm `11.12.1`, and Codex CLI `0.145.0`:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 25 files, 288 tests. The server tests were run in an
+- `npm test` passed: 26 files, 310 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
-- `CHROME_BIN=/usr/bin/chromium-browser ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174 npm run check:visual`
+- `CHROME_BIN=/usr/bin/chromium-browser ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-thread-lifecycle npm run check:visual`
   passed against the current production build. Deterministic desktop and
-  390x844 mobile fixtures covered the new-thread dialog, configured model
-  selections, draft image previews, thumbnail loading, bounded layout, and
-  new-tab behavior both after sending and after a page reload, grouped tools,
-  and a simulated approval reason. They created no real Codex turn and found no
-  horizontal overflow, overlapping controls, clipped rich content, console
-  errors, or page errors.
+  390x844 mobile fixtures covered the Active and Archived views, desktop
+  context menu, mobile long-press menu, permanent-delete confirmation,
+  new-thread dialog, configured model selections, draft image previews,
+  thumbnail loading, bounded layout and new-tab behavior after sending and
+  reloading, grouped tools, and a simulated approval reason. No horizontal
+  overflow, overlapping controls, clipped rich content, console errors, or
+  page errors were found. The fixture canceled at deletion confirmation, sent
+  no thread-lifecycle RPC, and created no real Codex turn.
 
-The protocol verification recorded earlier the same day still applies to the
+The protocol verification recorded on 2026-07-25 still applies to the
 protocol paths unchanged in this round:
 
 - Current CLI bindings were generated and checked: `TurnItemsView` is

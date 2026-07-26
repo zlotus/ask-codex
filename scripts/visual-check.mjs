@@ -32,6 +32,17 @@ const fixtureThread = {
   status: { type: "idle" },
 };
 
+const fixtureArchivedThread = {
+  id: "019-visual-archived-thread",
+  name: "Archived fixture",
+  preview: "Verify archived thread actions",
+  cwd: "/workspace/ask-codex",
+  model: "gpt-5-codex",
+  createdAt: 1_799_999_800,
+  updatedAt: 1_799_999_900,
+  status: { type: "idle" },
+};
+
 const filePatch = [
   "@@ -1,4 +1,5 @@",
   " import { oldClient } from \"./client\";",
@@ -159,7 +170,10 @@ async function installFixture(page) {
       if (message.type !== "rpc") return;
       let result = {};
       if (message.method === "thread/list") {
-        result = { data: [fixtureThread], nextCursor: null };
+        result = {
+          data: message.params?.archived ? [fixtureArchivedThread] : [fixtureThread],
+          nextCursor: null,
+        };
       } else if (message.method === "model/list") {
         result = {
           data: [{
@@ -227,7 +241,7 @@ async function installFixture(page) {
 }
 
 async function selectFixture(page) {
-  await page.getByRole("button", { name: /Renderer fixture/ }).click();
+  await page.getByRole("button", { name: "Renderer fixture", exact: true }).click();
   await page.getByText("The bounded renderer is in place.", { exact: false }).waitFor();
   await page.waitForTimeout(250);
 }
@@ -290,6 +304,48 @@ async function inspectThreadDialog(page) {
   });
 }
 
+async function inspectThreadActionMenu(page) {
+  const menu = page.getByRole("menu", { name: "Actions for Renderer fixture" });
+  await menu.waitFor();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem");
+  return menu.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const labels = [...element.querySelectorAll('[role="menuitem"]')]
+      .map((item) => item.textContent?.trim());
+    return {
+      fitsViewport: box.left >= 0 && box.top >= 0 &&
+        box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      width: box.width,
+      labels,
+      focusInside: element.contains(document.activeElement),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
+async function inspectDeleteThreadDialog(page) {
+  const dialog = page.getByRole("dialog", { name: "Delete thread permanently?" });
+  await dialog.waitFor();
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Cancel");
+  return dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const buttons = [...element.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+    const text = element.textContent ?? "";
+    return {
+      fitsViewport: box.left >= 0 && box.top >= 0 &&
+        box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      buttonsContained: buttons.every((button) => (
+        button.left >= box.left && button.top >= box.top &&
+        button.right <= box.right && button.bottom <= box.bottom
+      )),
+      warnsAboutDescendants: /descendant sessions may also be permanently deleted/i.test(text),
+      warnsCannotUndo: /cannot be undone/i.test(text),
+      cancelFocused: document.activeElement?.textContent?.trim() === "Cancel",
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
 async function addFixtureImage(page) {
   await page.locator('[aria-label="Choose images"]').setInputFiles({
     name: "visual-fixture.png",
@@ -297,6 +353,10 @@ async function addFixtureImage(page) {
     buffer: fixtureImage,
   });
   await page.getByRole("button", { name: "Remove visual-fixture.png" }).waitFor();
+  await page.waitForFunction(() => {
+    const image = document.querySelector(".composer-attachment img");
+    return image?.complete && image.naturalWidth > 0;
+  });
 }
 
 async function inspectComposerImage(page) {
@@ -418,6 +478,23 @@ try {
     };
   });
   await page.screenshot({ path: `${outputDirectory}/desktop.png`, fullPage: true });
+
+  const desktopThreadRow = page.getByRole("button", { name: "Renderer fixture", exact: true });
+  await desktopThreadRow.click({ button: "right" });
+  const desktopThreadMenu = await inspectThreadActionMenu(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-thread-menu.png`, fullPage: true });
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  const desktopDeleteDialog = await inspectDeleteThreadDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-delete-thread.png`, fullPage: true });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("tab", { name: "Archived", exact: true }).click();
+  const desktopArchivedVisible = await page.getByRole("button", {
+    name: "Archived fixture",
+    exact: true,
+  }).isVisible();
+  await page.screenshot({ path: `${outputDirectory}/desktop-archived.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Active", exact: true }).click();
+
   await addFixtureImage(page);
   const desktopComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-attachment.png`, fullPage: true });
@@ -427,6 +504,7 @@ try {
   await page.screenshot({ path: `${outputDirectory}/desktop-new-thread.png`, fullPage: true });
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await selectFixture(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-readme.png`, fullPage: true });
   const desktopSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-sent-image.png`, fullPage: true });
   const desktopReloadedImage = await reloadAndInspectFixtureImage(page);
@@ -472,6 +550,35 @@ try {
   await page.waitForTimeout(250);
   const sidebarBox = await page.locator(".sidebar--open").boundingBox();
   await page.screenshot({ path: `${outputDirectory}/mobile-sidebar.png`, fullPage: true });
+  const mobileMoreButtonVisible = await page.getByRole("button", {
+    name: "More actions for Renderer fixture",
+    exact: true,
+  }).evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return style.visibility !== "hidden" && Number(style.opacity) > 0 &&
+      box.width >= 28 && box.height >= 28;
+  });
+  const mobileThreadRow = page.getByRole("button", { name: "Renderer fixture", exact: true });
+  const mobileThreadRowBox = await mobileThreadRow.boundingBox();
+  if (!mobileThreadRowBox) throw new Error("The mobile thread row is not visible");
+  const mobilePointer = {
+    pointerId: 7,
+    pointerType: "touch",
+    button: 0,
+    clientX: mobileThreadRowBox.x + 24,
+    clientY: mobileThreadRowBox.y + 22,
+  };
+  await mobileThreadRow.dispatchEvent("pointerdown", mobilePointer);
+  await page.waitForTimeout(600);
+  const mobileThreadMenu = await inspectThreadActionMenu(page);
+  await mobileThreadRow.dispatchEvent("pointerup", mobilePointer);
+  await page.screenshot({ path: `${outputDirectory}/mobile-thread-menu.png`, fullPage: true });
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  const mobileDeleteDialog = await inspectDeleteThreadDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-delete-thread.png`, fullPage: true });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.waitForTimeout(850);
   await selectFixture(page);
   const mobileSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
@@ -492,6 +599,9 @@ try {
       sentImage: desktopSentImage,
       reloadedImage: desktopReloadedImage,
       dialog: desktopDialog,
+      threadMenu: desktopThreadMenu,
+      deleteThreadDialog: desktopDeleteDialog,
+      archivedVisible: desktopArchivedVisible,
       rich: desktopRich,
     },
     mobile: {
@@ -500,6 +610,9 @@ try {
       sentImage: mobileSentImage,
       reloadedImage: mobileReloadedImage,
       dialog: mobileDialog,
+      threadMenu: mobileThreadMenu,
+      deleteThreadDialog: mobileDeleteDialog,
+      moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
       splitActionHidden,
@@ -548,6 +661,18 @@ try {
     !desktopDialog.cwdEditable ||
     !desktopDialog.sandboxEnabled ||
     desktopDialog.sandbox !== "workspace-write" ||
+    !desktopThreadMenu.fitsViewport ||
+    desktopThreadMenu.width > 200 ||
+    desktopThreadMenu.labels.join(",") !== "Archive,Delete" ||
+    !desktopThreadMenu.focusInside ||
+    desktopThreadMenu.horizontalOverflow ||
+    !desktopDeleteDialog.fitsViewport ||
+    !desktopDeleteDialog.buttonsContained ||
+    !desktopDeleteDialog.warnsAboutDescendants ||
+    !desktopDeleteDialog.warnsCannotUndo ||
+    !desktopDeleteDialog.cancelFocused ||
+    desktopDeleteDialog.horizontalOverflow ||
+    !desktopArchivedVisible ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
     !mobileBefore.toolbarVisible ||
@@ -585,6 +710,18 @@ try {
     !mobileDialog.cwdEditable ||
     !mobileDialog.sandboxEnabled ||
     mobileDialog.sandbox !== "workspace-write" ||
+    !mobileThreadMenu.fitsViewport ||
+    mobileThreadMenu.width > 200 ||
+    mobileThreadMenu.labels.join(",") !== "Archive,Delete" ||
+    !mobileThreadMenu.focusInside ||
+    mobileThreadMenu.horizontalOverflow ||
+    !mobileDeleteDialog.fitsViewport ||
+    !mobileDeleteDialog.buttonsContained ||
+    !mobileDeleteDialog.warnsAboutDescendants ||
+    !mobileDeleteDialog.warnsCannotUndo ||
+    !mobileDeleteDialog.cancelFocused ||
+    mobileDeleteDialog.horizontalOverflow ||
+    !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||
     desktopRich.clipped.length > 0 ||

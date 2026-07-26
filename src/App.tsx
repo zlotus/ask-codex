@@ -42,6 +42,7 @@ import {
   MAX_IMAGE_PREVIEW_COUNT,
   SessionImagePreviewRegistry,
   sessionImagePreviewKey,
+  sessionImagePreviewThreadId,
   type SessionImagePreviewSnapshot,
 } from "./utils/sessionImagePreviews";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
@@ -70,6 +71,15 @@ import {
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
+}
+
+function threadIsActive(thread: CodexThread | undefined): boolean {
+  if (!thread) return false;
+  if (typeof thread.status === "string") {
+    const status = thread.status.toLowerCase();
+    return status === "active" || status === "inprogress" || status === "in_progress";
+  }
+  return thread.status?.type === "active";
 }
 
 function paramsRecord(value: unknown): Record<string, unknown> {
@@ -170,6 +180,7 @@ export default function App() {
   const imagePreviewStoreRef = useRef<BrowserImagePreviewStore | null>(null);
   const imagePreviewHydratedRef = useRef(false);
   const pendingImagePreviewGroupsRef = useRef(new Map<string, PendingImagePreviewGroup>());
+  const removedImagePreviewThreadIdsRef = useRef(new Set<string>());
   if (imagePreviewRegistryRef.current === null) {
     imagePreviewRegistryRef.current = new SessionImagePreviewRegistry();
   }
@@ -207,13 +218,25 @@ export default function App() {
       const pending = [...pendingGroups];
       if (entries) {
         registry.clear();
-        for (const entry of entries) registry.remember(entry.key, entry.blobs);
-        for (const [key, group] of pending) registry.remember(key, group.blobs);
+        for (const entry of entries) {
+          const threadId = sessionImagePreviewThreadId(entry.key);
+          if (threadId && !removedImagePreviewThreadIdsRef.current.has(threadId)) {
+            registry.remember(entry.key, entry.blobs);
+          }
+        }
+        for (const [key, group] of pending) {
+          const threadId = sessionImagePreviewThreadId(key);
+          if (threadId && !removedImagePreviewThreadIdsRef.current.has(threadId)) {
+            registry.remember(key, group.blobs);
+          }
+        }
         setImagePreviews(registry.snapshot());
       }
       pendingGroups.clear();
       imagePreviewHydratedRef.current = true;
       for (const [key, group] of pending) {
+        const threadId = sessionImagePreviewThreadId(key);
+        if (!threadId || removedImagePreviewThreadIdsRef.current.has(threadId)) continue;
         void store.remember(key, group.blobs).catch(() => {
           // A local preview write never changes the accepted Codex turn.
         });
@@ -265,6 +288,38 @@ export default function App() {
     window.setTimeout(() => dispatch({ type: "removeToast", id }), 5_500);
   }, []);
 
+  const removeImagePreviewsForThread = useCallback((threadId: string): void => {
+    removedImagePreviewThreadIdsRef.current.add(threadId);
+    for (const key of [...pendingImagePreviewGroupsRef.current.keys()]) {
+      if (sessionImagePreviewThreadId(key) === threadId) {
+        pendingImagePreviewGroupsRef.current.delete(key);
+      }
+    }
+    const registry = imagePreviewRegistryRef.current;
+    if (registry && imagePreviewsMountedRef.current) {
+      setImagePreviews(registry.removeThread(threadId));
+    }
+    void imagePreviewStoreRef.current?.removeThread(threadId).catch(() => {
+      // The Codex thread is already deleted; local preview cleanup is best-effort.
+    });
+  }, []);
+
+  const invalidateSelectedThread = useCallback((threadId: string): void => {
+    if (
+      selectedThreadIdRef.current !== threadId &&
+      currentThreadRef.current?.id !== threadId
+    ) {
+      return;
+    }
+    selectionGenerationRef.current += 1;
+    selectedThreadIdRef.current = null;
+    currentThreadRef.current = null;
+    setLoadingThread(false);
+    setThreadLoadError(null);
+    setSandboxOverride(null);
+    setThreadDialog(null);
+  }, []);
+
   const applyNotification = useCallback((message: NotificationMessage) => {
     const params = paramsRecord(message.params);
     const threadId = readString(params.threadId);
@@ -286,6 +341,25 @@ export default function App() {
       }
       case "thread/status/changed": {
         if (threadId) dispatch({ type: "upsertThread", thread: { id: threadId, status: params.status as CodexThread["status"] } });
+        return;
+      }
+      case "thread/archived": {
+        if (threadId) {
+          invalidateSelectedThread(threadId);
+          dispatch({ type: "archiveThread", threadId });
+        }
+        return;
+      }
+      case "thread/unarchived": {
+        if (threadId) dispatch({ type: "unarchiveThread", threadId });
+        return;
+      }
+      case "thread/deleted": {
+        if (threadId) {
+          invalidateSelectedThread(threadId);
+          removeImagePreviewsForThread(threadId);
+          dispatch({ type: "deleteThread", threadId });
+        }
         return;
       }
       case "thread/settings/updated": {
@@ -396,7 +470,7 @@ export default function App() {
     } else if (message.method === "item/fileChange/outputDelta") {
       dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "fileChange", field: "output", delta });
     }
-  }, []);
+  }, [invalidateSelectedThread, removeImagePreviewsForThread]);
 
   const onNotification = useCallback((message: NotificationMessage) => {
     const coordinator = resyncCoordinatorRef.current;
@@ -514,24 +588,33 @@ export default function App() {
     if (connection !== "connected") return;
     setLoadingThreads(true);
     try {
-      const threads: CodexThread[] = [];
-      const seenCursors = new Set<string>();
-      let cursor: string | undefined;
-      for (let page = 0; page < 50; page += 1) {
-        const result = await rpc("thread/list", {
-          limit: 100,
-          sortKey: "updated_at",
-          sortDirection: "desc",
-          sourceKinds: [],
-          ...(cursor !== undefined ? { cursor } : {}),
-        });
-        threads.push(...extractThreads(result));
-        const nextCursor = isRecord(result) ? readString(result.nextCursor) : undefined;
-        if (nextCursor === undefined || seenCursors.has(nextCursor)) break;
-        seenCursors.add(nextCursor);
-        cursor = nextCursor;
-      }
+      const listThreads = async (archived: boolean): Promise<CodexThread[]> => {
+        const threads: CodexThread[] = [];
+        const seenCursors = new Set<string>();
+        let cursor: string | undefined;
+        for (let page = 0; page < 50; page += 1) {
+          const result = await rpc("thread/list", {
+            limit: 100,
+            sortKey: "updated_at",
+            sortDirection: "desc",
+            sourceKinds: [],
+            archived,
+            ...(cursor !== undefined ? { cursor } : {}),
+          });
+          threads.push(...extractThreads(result));
+          const nextCursor = isRecord(result) ? readString(result.nextCursor) : undefined;
+          if (nextCursor === undefined || seenCursors.has(nextCursor)) break;
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+        return threads;
+      };
+      const [threads, archivedThreads] = await Promise.all([
+        listThreads(false),
+        listThreads(true),
+      ]);
       dispatch({ type: "setThreads", threads });
+      dispatch({ type: "setArchivedThreads", threads: archivedThreads });
     } catch (error) {
       showToast(errorMessage(error));
     } finally {
@@ -956,6 +1039,55 @@ export default function App() {
     }
   }, [rpc, showToast, state.activeTurnId, state.currentThread]);
 
+  const isThreadActive = useCallback((threadId: string): boolean => {
+    const thread = state.threads.find((entry) => entry.id === threadId)
+      ?? state.archivedThreads.find((entry) => entry.id === threadId);
+    return threadIsActive(thread) || (
+      state.currentThread?.id === threadId && Boolean(state.activeTurnId)
+    );
+  }, [state.activeTurnId, state.archivedThreads, state.currentThread?.id, state.threads]);
+
+  const archiveThread = useCallback(async (threadId: string) => {
+    if (isThreadActive(threadId)) {
+      showToast("Active threads cannot be archived");
+      return;
+    }
+    try {
+      await rpc("thread/archive", { threadId });
+      invalidateSelectedThread(threadId);
+      dispatch({ type: "archiveThread", threadId });
+      showToast("Thread archived", "success");
+    } catch (error) {
+      showToast(errorMessage(error));
+    }
+  }, [invalidateSelectedThread, isThreadActive, rpc, showToast]);
+
+  const unarchiveThread = useCallback(async (threadId: string) => {
+    try {
+      await rpc("thread/unarchive", { threadId });
+      dispatch({ type: "unarchiveThread", threadId });
+      showToast("Thread restored", "success");
+    } catch (error) {
+      showToast(errorMessage(error));
+    }
+  }, [rpc, showToast]);
+
+  const deleteThread = useCallback(async (threadId: string) => {
+    if (isThreadActive(threadId)) {
+      showToast("Active threads cannot be deleted");
+      return;
+    }
+    try {
+      await rpc("thread/delete", { threadId });
+      invalidateSelectedThread(threadId);
+      removeImagePreviewsForThread(threadId);
+      dispatch({ type: "deleteThread", threadId });
+      showToast("Thread permanently deleted", "success");
+    } catch (error) {
+      showToast(errorMessage(error));
+    }
+  }, [invalidateSelectedThread, isThreadActive, removeImagePreviewsForThread, rpc, showToast]);
+
   const resolveRequest = useCallback((id: string | number, result: unknown) => {
     try {
       respond(id, result);
@@ -988,13 +1120,18 @@ export default function App() {
     <div className="app-shell">
       <Sidebar
         threads={state.threads}
+        archivedThreads={state.archivedThreads}
         selectedThreadId={state.selectedThreadId}
         search={search}
         open={sidebarOpen}
         loading={loadingThreads}
         connection={connection}
+        isThreadActive={isThreadActive}
         onSearch={setSearch}
         onSelect={(threadId) => void selectThread(threadId)}
+        onArchive={(threadId) => void archiveThread(threadId)}
+        onUnarchive={(threadId) => void unarchiveThread(threadId)}
+        onDelete={(threadId) => void deleteThread(threadId)}
         onNew={openNewThread}
         onRefresh={() => void refreshThreads()}
         onClose={() => setSidebarOpen(false)}

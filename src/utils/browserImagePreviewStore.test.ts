@@ -191,6 +191,35 @@ describe("BrowserImagePreviewStore", () => {
     afterCleanup.close();
   });
 
+  it("removes only the persisted preview groups owned by one thread", async () => {
+    const indexedDB = new FakeIDBFactory();
+    const dbName = "remove-thread";
+    let now = 1;
+    const store = new BrowserImagePreviewStore(storeOptions(indexedDB, dbName, () => now));
+    const firstTargetKey = sessionImagePreviewKey("thread-target", "turn-1");
+    const secondTargetKey = sessionImagePreviewKey("thread-target", "turn-2");
+    const retainedKey = sessionImagePreviewKey("thread-target-other", "turn-1");
+
+    await store.remember(firstTargetKey, [image(1)]);
+    now = 2;
+    await store.remember(retainedKey, [image(3, "image/jpeg")]);
+    now = 3;
+    await store.remember(secondTargetKey, [image(2, "image/webp")]);
+
+    await store.removeThread("thread-target");
+
+    expect(await store.loadAll()).toEqual([expect.objectContaining({
+      key: retainedKey,
+      storedAt: 2,
+      blobs: [expect.objectContaining({ size: 3, type: "image/jpeg" })],
+    })]);
+    store.close();
+
+    const reopened = new BrowserImagePreviewStore(storeOptions(indexedDB, dbName, () => now));
+    expect((await reopened.loadAll()).map((entry) => entry.key)).toEqual([retainedKey]);
+    reopened.close();
+  });
+
   it("rejects invalid new groups and removes corrupt stored groups before returning", async () => {
     const indexedDB = new FakeIDBFactory();
     const dbName = "validation";

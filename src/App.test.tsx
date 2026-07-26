@@ -42,6 +42,14 @@ const existingThread = {
   turns: [],
 };
 
+const archivedThread = {
+  id: "thread-archived",
+  name: "Archived thread",
+  cwd: "/workspace/archived",
+  model: "gpt-5",
+  turns: [],
+};
+
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -50,7 +58,14 @@ const PNG = new Uint8Array([
 
 function installRpcFixture() {
   socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
-    if (method === "thread/list") return { data: [existingThread], nextCursor: null };
+    if (method === "thread/list") {
+      return {
+        data: (params as { archived?: boolean } | undefined)?.archived
+          ? [archivedThread]
+          : [existingThread],
+        nextCursor: null,
+      };
+    }
     if (method === "model/list") return {
       data: [{
         model: "configured-model",
@@ -212,6 +227,123 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       cwd: "/workspace/existing",
     }));
+  });
+
+  it("loads active and archived views and sends strict lifecycle RPCs", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => {
+      expect(socket.rpc).toHaveBeenCalledWith("thread/list", expect.objectContaining({
+        archived: false,
+      }));
+      expect(socket.rpc).toHaveBeenCalledWith("thread/list", expect.objectContaining({
+        archived: true,
+      }));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/archive", {
+      threadId: "thread-existing",
+    }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Archived" }));
+    expect(screen.getByRole("button", { name: "Existing thread" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unarchive" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/unarchive", {
+      threadId: "thread-existing",
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Archived thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(socket.rpc).not.toHaveBeenCalledWith("thread/delete", expect.anything());
+    expect(screen.getByRole("dialog", { name: "Delete thread permanently?" }))
+      .toHaveTextContent(/descendant sessions/i);
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/delete", {
+      threadId: "thread-archived",
+    }));
+    expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
+  });
+
+  it("keeps archive and permanent delete unavailable for an active thread", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        return Promise.resolve({
+          data: [{ ...existingThread, status: { type: "active", activeFlags: [] } }],
+          nextCursor: null,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
+    expect(socket.rpc.mock.calls.some(([method]) => (
+      method === "thread/archive" || method === "thread/delete"
+    ))).toBe(false);
+  });
+
+  it("reacts to cross-client lifecycle notifications and removes deleted preview data", async () => {
+    const indexedDB = new FakeIDBFactory();
+    vi.stubGlobal("indexedDB", indexedDB);
+    const deletedPreviewKey = sessionImagePreviewKey("thread-existing", "turn-deleted-preview");
+    const retainedPreviewKey = sessionImagePreviewKey("thread-other", "turn-retained-preview");
+    const seeder = new BrowserImagePreviewStore({ indexedDB });
+    await seeder.remember(deletedPreviewKey, [
+      new NodeBlob([PNG], { type: "image/png" }) as unknown as Blob,
+    ]);
+    await seeder.remember(retainedPreviewKey, [
+      new NodeBlob([PNG], { type: "image/png" }) as unknown as Blob,
+    ]);
+    seeder.close();
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/archived",
+      params: { threadId: "thread-existing" },
+    }));
+    expect(screen.queryByRole("button", { name: "Existing thread" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Archived" }));
+    expect(screen.getByRole("button", { name: "Existing thread" })).toBeInTheDocument();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/unarchived",
+      params: { threadId: "thread-existing" },
+    }));
+    expect(screen.queryByRole("button", { name: "Existing thread" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Active" }));
+    expect(screen.getByRole("button", { name: "Existing thread" })).toBeInTheDocument();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/deleted",
+      params: { threadId: "thread-existing" },
+    }));
+    expect(screen.queryByRole("button", { name: "Existing thread" })).not.toBeInTheDocument();
+
+    const persistedStore = new BrowserImagePreviewStore({ indexedDB });
+    await waitFor(async () => {
+      expect((await persistedStore.loadAll()).map((entry) => entry.key)).toEqual([
+        retainedPreviewKey,
+      ]);
+    });
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    persistedStore.close();
   });
 
   it("uploads generic-MIME image bytes and retains a preview with the detected MIME", async () => {

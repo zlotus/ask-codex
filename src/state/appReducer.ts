@@ -13,6 +13,7 @@ export interface AppState {
   connection: ConnectionState;
   connectionDetail: string;
   threads: CodexThread[];
+  archivedThreads: CodexThread[];
   selectedThreadId: string | null;
   currentThread: CodexThread | null;
   turnHistory: TurnHistoryState;
@@ -34,6 +35,10 @@ export interface TurnHistoryState {
 export type AppAction =
   | { type: "connection"; state: ConnectionState; detail?: string }
   | { type: "setThreads"; threads: CodexThread[] }
+  | { type: "setArchivedThreads"; threads: CodexThread[] }
+  | { type: "archiveThread"; threadId: string }
+  | { type: "unarchiveThread"; threadId: string; thread?: CodexThread }
+  | { type: "deleteThread"; threadId: string }
   | { type: "selectThread"; threadId: string | null }
   | { type: "setCurrentThread"; thread: CodexThread; history?: { nextCursor: string | null } }
   | { type: "reconcileCurrentThread"; thread: CodexThread }
@@ -67,6 +72,7 @@ export const initialState: AppState = {
   connection: "connecting",
   connectionDetail: "Connecting",
   threads: [],
+  archivedThreads: [],
   selectedThreadId: null,
   currentThread: null,
   turnHistory: {
@@ -307,6 +313,36 @@ function upsertThread(threads: CodexThread[], thread: CodexThread): CodexThread[
   return sortThreads(next);
 }
 
+function clearSelectedThread(state: AppState, threadId: string): AppState {
+  if (state.selectedThreadId !== threadId && state.currentThread?.id !== threadId) return state;
+  return {
+    ...state,
+    selectedThreadId: null,
+    currentThread: null,
+    activeTurnId: null,
+    turnHistory: idleTurnHistory(null),
+  };
+}
+
+function requestThreadId(request: PendingRequest): string | undefined {
+  const value = request.params.threadId ?? request.params.conversationId;
+  return typeof value === "string" ? value : undefined;
+}
+
+function withoutThreadApprovalReasons(
+  reasons: Readonly<Record<string, string[]>>,
+  threadId: string,
+): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(reasons).filter(([key]) => {
+    try {
+      const parsed: unknown = JSON.parse(key);
+      return !Array.isArray(parsed) || parsed[0] !== threadId;
+    } catch {
+      return true;
+    }
+  }));
+}
+
 function updateTurn(
   thread: CodexThread | null,
   turnId: string,
@@ -455,6 +491,44 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     case "setThreads":
       return { ...state, threads: sortThreads(action.threads.map(threadSummary)) };
+    case "setArchivedThreads":
+      return { ...state, archivedThreads: sortThreads(action.threads.map(threadSummary)) };
+    case "archiveThread": {
+      const archived = state.threads.find((thread) => thread.id === action.threadId);
+      const moved = {
+        ...state,
+        threads: state.threads.filter((thread) => thread.id !== action.threadId),
+        archivedThreads: archived
+          ? upsertThread(state.archivedThreads, archived)
+          : state.archivedThreads,
+      };
+      return clearSelectedThread(moved, action.threadId);
+    }
+    case "unarchiveThread": {
+      const restored = action.thread ?? state.archivedThreads.find((thread) => (
+        thread.id === action.threadId
+      ));
+      return {
+        ...state,
+        threads: restored ? upsertThread(state.threads, restored) : state.threads,
+        archivedThreads: state.archivedThreads.filter((thread) => thread.id !== action.threadId),
+      };
+    }
+    case "deleteThread": {
+      const removed = clearSelectedThread({
+        ...state,
+        threads: state.threads.filter((thread) => thread.id !== action.threadId),
+        archivedThreads: state.archivedThreads.filter((thread) => thread.id !== action.threadId),
+        pendingRequests: state.pendingRequests.filter((request) => (
+          requestThreadId(request) !== action.threadId
+        )),
+        commandApprovalReasons: withoutThreadApprovalReasons(
+          state.commandApprovalReasons,
+          action.threadId,
+        ),
+      }, action.threadId);
+      return removed;
+    }
     case "selectThread":
       return {
         ...state,
@@ -488,6 +562,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             : idleTurnHistory(thread.id),
         activeTurnId: active,
         threads: upsertThread(state.threads, thread),
+        archivedThreads: state.archivedThreads.filter((entry) => entry.id !== thread.id),
       };
     }
     case "reconcileCurrentThread": {

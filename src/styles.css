@@ -97,7 +97,7 @@ pre {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   min-width: 0;
   height: 100dvh;
   color: var(--sidebar-text);
@@ -177,6 +177,58 @@ pre {
   padding: 0 12px 10px;
 }
 
+.thread-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  margin: 0 12px 9px;
+  padding: 2px;
+  background: #212521;
+  border: 1px solid #303530;
+  border-radius: 6px;
+}
+
+.thread-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  color: #919891;
+  font-size: 11px;
+  font-weight: 700;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.thread-tab span {
+  min-width: 16px;
+  padding: 1px 4px;
+  color: #7d847d;
+  font-size: 9.5px;
+  line-height: 14px;
+  text-align: center;
+  background: #181b19;
+  border-radius: 4px;
+}
+
+.thread-tab:hover {
+  color: #d5d8d3;
+}
+
+.thread-tab--selected {
+  color: #ffffff;
+  background: #353a35;
+}
+
+.thread-tab--selected span {
+  color: #b8d9c4;
+  background: #202a23;
+}
+
 .search-box {
   display: flex;
   align-items: center;
@@ -247,6 +299,11 @@ pre {
   scrollbar-width: thin;
 }
 
+.thread-row-shell {
+  position: relative;
+  min-width: 0;
+}
+
 .thread-row {
   display: flex;
   flex-direction: column;
@@ -255,13 +312,14 @@ pre {
   width: 100%;
   min-width: 0;
   min-height: 55px;
-  padding: 9px 10px;
+  padding: 9px 38px 9px 10px;
   color: #c8ccc7;
   text-align: left;
   background: transparent;
   border-left: 2px solid transparent;
   border-radius: 4px;
   cursor: pointer;
+  touch-action: pan-y;
 }
 
 .thread-row:hover {
@@ -272,6 +330,92 @@ pre {
   color: #ffffff;
   background: #272c27;
   border-left-color: #73bb8f;
+}
+
+.thread-more-button {
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #8f968f;
+  background: transparent;
+  border-radius: 4px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.thread-row-shell:hover .thread-more-button,
+.thread-row-shell:focus-within .thread-more-button,
+.thread-more-button[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.thread-more-button:hover {
+  color: #ffffff;
+  background: #363b36;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .thread-more-button {
+    opacity: 1;
+  }
+}
+
+.thread-action-menu {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  width: 180px;
+  padding: 5px;
+  color: #2b302b;
+  background: #ffffff;
+  border: 1px solid #d4d5ce;
+  border-radius: 7px;
+  box-shadow: 0 12px 30px rgba(12, 14, 12, 0.24);
+}
+
+.thread-action-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  color: #383d38;
+  font-size: 11.5px;
+  font-weight: 650;
+  text-align: left;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.thread-action-menu > button:hover:not(:disabled),
+.thread-action-menu > button:focus-visible:not(:disabled) {
+  background: #efeee9;
+}
+
+.thread-action-menu > .thread-action-menu__danger {
+  color: #ad4f43;
+}
+
+.thread-action-menu > .thread-action-menu__danger:hover:not(:disabled),
+.thread-action-menu > .thread-action-menu__danger:focus-visible:not(:disabled) {
+  background: #fff0ed;
+}
+
+.thread-action-menu__note {
+  margin: 4px 3px 2px;
+  padding: 6px;
+  color: #777d77;
+  font-size: 9.5px;
+  line-height: 13px;
+  background: #f3f2ed;
+  border-radius: 4px;
 }
 
 .thread-title {
@@ -2147,6 +2291,26 @@ details[open] > summary .details-chevron {
   width: min(100%, 440px);
 }
 
+.delete-thread-dialog {
+  width: min(100%, 420px);
+  padding: 17px;
+  background: var(--surface-strong);
+  border: 1px solid #d2d2cb;
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+}
+
+.delete-thread-dialog .dialog-heading {
+  color: #a64e42;
+}
+
+.delete-thread-dialog__description {
+  margin: 16px 0 0;
+  color: #525852;
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
 .dialog-heading {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 32px;
@@ -2346,6 +2510,10 @@ details[open] > summary .details-chevron {
   .sidebar-close,
   .mobile-menu-button {
     display: inline-grid;
+  }
+
+  .thread-more-button {
+    opacity: 1;
   }
 
   .sidebar-close {

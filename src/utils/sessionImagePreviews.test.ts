@@ -75,4 +75,34 @@ describe("SessionImagePreviewRegistry", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:created.png");
     expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:existing.png");
   });
+
+  it("removes every preview for one thread and revokes only its object URLs", () => {
+    let nextUrl = 0;
+    const revokeObjectURL = vi.fn();
+    const registry = new SessionImagePreviewRegistry({
+      createObjectURL: (blob) => `blob:${blobLabel(blob)}:${++nextUrl}`,
+      revokeObjectURL,
+    });
+    const firstTargetKey = sessionImagePreviewKey("thread-target", "turn-1");
+    const secondTargetKey = sessionImagePreviewKey("thread-target", "turn-2");
+    const retainedKey = sessionImagePreviewKey("thread-target-other", "turn-1");
+
+    registry.remember(firstTargetKey, [image("target-first.png", 1)]);
+    registry.remember(retainedKey, [image("retained.png", 1)]);
+    registry.remember(secondTargetKey, [image("target-second.png", 1)]);
+
+    const snapshot = registry.removeThread("thread-target");
+
+    expect(snapshot).toEqual({
+      [retainedKey]: ["blob:retained.png:2"],
+    });
+    expect(revokeObjectURL.mock.calls.map(([url]) => url)).toEqual([
+      "blob:target-first.png:1",
+      "blob:target-second.png:3",
+    ]);
+    expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:retained.png:2");
+
+    registry.clear();
+    expect(revokeObjectURL).toHaveBeenLastCalledWith("blob:retained.png:2");
+  });
 });

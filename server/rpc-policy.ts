@@ -6,6 +6,9 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "thread/start",
   "thread/resume",
   "thread/read",
+  "thread/archive",
+  "thread/unarchive",
+  "thread/delete",
   "thread/turns/list",
   "thread/items/list",
   "turn/start",
@@ -166,6 +169,7 @@ function sanitizeThreadList(params: unknown): Record<string, unknown> {
     "sortDirection",
     "sourceKinds",
     "searchTerm",
+    "archived",
   ]);
   const output: Record<string, unknown> = {};
   assignDefined(output, "cursor", optionalString(method, input, "cursor"));
@@ -193,6 +197,7 @@ function sanitizeThreadList(params: unknown): Record<string, unknown> {
     output.sourceKinds = [...input.sourceKinds];
   }
   assignDefined(output, "searchTerm", optionalString(method, input, "searchTerm"));
+  assignDefined(output, "archived", optionalBoolean(method, input, "archived"));
   return output;
 }
 
@@ -487,6 +492,15 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
       };
       assignDefined(output, "includeTurns", optionalBoolean(method, input, "includeTurns"));
       return output;
+    }
+    case "thread/archive":
+    case "thread/unarchive":
+    case "thread/delete": {
+      const input = paramsObject(method, params);
+      assertOnlyKeys(method, input, ["threadId"]);
+      return {
+        threadId: requiredString(method, input, "threadId"),
+      };
     }
     case "thread/turns/list":
       return sanitizeThreadTurnsList(params);
