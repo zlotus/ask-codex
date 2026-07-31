@@ -684,8 +684,11 @@ describe("App thread settings lifecycle", () => {
       expect.objectContaining({ method: "DELETE" }),
     ));
     expect(socket.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
-    expect(screen.getByLabelText("Message Codex")).toHaveValue("stay as draft");
-    expect(screen.getByText("delayed.png")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("");
+    const recovery = screen.getByText("Message not confirmed").closest('[role="alert"]');
+    expect(recovery).toHaveTextContent("stay as draft");
+    expect(recovery).toHaveTextContent("1 image");
+    expect(screen.getByRole("button", { name: "Retry unconfirmed message" })).toBeInTheDocument();
   });
 
   it("reports a failed image turn without waiting for attachment cleanup", async () => {
@@ -734,9 +737,11 @@ describe("App thread settings lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(await screen.findByText("Codex rejected the image turn")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
-    expect(screen.getByLabelText("Message Codex")).toHaveValue("keep this draft");
-    expect(screen.getByText("retry-after-error.png")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry unconfirmed message" })).toBeEnabled());
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("");
+    const recovery = screen.getByText("Message not confirmed").closest('[role="alert"]');
+    expect(recovery).toHaveTextContent("keep this draft");
+    expect(recovery).toHaveTextContent("1 image");
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/attachments/${attachmentId}`,
       expect.objectContaining({ method: "DELETE" }),

@@ -59,6 +59,18 @@ const fixtureTurns = [
     status: "completed",
     items: [
       {
+        id: "reasoning-one",
+        type: "reasoning",
+        summary: ["Inspect the existing renderer and preserve its bounded output behavior."],
+        content: [],
+      },
+      {
+        id: "reasoning-two",
+        type: "reasoning",
+        summary: ["Verify the implementation across desktop and mobile layouts."],
+        content: ["The checks cover grouped reasoning, tool activity, and aggregate turn changes."],
+      },
+      {
         id: "command",
         type: "commandExecution",
         status: "completed",
@@ -135,6 +147,8 @@ const fixtureImageTurn = {
 
 async function installFixture(page) {
   let imageTurnStarted = false;
+  let failNextTurnStart = false;
+  let fixtureSocket = null;
   await page.route("**/api/bootstrap", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -159,6 +173,7 @@ async function installFixture(page) {
   }));
 
   await page.routeWebSocket("**/ws", (socket) => {
+    fixtureSocket = socket;
     globalThis.setTimeout(() => socket.send(JSON.stringify({
       type: "status",
       status: "ready",
@@ -168,6 +183,15 @@ async function installFixture(page) {
     socket.onMessage((raw) => {
       const message = JSON.parse(String(raw));
       if (message.type !== "rpc") return;
+      if (message.method === "turn/start" && failNextTurnStart) {
+        failNextTurnStart = false;
+        socket.send(JSON.stringify({
+          type: "rpcError",
+          id: message.id,
+          error: { code: -32000, message: "Visual fixture send was not confirmed" },
+        }));
+        return;
+      }
       let result = {};
       if (message.method === "thread/list") {
         result = {
@@ -238,6 +262,15 @@ async function installFixture(page) {
       }
     });
   });
+  return {
+    failNextSend() {
+      failNextTurnStart = true;
+    },
+    notify(method, params) {
+      if (!fixtureSocket) throw new Error("The visual fixture WebSocket is not connected");
+      fixtureSocket.send(JSON.stringify({ type: "notification", method, params }));
+    },
+  };
 }
 
 async function selectFixture(page) {
@@ -247,7 +280,7 @@ async function selectFixture(page) {
 }
 
 async function openRichDetails(page) {
-  for (const selector of [".activity-group", ".tool-activity", ".inline-details, .turn-diff"]) {
+  for (const selector of [".reasoning-block", ".activity-group", ".tool-activity", ".inline-details, .turn-diff"]) {
     await page.locator(selector).evaluateAll((elements) => {
       for (const element of elements) {
         if (!element.open) element.querySelector(":scope > summary")?.click();
@@ -262,7 +295,7 @@ async function openRichDetails(page) {
 
 async function inspectRichLayout(page) {
   return page.evaluate(() => {
-    const selectors = [".code-block", ".diff-viewer", ".command-block", ".activity-group"];
+    const selectors = [".reasoning-block", ".code-block", ".diff-viewer", ".command-block", ".activity-group"];
     const clipped = selectors.flatMap((selector) => [...document.querySelectorAll(selector)])
       .filter((element) => {
         const box = element.getBoundingClientRect();
@@ -274,6 +307,10 @@ async function inspectRichLayout(page) {
       clipped,
       codeBlocks: document.querySelectorAll(".code-block").length,
       diffViewers: document.querySelectorAll(".diff-viewer").length,
+      reasoningBlocks: document.querySelectorAll(".reasoning-block").length,
+      reasoningEntries: document.querySelectorAll(".reasoning-entry").length,
+      groupedReasoningLabels: [...document.querySelectorAll(".reasoning-summary")]
+        .filter((element) => element.textContent?.includes("Reasoning (2)")).length,
       commands: document.querySelectorAll(".command-block").length,
       activityGroups: document.querySelectorAll(".activity-group").length,
       hiddenActivitySummaries: [...document.querySelectorAll(".command-summary")].filter((element) => {
@@ -286,6 +323,62 @@ async function inspectRichLayout(page) {
       toolOutputTruncations: document.querySelectorAll(".tool-activity .code-block-truncation").length,
     };
   });
+}
+
+async function inspectActiveReasoning(page, fixture, screenshotPath) {
+  const item = { id: "reasoning-live", type: "reasoning", summary: [], content: [] };
+  fixture.notify("item/started", {
+    threadId: fixtureThread.id,
+    turnId: "turn-newest",
+    item,
+  });
+  const status = page.getByRole("status", { name: "Reasoning in progress" });
+  await status.waitFor();
+  await status.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  const result = await status.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const spinner = element.querySelector(".reasoning-spinner");
+    return {
+      fitsViewport: box.left >= 0 && box.right <= window.innerWidth,
+      nonExpandable: element.tagName === "DIV" && !element.querySelector("summary"),
+      spinnerAnimation: spinner ? window.getComputedStyle(spinner).animationName : null,
+    };
+  });
+  fixture.notify("item/completed", {
+    threadId: fixtureThread.id,
+    turnId: "turn-newest",
+    item,
+  });
+  await status.waitFor({ state: "hidden" });
+  return result;
+}
+
+async function inspectFailedSubmission(page, fixture, screenshotPath) {
+  fixture.failNextSend();
+  await page.getByLabel("Message Codex").fill("Keep the next draft editable");
+  await page.getByRole("button", { name: "Send message" }).click();
+  const recovery = page.locator(".composer-failed-submission");
+  await recovery.waitFor();
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  const result = await recovery.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const textarea = document.querySelector(".composer textarea");
+    const send = document.querySelector('[aria-label="Send message"]');
+    const toast = document.querySelector(".toast")?.getBoundingClientRect();
+    const actions = [...element.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+    return {
+      actionsUsable: actions.length === 2 && actions.every((action) => action.width >= 32 && action.height >= 32),
+      fitsViewport: box.left >= 0 && box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      sendDisabled: send?.disabled === true,
+      textareaEditable: textarea?.disabled === false,
+      toastOverlap: Boolean(toast && box.left < toast.right && box.right > toast.left &&
+        box.top < toast.bottom && box.bottom > toast.top),
+    };
+  });
+  await page.getByRole("button", { name: "Discard unconfirmed message" }).click();
+  await recovery.waitFor({ state: "hidden" });
+  return result;
 }
 
 async function inspectThreadDialog(page) {
@@ -447,7 +540,7 @@ async function reloadAndInspectFixtureImage(page) {
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  await installFixture(page);
+  const fixture = await installFixture(page);
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -512,9 +605,21 @@ try {
   await page.locator(".conversation-scroll").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: `${outputDirectory}/desktop-code.png`, fullPage: true });
   await openRichDetails(page);
+  await page.locator(".reasoning-block").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${outputDirectory}/desktop-reasoning.png`, fullPage: true });
   await page.locator(".file-change-entry").scrollIntoViewIfNeeded();
   const desktopRich = await inspectRichLayout(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-rich.png`, fullPage: true });
+  const desktopActiveReasoning = await inspectActiveReasoning(
+    page,
+    fixture,
+    `${outputDirectory}/desktop-reasoning-active.png`,
+  );
+  const desktopFailedSubmission = await inspectFailedSubmission(
+    page,
+    fixture,
+    `${outputDirectory}/desktop-failed-submission.png`,
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
@@ -585,12 +690,24 @@ try {
   const mobileReloadedImage = await reloadAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-reloaded-image.png`, fullPage: true });
   await openRichDetails(page);
+  await page.locator(".reasoning-block").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${outputDirectory}/mobile-reasoning.png`, fullPage: true });
   await page.locator(".file-change-entry").scrollIntoViewIfNeeded();
   const mobileRich = await inspectRichLayout(page);
   const splitActionHidden = await page.locator(".diff-split-action").first().evaluate((element) => (
     window.getComputedStyle(element).display === "none"
   ));
   await page.screenshot({ path: `${outputDirectory}/mobile-rich.png`, fullPage: true });
+  const mobileActiveReasoning = await inspectActiveReasoning(
+    page,
+    fixture,
+    `${outputDirectory}/mobile-reasoning-active.png`,
+  );
+  const mobileFailedSubmission = await inspectFailedSubmission(
+    page,
+    fixture,
+    `${outputDirectory}/mobile-failed-submission.png`,
+  );
 
   const result = {
     desktop: {
@@ -603,6 +720,8 @@ try {
       deleteThreadDialog: desktopDeleteDialog,
       archivedVisible: desktopArchivedVisible,
       rich: desktopRich,
+      activeReasoning: desktopActiveReasoning,
+      failedSubmission: desktopFailedSubmission,
     },
     mobile: {
       ...mobileBefore,
@@ -615,6 +734,8 @@ try {
       moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
+      activeReasoning: mobileActiveReasoning,
+      failedSubmission: mobileFailedSubmission,
       splitActionHidden,
     },
     consoleErrors,
@@ -727,17 +848,39 @@ try {
     desktopRich.clipped.length > 0 ||
     desktopRich.codeBlocks === 0 ||
     desktopRich.diffViewers === 0 ||
+    desktopRich.reasoningBlocks !== 1 ||
+    desktopRich.reasoningEntries !== 2 ||
+    desktopRich.groupedReasoningLabels !== 1 ||
     desktopRich.commands === 0 ||
     desktopRich.activityGroups === 0 ||
     desktopRich.hiddenActivitySummaries > 0 ||
     desktopRich.reasonBlocks === 0 ||
     desktopRich.scrollingToolOutputs === 0 ||
     desktopRich.toolOutputTruncations === 0 ||
+    !desktopActiveReasoning.fitsViewport ||
+    !desktopActiveReasoning.nonExpandable ||
+    desktopActiveReasoning.spinnerAnimation !== "spin" ||
+    !desktopFailedSubmission.actionsUsable ||
+    !desktopFailedSubmission.fitsViewport ||
+    !desktopFailedSubmission.sendDisabled ||
+    !desktopFailedSubmission.textareaEditable ||
+    desktopFailedSubmission.toastOverlap ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
+    mobileRich.reasoningBlocks !== 1 ||
+    mobileRich.reasoningEntries !== 2 ||
+    mobileRich.groupedReasoningLabels !== 1 ||
     mobileRich.hiddenActivitySummaries > 0 ||
     mobileRich.scrollingToolOutputs === 0 ||
     mobileRich.toolOutputTruncations === 0 ||
+    !mobileActiveReasoning.fitsViewport ||
+    !mobileActiveReasoning.nonExpandable ||
+    mobileActiveReasoning.spinnerAnimation !== "spin" ||
+    !mobileFailedSubmission.actionsUsable ||
+    !mobileFailedSubmission.fitsViewport ||
+    !mobileFailedSubmission.sendDisabled ||
+    !mobileFailedSubmission.textareaEditable ||
+    mobileFailedSubmission.toastOverlap ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||
     pageErrors.length > 0

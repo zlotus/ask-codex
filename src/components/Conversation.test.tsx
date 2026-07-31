@@ -10,6 +10,40 @@ beforeEach(() => {
 });
 
 describe("Conversation history recovery", () => {
+  it("keeps a newly updated turn diff in view when the reader is near the bottom", () => {
+    const item = { id: "agent", type: "agentMessage", text: "Finished" };
+    const baseProps = {
+      loading: false,
+      loadError: null,
+      historyLoading: false,
+      hasMore: false,
+      historyError: null,
+      onLoadEarlier: vi.fn(),
+      onLoadTurnDetail: vi.fn(),
+      onRetryThread: vi.fn(),
+    };
+    const { rerender } = render(
+      <Conversation
+        {...baseProps}
+        thread={{ id: "thread-1", turns: [{ id: "turn-1", status: "inProgress", items: [item] }] }}
+      />,
+    );
+    const scrollTo = vi.mocked(HTMLElement.prototype.scrollTo);
+    scrollTo.mockClear();
+
+    rerender(
+      <Conversation
+        {...baseProps}
+        thread={{
+          id: "thread-1",
+          turns: [{ id: "turn-1", status: "inProgress", items: [item], diff: "@@ -1 +1 @@" }],
+        }}
+      />,
+    );
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: expect.any(Number), behavior: "smooth" });
+  });
+
   it("shows a persistent retry action when the initial thread load fails", () => {
     const onRetryThread = vi.fn();
     render(

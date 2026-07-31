@@ -6,6 +6,7 @@ import {
   FileCode2,
   Globe,
   Image as ImageIcon,
+  LoaderCircle,
   Terminal,
   User,
   Wrench,
@@ -184,24 +185,73 @@ function AgentMessage({ item }: ItemRendererProps) {
   );
 }
 
-function Reasoning({ item }: ItemRendererProps) {
+interface ReasoningGroupProps {
+  active?: boolean;
+  items: CodexItem[];
+}
+
+function reasoningContent(item: CodexItem) {
   const summary = textParts(item.summary) || readString(item.summaryText) || "";
   const detail = textParts(item.content) || readString(item.contentText) || readString(item.text) || "";
+  const omitted = omittedCharacters(item, ["summary", "content"]);
+  return { summary, detail, omitted };
+}
+
+export function ReasoningGroup({ active = false, items }: ReasoningGroupProps) {
+  const content = items.map(reasoningContent);
+  const hasContent = content.some(({ summary, detail, omitted }) => summary || detail || omitted > 0);
+  const label = items.length > 1 ? `Reasoning (${items.length})` : "Reasoning";
+
+  if (!hasContent) {
+    if (!active) return null;
+    return (
+      <div className="reasoning-block reasoning-block--status" role="status" aria-label="Reasoning in progress">
+        <div className="reasoning-summary">
+          <Brain size={15} aria-hidden="true" />
+          <span>{label}</span>
+          <LoaderCircle size={14} className="reasoning-spinner spin" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <LazyDetails
       className="reasoning-block"
+      summaryClassName="reasoning-summary"
       summary={(
         <>
           <Brain size={15} aria-hidden="true" />
-          <span>Reasoning</span>
-          {item.status && <StatusPill status={item.status} />}
+          <span>{label}</span>
+          {active && (
+            <>
+              <span className="sr-only">Reasoning in progress</span>
+              <LoaderCircle size={14} className="reasoning-spinner spin" aria-hidden="true" />
+            </>
+          )}
           <ChevronRight size={14} className="details-chevron" aria-hidden="true" />
         </>
       )}
     >
-      {summary && <Markdown compact>{summary}</Markdown>}
-      {detail && detail !== summary && <Markdown compact>{detail}</Markdown>}
-      <StreamOmission count={omittedCharacters(item, ["summary", "content"])} />
+      <div className="reasoning-content">
+        {content.map(({ summary, detail, omitted }, index) => (
+          <section className="reasoning-entry" key={items[index].id}>
+            {summary && (
+              <div className="reasoning-part">
+                <div className="reasoning-part-label">Summary</div>
+                <Markdown compact>{summary}</Markdown>
+              </div>
+            )}
+            {detail && detail !== summary && (
+              <div className="reasoning-part">
+                <div className="reasoning-part-label">Details</div>
+                <Markdown compact>{detail}</Markdown>
+              </div>
+            )}
+            <StreamOmission count={omitted} />
+          </section>
+        ))}
+      </div>
     </LazyDetails>
   );
 }
@@ -423,7 +473,7 @@ export function ItemRenderer(props: ItemRendererProps) {
     case "agentMessage":
       return <AgentMessage item={item} />;
     case "reasoning":
-      return <Reasoning item={item} />;
+      return <ReasoningGroup items={[item]} />;
     case "commandExecution":
       return <CommandExecution {...props} />;
     case "fileChange":

@@ -1,4 +1,5 @@
 import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelInfo } from "../types/protocol";
 import { Composer } from "./Composer";
@@ -99,8 +100,130 @@ describe("Composer", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Message Codex")).toBeEnabled();
     expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
     expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
+  });
+
+  it("keeps text editable while actions are disabled and never sends from Enter", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        disabled
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    expect(textarea).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add images" })).toBeDisabled();
+    expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
+    expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: "first line" } });
+    const enter = createEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent(textarea, enter);
+    expect(enter.defaultPrevented).toBe(false);
+    fireEvent.change(textarea, { target: { value: "first line\nsecond line" } });
+    expect(textarea).toHaveValue("first line\nsecond line");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("uses Enter for newlines even when sending is available", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "first line" } });
+    for (const isComposing of [false, true]) {
+      const enter = createEvent.keyDown(textarea, { key: "Enter", isComposing });
+      fireEvent(textarea, enter);
+      expect(enter.defaultPrevented).toBe(false);
+    }
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps new typing separate while a send is in flight", async () => {
+    let resolveSend!: () => void;
+    const onSend = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "send this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(textarea).toBeEnabled();
+    expect(textarea).toHaveValue("");
+    fireEvent.change(textarea, { target: { value: "next draft" } });
+
+    await act(async () => resolveSend());
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+    expect(textarea).toHaveValue("next draft");
+  });
+
+  it("keeps a failed submission separate from typing that started in flight", async () => {
+    let rejectSend!: (error: Error) => void;
+    const onSend = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+        rejectSend = reject;
+      }))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "first message" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    fireEvent.change(textarea, { target: { value: "next draft" } });
+
+    await act(async () => rejectSend(new Error("Connection closed")));
+
+    expect(textarea).toHaveValue("next draft");
+    expect(screen.getByRole("alert")).toHaveTextContent("first message");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed message" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Message not confirmed")).not.toBeInTheDocument());
+    expect(onSend).toHaveBeenLastCalledWith("first message", []);
+    expect(textarea).toHaveValue("next draft");
   });
 
   it("selects, previews, removes, and sends image-only drafts", async () => {
@@ -278,8 +401,10 @@ describe("Composer", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("at most 4 images");
   });
 
-  it("keeps the draft after send failure and reports invalid image choices", async () => {
-    const onSend = vi.fn().mockRejectedValue(new Error("Upload failed"));
+  it("keeps an image submission available for retry after send failure", async () => {
+    const onSend = vi.fn()
+      .mockRejectedValueOnce(new Error("Upload failed"))
+      .mockResolvedValueOnce(undefined);
     render(
       <Composer
         disabled={false}
@@ -303,10 +428,16 @@ describe("Composer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(onSend).toHaveBeenCalledWith("keep me", [valid]));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
-    expect(screen.getByLabelText("Message Codex")).toHaveValue("keep me");
-    expect(screen.getByText("retry.png")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry unconfirmed message" })).toBeEnabled());
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("");
+    expect(screen.getByRole("alert")).toHaveTextContent("keep me");
     expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:retry.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed message" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+    expect(onSend).toHaveBeenLastCalledWith("keep me", [valid]);
+    await waitFor(() => expect(screen.queryByText("Message not confirmed")).not.toBeInTheDocument());
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:retry.png");
   });
 
   it("disables image selection when the selected model declares text-only input", () => {

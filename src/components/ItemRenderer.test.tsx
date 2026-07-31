@@ -208,8 +208,64 @@ describe("ItemRenderer", () => {
 
     expect(container.querySelector(".markdown")).not.toBeInTheDocument();
     openDetails("Reasoning");
+    expect(screen.getByText("Summary")).toBeInTheDocument();
+    expect(screen.getByText("Details")).toBeInTheDocument();
     expect(screen.getByText("Short summary")).toBeInTheDocument();
     expect(screen.getByText("Detailed reasoning")).toBeInTheDocument();
+  });
+
+  it("hides completed reasoning that has no visible content", () => {
+    const { container } = render(<ItemRenderer item={{
+      id: "reasoning-empty",
+      type: "reasoning",
+      summary: [],
+      content: [],
+    }} />);
+
+    expect(screen.queryByText("Reasoning")).not.toBeInTheDocument();
+    expect(container.querySelector("details")).not.toBeInTheDocument();
+  });
+
+  it("groups adjacent reasoning without crossing activity boundaries", () => {
+    const { container } = render(<TurnView turn={{
+      id: "turn-reasoning-groups",
+      items: [
+        { id: "reasoning-1", type: "reasoning", summary: ["First summary"], content: [] },
+        { id: "reasoning-2", type: "reasoning", summary: ["Second summary"], content: [] },
+        { id: "command-1", type: "commandExecution", command: "pwd", status: "completed" },
+        { id: "reasoning-3", type: "reasoning", summary: ["Third summary"], content: [] },
+      ],
+    }} />);
+
+    expect(screen.getByText("Reasoning (2)")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning")).toBeInTheDocument();
+    expect(container.querySelectorAll(".reasoning-block")).toHaveLength(2);
+    expect(screen.queryByText("First summary")).not.toBeInTheDocument();
+    openDetails("Reasoning (2)");
+    expect(screen.getByText("First summary")).toBeInTheDocument();
+    expect(screen.getByText("Second summary")).toBeInTheDocument();
+    expect(screen.queryByText("Third summary")).not.toBeInTheDocument();
+  });
+
+  it("shows one non-expandable live row for adjacent empty reasoning", () => {
+    const turn = {
+      id: "turn-live-reasoning",
+      status: "inProgress",
+      items: [
+        { id: "reasoning-1", type: "reasoning", summary: [], content: [] },
+        { id: "reasoning-2", type: "reasoning", summary: [], content: [] },
+      ],
+    };
+    const { container, rerender } = render(
+      <TurnView activeReasoningItemIds={["reasoning-2"]} turn={turn} />,
+    );
+
+    expect(screen.getByRole("status", { name: "Reasoning in progress" })).toHaveTextContent("Reasoning (2)");
+    expect(container.querySelector(".reasoning-spinner")).toBeInTheDocument();
+    expect(container.querySelector(".reasoning-block")?.tagName).toBe("DIV");
+
+    rerender(<TurnView activeReasoningItemIds={[]} turn={turn} />);
+    expect(screen.queryByText("Reasoning (2)")).not.toBeInTheDocument();
   });
 
   it("makes omitted overflow reasoning parts explicit", () => {
@@ -364,8 +420,42 @@ describe("ItemRenderer", () => {
     }} />);
 
     expect(container.querySelector(".diff-viewer")).not.toBeInTheDocument();
-    openDetails("Turn diff");
+    openDetails("Changes in this turn");
     expect(container.querySelector(".diff-viewer")).toBeInTheDocument();
+  });
+
+  it("keeps the aggregate turn diff after messages that arrive later", () => {
+    const firstMessage = { id: "agent-1", type: "agentMessage", text: "First update" } as const;
+    const { container, rerender } = render(<TurnView turn={{
+      id: "turn-diff-order",
+      status: "inProgress",
+      items: [firstMessage],
+      diff: "@@ -1 +1 @@",
+    }} />);
+
+    const assertDiffFollowsMessages = () => {
+      const diff = container.querySelector(".turn-diff");
+      const messages = [...container.querySelectorAll(".message--agent")];
+      expect(diff).not.toBeNull();
+      expect(messages).not.toHaveLength(0);
+      for (const message of messages) {
+        expect(message.compareDocumentPosition(diff as Node) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+      }
+    };
+    assertDiffFollowsMessages();
+
+    rerender(<TurnView turn={{
+      id: "turn-diff-order",
+      status: "inProgress",
+      items: [
+        firstMessage,
+        { id: "agent-2", type: "agentMessage", text: "Later update" },
+      ],
+      diff: "@@ -1 +1 @@",
+    }} />);
+
+    expect(screen.getByText("Later update")).toBeInTheDocument();
+    assertDiffFollowsMessages();
   });
 
   it("makes an unrecoverable oversized turn projection explicit", () => {

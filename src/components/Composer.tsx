@@ -1,4 +1,4 @@
-import { Gauge, ImagePlus, LoaderCircle, Send, Sparkles, Square, X } from "lucide-react";
+import { Gauge, ImagePlus, LoaderCircle, RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ModelInfo, ThreadSettings } from "../types/protocol";
 import {
@@ -7,6 +7,7 @@ import {
   SUPPORTED_IMAGE_TYPES,
   isPotentialImageFile,
 } from "../utils/attachments";
+import { errorMessage } from "../utils/protocol";
 import { modelForSelection, normalizeEffortForModel } from "../utils/threadSettings";
 
 const MAX_COMPOSER_CHARACTERS = 250_000;
@@ -27,6 +28,12 @@ interface DraftImage {
   id: number;
   file: File;
   previewUrl: string;
+}
+
+interface DraftSubmission {
+  error?: string;
+  images: DraftImage[];
+  text: string;
 }
 
 function revokePreview(url: string): void {
@@ -53,25 +60,44 @@ export function Composer({
   onStop,
 }: ComposerProps) {
   const [value, setValue] = useState("");
-  const [sending, setSending] = useState(false);
+  const [inFlightSubmission, setInFlightSubmission] = useState<DraftSubmission | null>(null);
+  const [failedSubmission, setFailedSubmission] = useState<DraftSubmission | null>(null);
   const [images, setImages] = useState<DraftImage[]>([]);
   const [imageError, setImageError] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef<DraftImage[]>([]);
+  const failedSubmissionRef = useRef<DraftSubmission | null>(null);
+  const inFlightSubmissionRef = useRef<DraftSubmission | null>(null);
   const nextImageIdRef = useRef(0);
   const selectedModel = modelForSelection(models, settings.model);
   const efforts = selectedModel?.supportedReasoningEfforts ?? [];
   const effortKnown = !settings.effort || efforts.some((option) => option.reasoningEffort === settings.effort);
   const imageInputSupported = selectedModel?.inputModalities?.includes("image") === true;
-  const controlsDisabled = disabled || running || sending;
+  const sending = inFlightSubmission !== null;
+  const controlsDisabled = disabled || running || sending || failedSubmission !== null;
 
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
 
+  useEffect(() => {
+    failedSubmissionRef.current = failedSubmission;
+  }, [failedSubmission]);
+
+  useEffect(() => {
+    inFlightSubmissionRef.current = inFlightSubmission;
+  }, [inFlightSubmission]);
+
   useEffect(() => () => {
-    for (const image of imagesRef.current) revokePreview(image.previewUrl);
+    const ownedImages = [
+      ...imagesRef.current,
+      ...(failedSubmissionRef.current?.images ?? []),
+      ...(inFlightSubmissionRef.current?.images ?? []),
+    ];
+    for (const previewUrl of new Set(ownedImages.map((image) => image.previewUrl))) {
+      revokePreview(previewUrl);
+    }
   }, []);
 
   useEffect(() => {
@@ -136,6 +162,21 @@ export function Composer({
     setImageError("");
   };
 
+  const sendSubmission = async (submission: DraftSubmission) => {
+    setInFlightSubmission(submission);
+    try {
+      await onSend(submission.text, submission.images.map((image) => image.file));
+      for (const image of submission.images) revokePreview(image.previewUrl);
+      setFailedSubmission((current) => current === submission ? null : current);
+      setImageError("");
+    } catch (error) {
+      // Keep a failed send separate so it cannot overwrite typing that started in the meantime.
+      setFailedSubmission({ ...submission, error: errorMessage(error) });
+    } finally {
+      setInFlightSubmission(null);
+    }
+  };
+
   const submit = async () => {
     const text = value.trim();
     if (
@@ -143,18 +184,16 @@ export function Composer({
       controlsDisabled ||
       (images.length > 0 && !imageInputSupported)
     ) return;
-    setSending(true);
-    try {
-      await onSend(text, images.map((image) => image.file));
-      setValue("");
-      for (const image of images) revokePreview(image.previewUrl);
-      setImages([]);
-      setImageError("");
-    } catch {
-      // App owns the user-facing RPC/upload error; retain the draft for retry.
-    } finally {
-      setSending(false);
-    }
+    const submission = { text, images };
+    setValue("");
+    setImages([]);
+    await sendSubmission(submission);
+  };
+
+  const discardFailedSubmission = () => {
+    if (!failedSubmission || sending) return;
+    for (const image of failedSubmission.images) revokePreview(image.previewUrl);
+    setFailedSubmission(null);
   };
 
   return (
@@ -192,21 +231,14 @@ export function Composer({
               ));
             if (addImages(pastedImages) > 0) event.preventDefault();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
           placeholder={running ? "Codex is working…" : "Ask Codex"}
           aria-label="Message Codex"
-          disabled={controlsDisabled}
           maxLength={MAX_COMPOSER_CHARACTERS}
           rows={1}
         />
         <span className="sr-only" aria-live="polite">
           {sending
-            ? images.length > 0 ? "Uploading images" : "Sending message"
+            ? inFlightSubmission?.images.length ? "Uploading images" : "Sending message"
             : images.length > 0
               ? `${images.length} image${images.length === 1 ? "" : "s"} selected`
               : ""}
@@ -278,7 +310,14 @@ export function Composer({
           </label>
         </div>
         {running ? (
-          <button type="button" className="composer-action composer-action--stop" title="Stop turn" aria-label="Stop turn" onClick={() => void onStop()}>
+          <button
+            type="button"
+            className="composer-action composer-action--stop"
+            title="Stop turn"
+            aria-label="Stop turn"
+            disabled={disabled || sending}
+            onClick={() => void onStop()}
+          >
             <Square size={14} fill="currentColor" aria-hidden="true" />
           </button>
         ) : (
@@ -300,6 +339,44 @@ export function Composer({
           </button>
         )}
       </div>
+      {failedSubmission && (
+        <div className="composer-failed-submission" role="alert">
+          <span className="composer-failed-copy">
+            <strong>Message not confirmed</strong>
+            {failedSubmission.error && <span className="composer-failed-error">{failedSubmission.error}</span>}
+            <span className="composer-failed-preview">
+              {failedSubmission.text
+                ? `${failedSubmission.text.slice(0, 160)}${failedSubmission.text.length > 160 ? "..." : ""}`
+                : "Image-only message"}
+              {failedSubmission.images.length > 0 && (
+                ` · ${failedSubmission.images.length} image${failedSubmission.images.length === 1 ? "" : "s"}`
+              )}
+            </span>
+          </span>
+          <button
+            type="button"
+            className="composer-failed-action"
+            title="Retry unconfirmed message"
+            aria-label="Retry unconfirmed message"
+            disabled={disabled || running || sending}
+            onClick={() => void sendSubmission(failedSubmission)}
+          >
+            {sending
+              ? <LoaderCircle className="composer-spinner" size={15} aria-hidden="true" />
+              : <RotateCcw size={15} aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            className="composer-failed-action"
+            title="Discard unconfirmed message"
+            aria-label="Discard unconfirmed message"
+            disabled={sending}
+            onClick={discardFailedSubmission}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {(imageError || (images.length > 0 && !imageInputSupported)) && (
         <div className="composer-error" role="alert">
           {imageError || "Selected model does not support image input"}

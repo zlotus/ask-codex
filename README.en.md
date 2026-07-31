@@ -27,7 +27,8 @@ events, but it does not get a general-purpose file-serving endpoint.
   fallback behavior, while existing paginated history can recover oversized
   turns by item.
 - Stream agent messages, reasoning summaries, plans, command output, file
-  changes, MCP calls, and turn diffs.
+  changes, MCP calls, and turn diffs. Consecutive reasoning items are grouped,
+  while turn diffs are explicitly presented as whole-turn change summaries.
 - Render syntax-highlighted code blocks with copy and wrap controls, structured
   unified/split diffs, and grouped collapsible tool activity with bounded output.
 - Review command and file-change approvals in the browser, and keep captured
@@ -37,6 +38,10 @@ events, but it does not get a general-purpose file-serving endpoint.
   then select the next-turn model and reasoning effort beside the composer.
   Initial selections come from Codex's effective configuration; alternatives
   come from `model/list`.
+- Keep editing text drafts while a turn runs or the connection resynchronizes.
+  Enter inserts a newline and sending requires the send button. Unconfirmed
+  sends remain separate from new typing so an asynchronous failure cannot
+  overwrite the active draft.
 - Select or paste PNG, JPEG, and WebP images, preview them, and send them with
   text or on their own. After a successful send, the browser retains bounded,
   clickable thumbnails locally. The same browser profile and Origin can restore

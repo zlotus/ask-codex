@@ -5,6 +5,7 @@ import { sessionImagePreviewKey, type SessionImagePreviewSnapshot } from "../uti
 import { TurnView } from "./TurnView";
 
 interface ConversationProps {
+  activeReasoningItemIdsByTurn?: Readonly<Record<string, readonly string[]>>;
   thread: CodexThread | null;
   loading: boolean;
   loadError: string | null;
@@ -18,6 +19,7 @@ interface ConversationProps {
 }
 
 export function Conversation({
+  activeReasoningItemIdsByTurn = {},
   thread,
   loading,
   loadError,
@@ -33,6 +35,7 @@ export function Conversation({
   const wasNearBottomRef = useRef(true);
   const turns = thread?.turns ?? [];
   const lastContent = turns.at(-1)?.items.at(-1);
+  const lastTurnDiff = turns.at(-1)?.diff;
   const lastTurnStatus = turns.at(-1)?.status;
 
   useEffect(() => {
@@ -44,7 +47,7 @@ export function Conversation({
   useEffect(() => {
     const node = scrollRef.current;
     if (node && wasNearBottomRef.current) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [lastContent, lastTurnStatus]);
+  }, [lastContent, lastTurnDiff, lastTurnStatus]);
 
   return (
     <div
@@ -79,6 +82,7 @@ export function Conversation({
                 <TurnView
                   key={turn.id}
                   turn={turn}
+                  activeReasoningItemIds={activeReasoningItemIdsByTurn[turn.id]}
                   imagePreviewUrls={thread ? imagePreviews[sessionImagePreviewKey(thread.id, turn.id)] : undefined}
                   onLoadFullDetail={onLoadTurnDetail}
                 />

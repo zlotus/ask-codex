@@ -490,6 +490,7 @@ export default function App() {
         });
       }
       coordinator.request();
+      dispatch({ type: "clearActiveReasoningItems" });
       setResyncing(true);
       setResyncSignal((current) => current + 1);
       return;
@@ -538,6 +539,10 @@ export default function App() {
       } : current);
     },
   });
+
+  useEffect(() => {
+    if (connection !== "connected") dispatch({ type: "clearActiveReasoningItems" });
+  }, [connection]);
 
   const loadBootstrap = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -1022,10 +1027,9 @@ export default function App() {
       if (!turnAccepted && uploaded.length > 0) {
         void discardAttachments(uploaded, token);
       }
-      showToast(errorMessage(error));
       throw error;
     }
-  }, [nextTurnSettings, refreshThreads, rememberImagePreviews, rpc, sandboxOverride, showToast, state.currentThread, state.settings, token]);
+  }, [nextTurnSettings, refreshThreads, rememberImagePreviews, rpc, sandboxOverride, state.currentThread, state.settings, token]);
 
   const stopTurn = useCallback(async () => {
     if (!state.currentThread || !state.activeTurnId) return;
@@ -1149,6 +1153,7 @@ export default function App() {
         />
         <Conversation
           thread={state.currentThread}
+          activeReasoningItemIdsByTurn={state.activeReasoningItemIdsByTurn}
           loading={loadingThread}
           loadError={threadLoadError}
           historyLoading={state.turnHistory.status === "loading"}

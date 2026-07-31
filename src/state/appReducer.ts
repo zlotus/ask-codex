@@ -18,6 +18,7 @@ export interface AppState {
   currentThread: CodexThread | null;
   turnHistory: TurnHistoryState;
   activeTurnId: string | null;
+  activeReasoningItemIdsByTurn: Record<string, string[]>;
   pendingRequests: PendingRequest[];
   commandApprovalReasons: Record<string, string[]>;
   settings: ThreadSettings;
@@ -56,6 +57,7 @@ export type AppAction =
   | { type: "appendItemDelta"; turnId: string; itemId: string; itemType?: string; field: string; delta: string }
   | { type: "appendIndexedItemDelta"; turnId: string; itemId: string; itemType?: string; field: "summary" | "content"; index: number; delta: string }
   | { type: "recordIndexedItemOmission"; turnId: string; itemId: string; itemType?: string; field: "summary" | "content"; omitted: number }
+  | { type: "clearActiveReasoningItems" }
   | { type: "setTurnDiff"; turnId: string; diff: string }
   | { type: "setTurnPlan"; turnId: string; plan: TurnPlan }
   | { type: "recordTurnRecoveryOmission"; threadId?: string; turnId: string; method: string }
@@ -83,6 +85,7 @@ export const initialState: AppState = {
     error: null,
   },
   activeTurnId: null,
+  activeReasoningItemIdsByTurn: {},
   pendingRequests: [],
   commandApprovalReasons: {},
   settings: {
@@ -320,6 +323,7 @@ function clearSelectedThread(state: AppState, threadId: string): AppState {
     selectedThreadId: null,
     currentThread: null,
     activeTurnId: null,
+    activeReasoningItemIdsByTurn: {},
     turnHistory: idleTurnHistory(null),
   };
 }
@@ -355,6 +359,35 @@ function updateTurn(
   const nextTurns = [...turns];
   nextTurns[index] = update(nextTurns[index]);
   return { ...thread, turns: nextTurns };
+}
+
+function updateActiveReasoningItem(
+  current: Readonly<Record<string, string[]>>,
+  turnId: string,
+  itemId: string,
+  active: boolean,
+): Record<string, string[]> {
+  const existing = current[turnId] ?? [];
+  const includes = existing.includes(itemId);
+  if (includes === active) return current as Record<string, string[]>;
+  const next = { ...current };
+  if (active) next[turnId] = [...existing, itemId];
+  else {
+    const remaining = existing.filter((id) => id !== itemId);
+    if (remaining.length > 0) next[turnId] = remaining;
+    else delete next[turnId];
+  }
+  return next;
+}
+
+function withoutActiveReasoningTurn(
+  current: Readonly<Record<string, string[]>>,
+  turnId: string,
+): Record<string, string[]> {
+  if (current[turnId] === undefined) return current as Record<string, string[]>;
+  const next = { ...current };
+  delete next[turnId];
+  return next;
 }
 
 function idleTurnHistory(threadId: string | null, nextCursor: string | null = null): TurnHistoryState {
@@ -488,6 +521,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         connection: action.state,
         connectionDetail: action.detail ?? action.state,
+        activeReasoningItemIdsByTurn: action.state === "connected"
+          ? state.activeReasoningItemIdsByTurn
+          : {},
       };
     case "setThreads":
       return { ...state, threads: sortThreads(action.threads.map(threadSummary)) };
@@ -537,6 +573,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ? resetTurnDetailLoading(state.currentThread)
           : null,
         activeTurnId: null,
+        activeReasoningItemIdsByTurn: {},
         turnHistory: action.threadId === state.turnHistory.threadId
           ? idleTurnHistory(action.threadId, state.turnHistory.nextCursor)
           : idleTurnHistory(action.threadId),
@@ -561,6 +598,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
             ? state.turnHistory
             : idleTurnHistory(thread.id),
         activeTurnId: active,
+        activeReasoningItemIdsByTurn: {},
         threads: upsertThread(state.threads, thread),
         archivedThreads: state.archivedThreads.filter((entry) => entry.id !== thread.id),
       };
@@ -589,6 +627,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         commandApprovalReasons: projection.reasonsByItem,
         currentThread: thread,
         activeTurnId,
+        activeReasoningItemIdsByTurn: {},
         threads: upsertThread(state.threads, thread),
       };
     }
@@ -788,6 +827,9 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         activeTurnId: incomingTurn.status === "inProgress"
           ? incomingTurn.id
           : state.activeTurnId === incomingTurn.id ? null : state.activeTurnId,
+        activeReasoningItemIdsByTurn: incomingTurn.status === "inProgress"
+          ? state.activeReasoningItemIdsByTurn
+          : withoutActiveReasoningTurn(state.activeReasoningItemIdsByTurn, incomingTurn.id),
       };
     }
     case "setTurnStatus": {
@@ -802,10 +844,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         activeTurnId: action.status === "inProgress"
           ? action.turnId
           : state.activeTurnId === action.turnId ? null : state.activeTurnId,
+        activeReasoningItemIdsByTurn: action.status === "inProgress"
+          ? state.activeReasoningItemIdsByTurn
+          : withoutActiveReasoningTurn(state.activeReasoningItemIdsByTurn, action.turnId),
       };
     }
     case "upsertItem": {
-      if (!state.currentThread) return state;
+      if (!state.currentThread?.turns?.some((turn) => turn.id === action.turnId)) return state;
       const incomingItem = action.item;
       const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
         const index = turn.items.findIndex((item) => item.id === incomingItem.id);
@@ -822,6 +867,14 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         commandApprovalReasons: projection.reasonsByItem,
         currentThread: projection.thread,
+        activeReasoningItemIdsByTurn: incomingItem.type === "reasoning"
+          ? updateActiveReasoningItem(
+              state.activeReasoningItemIdsByTurn,
+              action.turnId,
+              incomingItem.id,
+              action.lifecycle === "started",
+            )
+          : state.activeReasoningItemIdsByTurn,
       };
     }
     case "appendItemDelta": {
@@ -848,6 +901,7 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, currentThread };
     }
     case "appendIndexedItemDelta": {
+      const turnExists = state.currentThread?.turns?.some((turn) => turn.id === action.turnId) === true;
       const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
         const found = turn.items.some((item) => item.id === action.itemId);
         if (!found) {
@@ -884,9 +938,21 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           }),
         };
       });
-      return { ...state, currentThread };
+      return {
+        ...state,
+        currentThread,
+        activeReasoningItemIdsByTurn: turnExists
+          ? updateActiveReasoningItem(
+              state.activeReasoningItemIdsByTurn,
+              action.turnId,
+              action.itemId,
+              true,
+            )
+          : state.activeReasoningItemIdsByTurn,
+      };
     }
     case "recordIndexedItemOmission": {
+      const turnExists = state.currentThread?.turns?.some((turn) => turn.id === action.turnId) === true;
       const currentThread = updateTurn(state.currentThread, action.turnId, (turn) => {
         const omissionKey = `${action.field}[overflow]`;
         const index = turn.items.findIndex((item) => item.id === action.itemId);
@@ -904,8 +970,23 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         items[index] = incrementOmission(items[index], omissionKey, action.omitted);
         return { ...turn, items };
       });
-      return { ...state, currentThread };
+      return {
+        ...state,
+        currentThread,
+        activeReasoningItemIdsByTurn: turnExists
+          ? updateActiveReasoningItem(
+              state.activeReasoningItemIdsByTurn,
+              action.turnId,
+              action.itemId,
+              true,
+            )
+          : state.activeReasoningItemIdsByTurn,
+      };
     }
+    case "clearActiveReasoningItems":
+      return Object.keys(state.activeReasoningItemIdsByTurn).length === 0
+        ? state
+        : { ...state, activeReasoningItemIdsByTurn: {} };
     case "setTurnDiff":
       return {
         ...state,

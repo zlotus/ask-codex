@@ -1281,6 +1281,51 @@ describe("appReducer", () => {
     expect(second.currentThread?.turns?.[0]?.items[0]?.summary).toEqual(["First", "Second"]);
   });
 
+  it("tracks reasoning lifecycle independently from canonical item status", () => {
+    const started = appReducer(stateWithTurn(), {
+      type: "upsertItem",
+      turnId: "turn-1",
+      item: { id: "reasoning-1", type: "reasoning", summary: [], content: [] },
+      lifecycle: "started",
+    });
+    expect(started.activeReasoningItemIdsByTurn).toEqual({ "turn-1": ["reasoning-1"] });
+
+    const completed = appReducer(started, {
+      type: "upsertItem",
+      turnId: "turn-1",
+      item: { id: "reasoning-1", type: "reasoning", summary: [], content: [] },
+      lifecycle: "completed",
+    });
+    expect(completed.activeReasoningItemIdsByTurn).toEqual({});
+
+    const streaming = appReducer(completed, {
+      type: "appendIndexedItemDelta",
+      turnId: "turn-1",
+      itemId: "reasoning-2",
+      itemType: "reasoning",
+      field: "summary",
+      index: 0,
+      delta: "Working",
+    });
+    expect(streaming.activeReasoningItemIdsByTurn).toEqual({ "turn-1": ["reasoning-2"] });
+
+    const turnCompleted = appReducer(streaming, {
+      type: "setTurnStatus",
+      turnId: "turn-1",
+      status: "completed",
+    });
+    expect(turnCompleted.activeReasoningItemIdsByTurn).toEqual({});
+  });
+
+  it("clears live reasoning state before a resync snapshot", () => {
+    const active = {
+      ...stateWithTurn(),
+      activeReasoningItemIdsByTurn: { "turn-1": ["reasoning-1"] },
+    };
+
+    expect(appReducer(active, { type: "clearActiveReasoningItems" }).activeReasoningItemIdsByTurn).toEqual({});
+  });
+
   it("only applies runtime settings to the selected thread", () => {
     const selected = { ...initialState, selectedThreadId: "thread-1" };
     const ignored = appReducer(selected, {

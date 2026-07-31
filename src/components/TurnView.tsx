@@ -4,13 +4,14 @@ import type { CodexItem, CodexTurn } from "../types/protocol";
 import { errorMessage, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
-import { ItemRenderer } from "./ItemRenderer";
+import { ItemRenderer, ReasoningGroup } from "./ItemRenderer";
 import { LazyDetails } from "./LazyDetails";
 import { PlanView } from "./PlanView";
 import { StatusPill } from "./StatusPill";
 import { isToolActivityItem } from "./activityUtils";
 
 interface TurnViewProps {
+  activeReasoningItemIds?: readonly string[];
   imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
   onLoadFullDetail?: (turnId: string) => void;
@@ -28,6 +29,7 @@ function renderItems(
   items: CodexItem[],
   disclosure: ActivityDisclosureState,
   imagePreviewUrls: readonly string[],
+  activeReasoningItemIds: ReadonlySet<string>,
 ) {
   const rendered = [];
   let index = 0;
@@ -35,6 +37,23 @@ function renderItems(
 
   while (index < items.length) {
     const item = items[index];
+    if (item.type === "reasoning") {
+      const reasoningItems = [item];
+      let nextIndex = index + 1;
+      while (nextIndex < items.length && items[nextIndex].type === "reasoning") {
+        reasoningItems.push(items[nextIndex]);
+        nextIndex += 1;
+      }
+      rendered.push((
+        <ReasoningGroup
+          active={reasoningItems.some((entry) => activeReasoningItemIds.has(entry.id))}
+          items={reasoningItems}
+          key={`reasoning-${reasoningItems[0].id}`}
+        />
+      ));
+      index = nextIndex;
+      continue;
+    }
     if (!isToolActivityItem(item)) {
       const localImageCount = item.type === "userMessage"
         ? userMessageImages(item).filter((image) => image.type === "localImage").length
@@ -82,7 +101,12 @@ function renderItems(
   return rendered;
 }
 
-export function TurnView({ imagePreviewUrls = [], turn, onLoadFullDetail }: TurnViewProps) {
+export function TurnView({
+  activeReasoningItemIds = [],
+  imagePreviewUrls = [],
+  turn,
+  onLoadFullDetail,
+}: TurnViewProps) {
   const [groupOpenIds, setGroupOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const [itemOpenIds, setItemOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const historyDetail = turn.historyDetail;
@@ -97,6 +121,7 @@ export function TurnView({ imagePreviewUrls = [], turn, onLoadFullDetail }: Turn
           ? hasItemPages ? "Retry more detail" : "Retry full detail"
           : hasItemPages ? "Load more detail" : "Load full detail";
   const omissions = turn.recoveryOmissions ?? [];
+  const activeReasoningIds = new Set(activeReasoningItemIds);
 
   const updateOpenIds = (
     setter: typeof setItemOpenIds,
@@ -157,7 +182,7 @@ export function TurnView({ imagePreviewUrls = [], turn, onLoadFullDetail }: Turn
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {renderItems(turn.items, disclosure, imagePreviewUrls)}
+      {renderItems(turn.items, disclosure, imagePreviewUrls, activeReasoningIds)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />
@@ -170,7 +195,7 @@ export function TurnView({ imagePreviewUrls = [], turn, onLoadFullDetail }: Turn
           summary={(
             <>
               <GitCompareArrows size={15} aria-hidden="true" />
-              <span>Turn diff</span>
+              <span>Changes in this turn</span>
               <ChevronRight size={14} className="details-chevron" aria-hidden="true" />
             </>
           )}
