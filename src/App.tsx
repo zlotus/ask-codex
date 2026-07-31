@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ApprovalPanel } from "./components/ApprovalPanel";
+import { ActivePlanDock } from "./components/ActivePlanDock";
 import { Composer } from "./components/Composer";
 import { Conversation } from "./components/Conversation";
 import { Sidebar } from "./components/Sidebar";
@@ -1119,6 +1120,12 @@ export default function App() {
 
   const requiredToken = Boolean(bootstrap?.authRequired && !token) || bootstrapError.includes("ASK_CODEX_TOKEN");
   const title = useMemo(() => threadTitle(state.currentThread), [state.currentThread]);
+  const activeTurn = state.activeTurnId && state.currentThread?.id === state.selectedThreadId
+    ? state.currentThread.turns?.find((turn) => (
+        turn.id === state.activeTurnId && turn.status === "inProgress"
+      ))
+    : undefined;
+  const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
 
   return (
     <div className="app-shell">
@@ -1166,6 +1173,13 @@ export default function App() {
             if (state.selectedThreadId) void selectThread(state.selectedThreadId);
           }}
         />
+        {activeTurn && activePlan && (
+          <ActivePlanDock
+            key={activeTurn.id}
+            plan={activePlan}
+            updateUnavailable={activeTurn.recoveryOmissions?.includes("turn/plan/updated")}
+          />
+        )}
         <ApprovalPanel
           requests={state.pendingRequests}
           onResolve={resolveRequest}

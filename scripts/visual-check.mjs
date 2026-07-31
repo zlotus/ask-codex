@@ -270,6 +270,10 @@ async function installFixture(page) {
       if (!fixtureSocket) throw new Error("The visual fixture WebSocket is not connected");
       fixtureSocket.send(JSON.stringify({ type: "notification", method, params }));
     },
+    request(id, method, params) {
+      if (!fixtureSocket) throw new Error("The visual fixture WebSocket is not connected");
+      fixtureSocket.send(JSON.stringify({ type: "request", id, method, params }));
+    },
   };
 }
 
@@ -379,6 +383,115 @@ async function inspectFailedSubmission(page, fixture, screenshotPath) {
   await page.getByRole("button", { name: "Discard unconfirmed message" }).click();
   await recovery.waitFor({ state: "hidden" });
   return result;
+}
+
+let activePlanSequence = 0;
+
+async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
+  const sequence = ++activePlanSequence;
+  const turnId = `visual-plan-turn-${sequence}`;
+  const requestId = `visual-plan-approval-${sequence}`;
+  const currentStep = [
+    "Implement the active plan dock while preserving the historical plan and keeping every control",
+    "visible across narrow mobile layouts without allowing the summary text to resize the workspace",
+  ].join(" ");
+  const plan = Array.from({ length: 14 }, (_, index) => ({
+    step: index === 1 ? currentStep : `Verification step ${index + 1}: preserve bounded layout behavior`,
+    status: index === 0 ? "completed" : index === 1 ? "inProgress" : "pending",
+  }));
+
+  fixture.notify("turn/started", {
+    threadId: fixtureThread.id,
+    turn: { id: turnId, status: "inProgress", items: [] },
+  });
+  fixture.notify("turn/plan/updated", {
+    threadId: fixtureThread.id,
+    turnId,
+    explanation: "The current execution plan remains available next to the controls.",
+    plan,
+  });
+  fixture.request(requestId, "item/commandExecution/requestApproval", {
+    threadId: fixtureThread.id,
+    turnId,
+    itemId: `visual-plan-command-${sequence}`,
+    command: "npm run typecheck && npm test",
+    cwd: fixtureThread.cwd,
+    reason: "Verify the plan dock alongside an approval request",
+    availableDecisions: ["accept", "decline"],
+  });
+
+  const dock = page.getByRole("region", { name: "Current plan" });
+  const approval = page.locator(".approval-panel");
+  await dock.waitFor();
+  await approval.waitFor();
+  const toggle = dock.getByRole("button", { name: /current plan/i });
+  const collapsed = await page.evaluate(() => {
+    const workspace = document.querySelector(".workspace");
+    const conversation = document.querySelector(".conversation-scroll");
+    const planDock = document.querySelector(".active-plan-dock");
+    const summary = document.querySelector(".active-plan-dock__summary");
+    const current = document.querySelector(".active-plan-dock__current > span");
+    const approvalPanel = document.querySelector(".approval-panel");
+    const composer = document.querySelector(".composer-wrap");
+    if (!workspace || !conversation || !planDock || !summary || !current || !approvalPanel || !composer) {
+      return { complete: false };
+    }
+    const children = [...workspace.children];
+    const dockBox = planDock.getBoundingClientRect();
+    const summaryBox = summary.getBoundingClientRect();
+    const approvalBox = approvalPanel.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return {
+      complete: true,
+      correctOrder: [conversation, planDock, approvalPanel, composer]
+        .map((element) => children.indexOf(element))
+        .every((index, position, indexes) => index >= 0 && (position === 0 || index > indexes[position - 1])),
+      composerVisible: composerBox.top >= 0 && composerBox.bottom <= window.innerHeight,
+      fitsViewport: dockBox.left >= 0 && dockBox.right <= window.innerWidth,
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      position: window.getComputedStyle(planDock).position,
+      summaryHeight: summaryBox.height,
+      summaryCollapsed: summary.getAttribute("aria-expanded") === "false",
+      currentTruncated: current.scrollWidth > current.clientWidth,
+      noOverlap: dockBox.bottom <= approvalBox.top + 1 && approvalBox.bottom <= composerBox.top + 1,
+    };
+  });
+  await page.screenshot({ path: `${screenshotPrefix}-collapsed.png`, fullPage: true });
+
+  await toggle.click();
+  await page.locator(".active-plan-dock__body").waitFor({ state: "visible" });
+  const expanded = await page.evaluate(() => {
+    const dock = document.querySelector(".active-plan-dock");
+    const body = document.querySelector(".active-plan-dock__body");
+    const approval = document.querySelector(".approval-panel");
+    const composer = document.querySelector(".composer-wrap");
+    if (!dock || !body || !approval || !composer) return { complete: false };
+    const dockBox = dock.getBoundingClientRect();
+    const approvalBox = approval.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    const bodyStyle = window.getComputedStyle(body);
+    return {
+      complete: true,
+      bodyScrollable: body.scrollHeight > body.clientHeight,
+      bodyOverflow: bodyStyle.overflowY,
+      composerVisible: composerBox.top >= 0 && composerBox.bottom <= window.innerHeight,
+      fitsViewport: dockBox.left >= 0 && dockBox.right <= window.innerWidth && dockBox.bottom <= window.innerHeight,
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      noOverlap: dockBox.bottom <= approvalBox.top + 1 && approvalBox.bottom <= composerBox.top + 1,
+      summaryExpanded: document.querySelector(".active-plan-dock__summary")
+        ?.getAttribute("aria-expanded") === "true",
+    };
+  });
+  await page.screenshot({ path: `${screenshotPrefix}-expanded.png`, fullPage: true });
+
+  fixture.notify("turn/completed", {
+    threadId: fixtureThread.id,
+    turn: { id: turnId, status: "completed", itemsView: "notLoaded", items: [] },
+  });
+  await dock.waitFor({ state: "hidden" });
+  fixture.notify("serverRequest/resolved", { requestId });
+  await approval.waitFor({ state: "hidden" });
+  return { collapsed, expanded, dismissed: true };
 }
 
 async function inspectThreadDialog(page) {
@@ -620,6 +733,11 @@ try {
     fixture,
     `${outputDirectory}/desktop-failed-submission.png`,
   );
+  const desktopActivePlan = await inspectActivePlanDock(
+    page,
+    fixture,
+    `${outputDirectory}/desktop-plan`,
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
@@ -708,6 +826,11 @@ try {
     fixture,
     `${outputDirectory}/mobile-failed-submission.png`,
   );
+  const mobileActivePlan = await inspectActivePlanDock(
+    page,
+    fixture,
+    `${outputDirectory}/mobile-plan`,
+  );
 
   const result = {
     desktop: {
@@ -722,6 +845,7 @@ try {
       rich: desktopRich,
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
+      activePlan: desktopActivePlan,
     },
     mobile: {
       ...mobileBefore,
@@ -736,6 +860,7 @@ try {
       rich: mobileRich,
       activeReasoning: mobileActiveReasoning,
       failedSubmission: mobileFailedSubmission,
+      activePlan: mobileActivePlan,
       splitActionHidden,
     },
     consoleErrors,
@@ -865,6 +990,25 @@ try {
     !desktopFailedSubmission.sendDisabled ||
     !desktopFailedSubmission.textareaEditable ||
     desktopFailedSubmission.toastOverlap ||
+    !desktopActivePlan.collapsed.complete ||
+    !desktopActivePlan.collapsed.correctOrder ||
+    !desktopActivePlan.collapsed.composerVisible ||
+    !desktopActivePlan.collapsed.fitsViewport ||
+    desktopActivePlan.collapsed.horizontalOverflow ||
+    !["static", "relative"].includes(desktopActivePlan.collapsed.position) ||
+    desktopActivePlan.collapsed.summaryHeight < 44 ||
+    !desktopActivePlan.collapsed.summaryCollapsed ||
+    !desktopActivePlan.collapsed.currentTruncated ||
+    !desktopActivePlan.collapsed.noOverlap ||
+    !desktopActivePlan.expanded.complete ||
+    !desktopActivePlan.expanded.bodyScrollable ||
+    !["auto", "scroll"].includes(desktopActivePlan.expanded.bodyOverflow) ||
+    !desktopActivePlan.expanded.composerVisible ||
+    !desktopActivePlan.expanded.fitsViewport ||
+    desktopActivePlan.expanded.horizontalOverflow ||
+    !desktopActivePlan.expanded.noOverlap ||
+    !desktopActivePlan.expanded.summaryExpanded ||
+    !desktopActivePlan.dismissed ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
     mobileRich.reasoningBlocks !== 1 ||
@@ -881,6 +1025,25 @@ try {
     !mobileFailedSubmission.sendDisabled ||
     !mobileFailedSubmission.textareaEditable ||
     mobileFailedSubmission.toastOverlap ||
+    !mobileActivePlan.collapsed.complete ||
+    !mobileActivePlan.collapsed.correctOrder ||
+    !mobileActivePlan.collapsed.composerVisible ||
+    !mobileActivePlan.collapsed.fitsViewport ||
+    mobileActivePlan.collapsed.horizontalOverflow ||
+    !["static", "relative"].includes(mobileActivePlan.collapsed.position) ||
+    mobileActivePlan.collapsed.summaryHeight < 44 ||
+    !mobileActivePlan.collapsed.summaryCollapsed ||
+    !mobileActivePlan.collapsed.currentTruncated ||
+    !mobileActivePlan.collapsed.noOverlap ||
+    !mobileActivePlan.expanded.complete ||
+    !mobileActivePlan.expanded.bodyScrollable ||
+    !["auto", "scroll"].includes(mobileActivePlan.expanded.bodyOverflow) ||
+    !mobileActivePlan.expanded.composerVisible ||
+    !mobileActivePlan.expanded.fitsViewport ||
+    mobileActivePlan.expanded.horizontalOverflow ||
+    !mobileActivePlan.expanded.noOverlap ||
+    !mobileActivePlan.expanded.summaryExpanded ||
+    !mobileActivePlan.dismissed ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||
     pageErrors.length > 0

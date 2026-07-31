@@ -4,7 +4,7 @@ import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { NotificationMessage } from "./types/protocol";
+import type { NotificationMessage, ServerRequestMessage } from "./types/protocol";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
 import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
 
@@ -13,11 +13,16 @@ const socket = vi.hoisted(() => ({
   rpc: vi.fn(),
   respond: vi.fn(),
   onNotification: null as ((message: NotificationMessage) => void) | null,
+  onRequest: null as ((message: ServerRequestMessage) => void) | null,
 }));
 
 vi.mock("./hooks/useCodexSocket", () => ({
-  useCodexSocket: (options: { onNotification: (message: NotificationMessage) => void }) => {
+  useCodexSocket: (options: {
+    onNotification: (message: NotificationMessage) => void;
+    onRequest: (message: ServerRequestMessage) => void;
+  }) => {
     socket.onNotification = options.onNotification;
+    socket.onRequest = options.onRequest;
     return {
       connection: socket.connection,
       connectionDetail: "Ready",
@@ -205,6 +210,7 @@ describe("App thread settings lifecycle", () => {
     socket.rpc.mockReset();
     socket.respond.mockReset();
     socket.onNotification = null;
+    socket.onRequest = null;
     socket.connection = "connected";
     installRpcFixture();
   });
@@ -629,6 +635,92 @@ describe("App thread settings lifecycle", () => {
     expect(screen.getByText("Streamed response remains visible")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+  });
+
+  it("docks the active plan above approvals and keeps the historical plan after completion", async () => {
+    installBootstrapFixture();
+    render(<App />);
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-new",
+        explanation: "Keep the current execution state visible.",
+        plan: [
+          { step: "Inspect the flow", status: "completed" },
+          { step: "Build the dock", status: "inProgress" },
+          { step: "Verify the layout", status: "pending" },
+        ],
+      },
+    }));
+    act(() => socket.onRequest?.({
+      type: "request",
+      id: "plan-approval",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-new",
+        itemId: "plan-command",
+        command: "npm test",
+        cwd: "/workspace/existing",
+        availableDecisions: ["accept", "decline"],
+      },
+    }));
+
+    const dock = screen.getByRole("region", { name: "Current plan" });
+    const historicalPlan = screen.getByRole("region", { name: "Plan" });
+    const conversation = screen.getByRole("main", { name: "Conversation" }).parentElement!;
+    const approval = document.querySelector(".approval-panel")!;
+    const composer = document.querySelector(".composer-wrap")!;
+    const workspaceChildren = [...dock.parentElement!.children];
+
+    expect(dock).toHaveTextContent("2/3");
+    expect(dock).toHaveTextContent("Build the dock");
+    expect(historicalPlan).toHaveTextContent("Keep the current execution state visible.");
+    expect(workspaceChildren.indexOf(conversation)).toBeLessThan(workspaceChildren.indexOf(dock));
+    expect(workspaceChildren.indexOf(dock)).toBeLessThan(workspaceChildren.indexOf(approval));
+    expect(workspaceChildren.indexOf(approval)).toBeLessThan(workspaceChildren.indexOf(composer));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-new",
+        explanation: "Keep the current execution state visible.",
+        plan: [
+          { step: "Inspect the flow", status: "completed" },
+          { step: "Build the dock", status: "completed" },
+          { step: "Verify the layout", status: "inProgress" },
+        ],
+      },
+    }));
+    expect(screen.getByRole("button", {
+      name: /Step 3 of 3: Verify the layout/,
+    })).toBeInTheDocument();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: "thread-existing",
+        turn: {
+          id: "turn-new",
+          status: "completed",
+          itemsView: "notLoaded",
+          items: [],
+        },
+      },
+    }));
+
+    expect(screen.queryByRole("region", { name: "Current plan" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Plan" })).toHaveTextContent("Verify the layout");
   });
 
   it("cancels a prepared image turn when thread selection changes during upload", async () => {

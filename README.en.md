@@ -28,7 +28,9 @@ events, but it does not get a general-purpose file-serving endpoint.
   turns by item.
 - Stream agent messages, reasoning summaries, plans, command output, file
   changes, MCP calls, and turn diffs. Consecutive reasoning items are grouped,
-  while turn diffs are explicitly presented as whole-turn change summaries.
+  structured plans in progress gain a compact expandable status above the
+  composer, and turn diffs are explicitly presented as whole-turn change
+  summaries.
 - Render syntax-highlighted code blocks with copy and wrap controls, structured
   unified/split diffs, and grouped collapsible tool activity with bounded output.
 - Review command and file-change approvals in the browser, and keep captured

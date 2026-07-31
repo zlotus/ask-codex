@@ -42,11 +42,14 @@ The implementation currently provides:
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering. Consecutive
   reasoning items are grouped for display, empty completed reasoning is hidden,
-  and only actively reasoning items animate. A turn diff is explicitly shown
-  as a whole-turn change summary at the end of its turn. Stream and message
-  sizes remain explicitly bounded. Non-full completion or resync snapshots do
-  not erase already materialized streamed content; only an explicit `full`
-  snapshot may replace items.
+  and only actively reasoning items animate. The current turn's structured
+  plan also appears above the composer as a compact normal-layout summary that
+  expands into a bounded scrolling step list; the summary disappears when the
+  turn ends while the historical plan stays in its original turn. A turn diff
+  is explicitly shown as a whole-turn change summary at the end of its turn.
+  Stream and message sizes remain explicitly bounded. Non-full completion or
+  resync snapshots do not erase already materialized streamed content; only an
+  explicit `full` snapshot may replace items.
 - Reusable syntax-highlighted code blocks, copy and wrap controls, structured
   unified/split diffs, safe raw-diff fallback, and bounded two-level tool
   disclosures that group consecutive commands, file changes, MCP calls, and
@@ -166,21 +169,22 @@ This round of code verification was completed on 2026-07-31 with Node.js
 
 - `npm run typecheck` passed.
 - `npm run lint` passed.
-- `npm test` passed: 26 files, 321 tests. The server tests were run in an
+- `npm test` passed: 27 files, 325 tests. The server tests were run in an
   environment that permits loopback socket binding.
 - `npm run build` passed.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-composer-reasoning npm run check:visual`
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-plan-dock npm run check:visual`
   passed against the current production build. Deterministic desktop and
   390x844 mobile fixtures covered the Active and Archived views, desktop
   context menu, mobile long-press menu, permanent-delete confirmation,
   new-thread dialog, configured model selections, draft image previews,
   thumbnail loading, bounded layout and new-tab behavior after sending and
   reloading, grouped tools, a simulated approval reason, consecutive reasoning
-  grouping, active-reasoning animation, whole-turn change summaries, and the
-  unconfirmed-send recovery row. No horizontal overflow, overlapping controls,
-  clipped rich content, console errors, or page errors were found. The fixture
-  canceled at deletion confirmation, intercepted all simulated RPCs in the
-  browser test, and created no real Codex turn.
+  grouping, active-reasoning animation, whole-turn change summaries, the
+  unconfirmed-send recovery row, and the current Plan dock while collapsed,
+  expanded alongside an approval, and dismissed after completion. No horizontal
+  overflow, overlapping controls, clipped rich content, console errors, or page
+  errors were found. The fixture canceled at deletion confirmation, intercepted
+  all simulated RPCs in the browser test, and created no real Codex turn.
 
 - Bindings generated from Codex CLI `0.146.0` were checked: reasoning
   `summary` and `content` may both be empty, and `turn/diff/updated` is the
