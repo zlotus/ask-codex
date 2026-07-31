@@ -15,14 +15,14 @@ describe("browser RPC policy", () => {
     expect(sanitizeBrowserRpcParams("thread/list", {
       cursor: "next-thread-page",
       limit: 100,
-      sortKey: "updated_at",
+      sortKey: "recency_at",
       sortDirection: "desc",
       sourceKinds: [],
       archived: true,
     })).toEqual({
       cursor: "next-thread-page",
       limit: 100,
-      sortKey: "updated_at",
+      sortKey: "recency_at",
       sortDirection: "desc",
       sourceKinds: [],
       archived: true,

@@ -130,6 +130,9 @@ describe("Composer", () => {
     const enter = createEvent.keyDown(textarea, { key: "Enter" });
     fireEvent(textarea, enter);
     expect(enter.defaultPrevented).toBe(false);
+    const shortcut = createEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    fireEvent(textarea, shortcut);
+    expect(shortcut.defaultPrevented).toBe(false);
     fireEvent.change(textarea, { target: { value: "first line\nsecond line" } });
     expect(textarea).toHaveValue("first line\nsecond line");
     expect(onSend).not.toHaveBeenCalled();
@@ -156,6 +159,57 @@ describe("Composer", () => {
       fireEvent(textarea, enter);
       expect(enter.defaultPrevented).toBe(false);
     }
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each(["ctrlKey", "metaKey"] as const)("sends with %s and Enter", async (modifier) => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    expect(textarea).toHaveAttribute("placeholder", "Ask Codex (Ctrl+Enter to send)");
+    fireEvent.change(textarea, { target: { value: "  send this  " } });
+    const shortcut = createEvent.keyDown(textarea, { key: "Enter", [modifier]: true });
+    fireEvent(textarea, shortcut);
+
+    expect(shortcut.defaultPrevented).toBe(true);
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("send this", []));
+  });
+
+  it("does not send a shortcut while an input method is composing", () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "still composing" } });
+    const shortcut = createEvent.keyDown(textarea, {
+      key: "Enter",
+      ctrlKey: true,
+      isComposing: true,
+    });
+    fireEvent(textarea, shortcut);
+
+    expect(shortcut.defaultPrevented).toBe(false);
     expect(onSend).not.toHaveBeenCalled();
   });
 

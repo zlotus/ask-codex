@@ -41,9 +41,9 @@ events, but it does not get a general-purpose file-serving endpoint.
   Initial selections come from Codex's effective configuration; alternatives
   come from `model/list`.
 - Keep editing text drafts while a turn runs or the connection resynchronizes.
-  Enter inserts a newline and sending requires the send button. Unconfirmed
-  sends remain separate from new typing so an asynchronous failure cannot
-  overwrite the active draft.
+  Enter inserts a newline; send with the button or `Ctrl+Enter`, with
+  `Cmd+Enter` also supported on macOS. Unconfirmed sends remain separate from
+  new typing so an asynchronous failure cannot overwrite the active draft.
 - Select or paste PNG, JPEG, and WebP images, preview them, and send them with
   text or on their own. After a successful send, the browser retains bounded,
   clickable thumbnails locally. The same browser profile and Origin can restore

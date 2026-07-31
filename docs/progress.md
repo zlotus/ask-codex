@@ -17,8 +17,9 @@
 当前实现包括：
 
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
-  包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并通过按钮发送的响应式多行
-  输入框。未确认成功的发送会与发送期间继续输入的新草稿分开保留。
+  包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
+  发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。未确认成功的发送会与发送期间
+  继续输入的新草稿分开保留。
 - Active/Archived 双视图和统一的线程动作菜单：桌面端支持右键，移动端支持 550 毫秒
   长按，所有端都有 `...` 入口。正在执行轮次的线程不能归档或删除；其他空闲线程可
   归档，已归档线程可恢复，两类空闲线程均可在明确提示线程及其后代会话可能被永久移除
@@ -123,10 +124,10 @@
 
 - `npm run typecheck` 通过。
 - `npm run lint` 通过。
-- `npm test` 通过：27 个文件、325 项测试。服务端测试在允许绑定回环套接字的环境中
+- `npm test` 通过：27 个文件、330 项测试。服务端测试在允许绑定回环套接字的环境中
   运行。
 - `npm run build` 通过。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-plan-dock npm run check:visual`
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-composer-shortcut npm run check:visual`
   针对当前生产构建通过。确定性的桌面端和 390×844 移动端夹具覆盖 Active/Archived
   视图、桌面右键菜单、移动端长按菜单、永久删除确认框、新线程对话框、已配置模型选择、
   图片草稿预览、发送后及页面重载后缩略图的加载、受控布局和新标签打开行为、工具分组和
@@ -135,8 +136,9 @@
   控制台错误或页面错误。夹具在删除确认处取消，所有模拟 RPC 均被浏览器测试拦截，没有
   创建真实 Codex 轮次。
 
-- 从 Codex CLI `0.146.0` 生成的 bindings 已核对：reasoning 的 `summary` 和 `content`
-  都可能为空，`turn/diff/updated` 是轮次级最新聚合快照；未创建真实轮次。
+- 从 Codex CLI `0.146.0` 生成的 bindings 已核对：线程包含用于排序的 `recencyAt`，
+  `ThreadSortKey` 支持 `recency_at`；reasoning 的 `summary` 和 `content` 都可能为空，
+  `turn/diff/updated` 是轮次级最新聚合快照；未创建真实轮次。
 
 2026-07-25 记录的协议验证仍适用于本轮未改变的协议路径：
 

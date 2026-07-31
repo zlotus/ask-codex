@@ -76,6 +76,9 @@ export function Composer({
   const imageInputSupported = selectedModel?.inputModalities?.includes("image") === true;
   const sending = inFlightSubmission !== null;
   const controlsDisabled = disabled || running || sending || failedSubmission !== null;
+  const canSubmit = !controlsDisabled &&
+    (Boolean(value.trim()) || images.length > 0) &&
+    (images.length === 0 || imageInputSupported);
 
   useEffect(() => {
     imagesRef.current = images;
@@ -223,6 +226,16 @@ export function Composer({
           ref={textareaRef}
           value={value}
           onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key !== "Enter" ||
+              (!event.ctrlKey && !event.metaKey) ||
+              event.nativeEvent.isComposing ||
+              !canSubmit
+            ) return;
+            event.preventDefault();
+            void submit();
+          }}
           onPaste={(event) => {
             const pastedImages = clipboardFiles(event.clipboardData)
               .filter((file) => (
@@ -231,7 +244,7 @@ export function Composer({
               ));
             if (addImages(pastedImages) > 0) event.preventDefault();
           }}
-          placeholder={running ? "Codex is working…" : "Ask Codex"}
+          placeholder={running ? "Codex is working…" : "Ask Codex (Ctrl+Enter to send)"}
           aria-label="Message Codex"
           maxLength={MAX_COMPOSER_CHARACTERS}
           rows={1}
@@ -326,11 +339,7 @@ export function Composer({
             className="composer-action"
             title="Send message"
             aria-label="Send message"
-            disabled={
-              controlsDisabled ||
-              (!value.trim() && images.length === 0) ||
-              (images.length > 0 && !imageInputSupported)
-            }
+            disabled={!canSubmit}
             onClick={() => void submit()}
           >
             {sending

@@ -1436,6 +1436,50 @@ describe("appReducer", () => {
     expect(state.threads.map((thread) => thread.id)).toEqual(["seconds", "milliseconds"]);
   });
 
+  it("keeps list recency when hydration and notifications carry older timestamps", () => {
+    let state = appReducer(initialState, {
+      type: "setThreads",
+      threads: [
+        { id: "thread-target", recencyAt: 300, updatedAt: 300 },
+        { id: "thread-other", recencyAt: 200, updatedAt: 200 },
+      ],
+    });
+
+    state = appReducer(state, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-target",
+        createdAt: 100,
+        updatedAt: 100,
+        recencyAt: 100,
+        turns: [],
+      },
+    });
+    expect(state.threads.map((thread) => thread.id)).toEqual(["thread-target", "thread-other"]);
+    expect(state.threads[0]?.recencyAt).toBe(300);
+
+    state = appReducer(state, {
+      type: "upsertThread",
+      thread: { id: "thread-target", updatedAt: 50, status: { type: "idle" } },
+    });
+    expect(state.threads.map((thread) => thread.id)).toEqual(["thread-target", "thread-other"]);
+    expect(state.threads[0]?.recencyAt).toBe(300);
+
+    state = appReducer(state, {
+      type: "reconcileCurrentThread",
+      thread: { id: "thread-target", updatedAt: 75, recencyAt: 75, turns: [] },
+    });
+    expect(state.threads.map((thread) => thread.id)).toEqual(["thread-target", "thread-other"]);
+    expect(state.threads[0]?.recencyAt).toBe(300);
+
+    state = appReducer(state, {
+      type: "upsertThread",
+      thread: { id: "thread-other", updatedAt: 400 },
+    });
+    expect(state.threads.map((thread) => thread.id)).toEqual(["thread-other", "thread-target"]);
+    expect(state.threads[0]?.recencyAt).toBe(400);
+  });
+
   it("clears stale approval requests after an app-server failure", () => {
     const state = appReducer({
       ...initialState,

@@ -8,6 +8,7 @@ import type {
   ToastMessage,
   TurnPlan,
 } from "../types/protocol";
+import { threadRecencyTimestamp, timestampMilliseconds } from "../utils/protocol";
 
 export interface AppState {
   connection: ConnectionState;
@@ -288,15 +289,7 @@ function mergeStartedItem(existing: CodexItem, incoming: CodexItem): CodexItem {
 
 function sortThreads(threads: CodexThread[]): CodexThread[] {
   const timestamp = (thread: CodexThread): number => {
-    const value = thread.updatedAt ?? thread.createdAt;
-    const numeric = typeof value === "number"
-      ? value
-      : typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : undefined;
-    const normalized = numeric !== undefined
-      ? Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric
-      : value;
-    const date = typeof normalized === "number" || typeof normalized === "string" ? new Date(normalized) : null;
-    return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+    return timestampMilliseconds(threadRecencyTimestamp(thread)) ?? 0;
   };
   return [...threads].sort((a, b) => timestamp(b) - timestamp(a));
 }
@@ -307,12 +300,32 @@ function threadSummary(thread: CodexThread): CodexThread {
   return summary;
 }
 
+// Hydrated thread snapshots can be older than thread/list's repaired metadata.
+function latestThreadRecency(
+  existing: CodexThread,
+  incoming: CodexThread,
+): number | string | undefined {
+  const existingValue = threadRecencyTimestamp(existing);
+  const incomingValue = threadRecencyTimestamp(incoming);
+  const existingTimestamp = timestampMilliseconds(existingValue);
+  const incomingTimestamp = timestampMilliseconds(incomingValue);
+  if (incomingTimestamp === null) return existingTimestamp === null ? undefined : existingValue;
+  if (existingTimestamp === null || incomingTimestamp >= existingTimestamp) return incomingValue;
+  return existingValue;
+}
+
 function upsertThread(threads: CodexThread[], thread: CodexThread): CodexThread[] {
   const index = threads.findIndex((entry) => entry.id === thread.id);
   const summary = threadSummary(thread);
   if (index < 0) return sortThreads([summary, ...threads]);
   const next = [...threads];
-  next[index] = { ...threadSummary(next[index]), ...summary };
+  const existing = threadSummary(next[index]);
+  const recencyAt = latestThreadRecency(existing, summary);
+  next[index] = {
+    ...existing,
+    ...summary,
+    ...(recencyAt !== undefined ? { recencyAt } : {}),
+  };
   return sortThreads(next);
 }
 

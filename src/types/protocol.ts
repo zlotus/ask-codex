@@ -149,6 +149,7 @@ export interface CodexThread {
   model?: string;
   createdAt?: number | string;
   updatedAt?: number | string;
+  recencyAt?: number | string | null;
   historyMode?: "legacy" | "paginated";
   status?: string | Record<string, unknown>;
   turns?: CodexTurn[];

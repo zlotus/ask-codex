@@ -152,6 +152,22 @@ export function extractThread(result: unknown): CodexThread | null {
   return normalizeThread(candidate);
 }
 
+export function timestampMilliseconds(value: unknown): number | null {
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : undefined;
+  const normalized = numeric !== undefined
+    ? Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric
+    : value;
+  const date = typeof normalized === "number" || typeof normalized === "string" ? new Date(normalized) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.getTime() : null;
+}
+
+export function threadRecencyTimestamp(thread: CodexThread): number | string | undefined {
+  return [thread.recencyAt, thread.updatedAt, thread.createdAt]
+    .find((value): value is number | string => timestampMilliseconds(value) !== null);
+}
+
 export function extractTurn(result: unknown): CodexTurn | null {
   const candidate = isRecord(result) && "turn" in result ? result.turn : result;
   return normalizeTurn(candidate);
@@ -338,20 +354,14 @@ export function parseQuestions(params: Record<string, unknown>): UserQuestion[] 
 }
 
 export function formatTimestamp(value: unknown): string {
-  const numeric = typeof value === "number"
-    ? value
-    : typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : undefined;
-  const normalized = numeric !== undefined
-    ? Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric
-    : value;
-  const date = typeof normalized === "number" || typeof normalized === "string" ? new Date(normalized) : null;
-  if (!date || Number.isNaN(date.getTime())) return "";
+  const milliseconds = timestampMilliseconds(value);
+  if (milliseconds === null) return "";
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+  }).format(new Date(milliseconds));
 }
 
 export function stripAnsi(value: string): string {

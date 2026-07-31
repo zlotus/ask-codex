@@ -601,7 +601,7 @@ export default function App() {
         for (let page = 0; page < 50; page += 1) {
           const result = await rpc("thread/list", {
             limit: 100,
-            sortKey: "updated_at",
+            sortKey: "recency_at",
             sortDirection: "desc",
             sourceKinds: [],
             archived,

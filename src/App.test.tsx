@@ -243,9 +243,13 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => {
       expect(socket.rpc).toHaveBeenCalledWith("thread/list", expect.objectContaining({
         archived: false,
+        sortKey: "recency_at",
+        sortDirection: "desc",
       }));
       expect(socket.rpc).toHaveBeenCalledWith("thread/list", expect.objectContaining({
         archived: true,
+        sortKey: "recency_at",
+        sortDirection: "desc",
       }));
     });
 
@@ -273,6 +277,63 @@ describe("App thread settings lifecycle", () => {
       threadId: "thread-archived",
     }));
     expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
+  });
+
+  it("does not move a thread or regress its displayed activity time after resume", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    const listThread = {
+      ...existingThread,
+      createdAt: 100,
+      updatedAt: 300,
+      recencyAt: 300,
+    };
+    const otherThread = {
+      ...existingThread,
+      id: "thread-other",
+      name: "Other thread",
+      createdAt: 150,
+      updatedAt: 200,
+      recencyAt: 200,
+    };
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        return Promise.resolve({ data: [listThread, otherThread], nextCursor: null });
+      }
+      if (method === "thread/resume") {
+        return Promise.resolve({
+          thread: {
+            ...existingThread,
+            createdAt: 100,
+            updatedAt: 100,
+            recencyAt: 100,
+          },
+          cwd: existingThread.cwd,
+          model: existingThread.model,
+          sandbox: { type: "workspaceWrite" },
+          initialTurnsPage: { data: [], nextCursor: null, backwardsCursor: null },
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    const titlesBefore = Array.from(document.querySelectorAll(".thread-title"))
+      .map((element) => element.textContent);
+    const activityBefore = screen.getByRole("button", { name: "Existing thread" })
+      .querySelector(".thread-meta")?.textContent;
+    expect(titlesBefore).toEqual(["Existing thread", "Other thread"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Existing thread" }));
+    await screen.findByTitle("Existing thread");
+
+    const titlesAfter = Array.from(document.querySelectorAll(".thread-title"))
+      .map((element) => element.textContent);
+    const activityAfter = screen.getByRole("button", { name: "Existing thread" })
+      .querySelector(".thread-meta")?.textContent;
+    expect(titlesAfter).toEqual(["Existing thread", "Other thread"]);
+    expect(activityAfter).toBe(activityBefore);
   });
 
   it("keeps archive and permanent delete unavailable for an active thread", async () => {

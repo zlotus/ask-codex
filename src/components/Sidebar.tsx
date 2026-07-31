@@ -13,7 +13,7 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { CodexThread, ConnectionState } from "../types/protocol";
-import { formatTimestamp } from "../utils/protocol";
+import { formatTimestamp, threadRecencyTimestamp } from "../utils/protocol";
 
 export interface SidebarProps {
   threads: CodexThread[];
@@ -465,7 +465,7 @@ export function Sidebar(props: SidebarProps) {
                   <span className="thread-title">{title}</span>
                   <span className="thread-meta" aria-hidden="true">
                     <span className={`thread-dot thread-dot--${threadStatus(thread).toLowerCase()}`} />
-                    {formatTimestamp(thread.updatedAt ?? thread.createdAt) || thread.id.slice(0, 8)}
+                    {formatTimestamp(threadRecencyTimestamp(thread)) || thread.id.slice(0, 8)}
                   </span>
                 </button>
                 <button
