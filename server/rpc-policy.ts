@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 import { ClientInputError } from "./security.js";
 import { isRecord } from "./types.js";
 
@@ -9,8 +11,11 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "thread/archive",
   "thread/unarchive",
   "thread/delete",
+  "thread/name/set",
+  "thread/metadata/update",
   "thread/turns/list",
   "thread/items/list",
+  "skills/list",
   "turn/start",
   "turn/interrupt",
   "model/list",
@@ -20,6 +25,14 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
 
 const MAX_CONFIG_VALUE_CHARACTERS = 512;
 const MAX_LOCAL_IMAGES_PER_TURN = 4;
+const MAX_THREAD_ID_CHARACTERS = 256;
+const MAX_THREAD_NAME_CHARACTERS = 200;
+const MAX_SKILLS_CWDS = 16;
+const MAX_SKILLS_CWD_CHARACTERS = 4_096;
+const MAX_SKILLS_PER_CWD = 256;
+const MAX_SKILL_NAME_CHARACTERS = 256;
+const MAX_SKILL_DESCRIPTION_CHARACTERS = 4_096;
+const MAX_SKILL_SHORT_DESCRIPTION_CHARACTERS = 512;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 const SANDBOX_MODES = new Set([
@@ -31,6 +44,7 @@ const SORT_KEYS = new Set(["created_at", "updated_at", "recency_at"]);
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
 const TURN_ITEMS_VIEWS = new Set(["notLoaded", "summary", "full"]);
 const IMAGE_DETAILS = new Set(["auto", "low", "high", "original"]);
+const SKILL_SCOPES = new Set(["user", "repo", "system", "admin"]);
 const SOURCE_KINDS = new Set([
   "cli",
   "vscode",
@@ -73,6 +87,36 @@ function requiredString(
     throw new ClientInputError(`${method} ${key} must be a non-empty string`);
   }
   return value;
+}
+
+function containsControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || codePoint === 0x7f) return true;
+  }
+  return false;
+}
+
+function requiredBoundedString(
+  method: string,
+  params: Record<string, unknown>,
+  key: string,
+  maximum: number,
+  trim = false,
+): string {
+  const value = requiredString(method, params, key);
+  const normalized = trim ? value.trim() : value;
+  if (
+    normalized.length === 0 ||
+    normalized.length > maximum ||
+    containsControlCharacters(normalized) ||
+    (!trim && normalized.trim() !== normalized)
+  ) {
+    throw new ClientInputError(
+      `${method} ${key} must be a bounded single-line string`,
+    );
+  }
+  return normalized;
 }
 
 function optionalString(
@@ -198,6 +242,89 @@ function sanitizeThreadList(params: unknown): Record<string, unknown> {
   }
   assignDefined(output, "searchTerm", optionalString(method, input, "searchTerm"));
   assignDefined(output, "archived", optionalBoolean(method, input, "archived"));
+  return output;
+}
+
+function sanitizeThreadNameSet(params: unknown): Record<string, unknown> {
+  const method = "thread/name/set";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, ["threadId", "name"]);
+  return {
+    threadId: requiredBoundedString(
+      method,
+      input,
+      "threadId",
+      MAX_THREAD_ID_CHARACTERS,
+    ),
+    name: requiredBoundedString(
+      method,
+      input,
+      "name",
+      MAX_THREAD_NAME_CHARACTERS,
+      true,
+    ),
+  };
+}
+
+function sanitizeThreadMetadataUpdate(params: unknown): Record<string, unknown> {
+  const method = "thread/metadata/update";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, ["threadId", "isPinned"]);
+  const threadId = requiredBoundedString(
+    method,
+    input,
+    "threadId",
+    MAX_THREAD_ID_CHARACTERS,
+  );
+  if (typeof input.isPinned !== "boolean") {
+    throw new ClientInputError(`${method} isPinned must be a boolean`);
+  }
+  return {
+    threadId,
+    isPinned: input.isPinned,
+  };
+}
+
+function sanitizeSkillsList(params: unknown): Record<string, unknown> {
+  const method = "skills/list";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, ["cwds", "forceReload"]);
+  const output: Record<string, unknown> = {};
+
+  if (input.cwds !== undefined) {
+    if (!Array.isArray(input.cwds) || input.cwds.length > MAX_SKILLS_CWDS) {
+      throw new ClientInputError(
+        `${method} cwds must be an array with at most ${MAX_SKILLS_CWDS} entries`,
+      );
+    }
+    const seen = new Set<string>();
+    output.cwds = input.cwds.map((cwd, index) => {
+      if (
+        typeof cwd !== "string" ||
+        cwd.length === 0 ||
+        cwd.length > MAX_SKILLS_CWD_CHARACTERS ||
+        cwd.trim() !== cwd ||
+        containsControlCharacters(cwd) ||
+        !isAbsolute(cwd)
+      ) {
+        throw new ClientInputError(
+          `${method} cwds[${index}] must be a bounded absolute path`,
+        );
+      }
+      if (seen.has(cwd)) {
+        throw new ClientInputError(`${method} cwds must not contain duplicates`);
+      }
+      seen.add(cwd);
+      return cwd;
+    });
+  }
+
+  if (input.forceReload !== undefined) {
+    if (typeof input.forceReload !== "boolean") {
+      throw new ClientInputError(`${method} forceReload must be a boolean`);
+    }
+    output.forceReload = input.forceReload;
+  }
   return output;
 }
 
@@ -502,10 +629,16 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
         threadId: requiredString(method, input, "threadId"),
       };
     }
+    case "thread/name/set":
+      return sanitizeThreadNameSet(params);
+    case "thread/metadata/update":
+      return sanitizeThreadMetadataUpdate(params);
     case "thread/turns/list":
       return sanitizeThreadTurnsList(params);
     case "thread/items/list":
       return sanitizeThreadItemsList(params);
+    case "skills/list":
+      return sanitizeSkillsList(params);
     case "turn/start":
       return sanitizeTurnStart(params);
     case "turn/interrupt": {
@@ -548,13 +681,93 @@ function configuredValue(value: unknown): string | null {
   return trimmed.length > 0 && trimmed.length <= MAX_CONFIG_VALUE_CHARACTERS ? trimmed : null;
 }
 
-export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
-  if (method !== "config/read") return sanitizeBrowserVisibleValue(result);
-  const config = isRecord(result) && isRecord(result.config) ? result.config : {};
-  return {
-    model: configuredValue(config.model),
-    effort: configuredValue(config.model_reasoning_effort),
+function projectedString(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || containsControlCharacters(trimmed)) return undefined;
+  return trimmed.slice(0, maximum);
+}
+
+function projectThreadMetadataUpdateResult(result: unknown): Record<string, unknown> {
+  const thread = isRecord(result) && isRecord(result.thread) ? result.thread : null;
+  const id = projectedString(thread?.id, MAX_THREAD_ID_CHARACTERS);
+  if (!thread || !id || typeof thread.isPinned !== "boolean") {
+    return { thread: null };
+  }
+  return { thread: { id, isPinned: thread.isPinned } };
+}
+
+function projectSkill(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const name = projectedString(value.name, MAX_SKILL_NAME_CHARACTERS);
+  const description = projectedString(
+    value.description,
+    MAX_SKILL_DESCRIPTION_CHARACTERS,
+  );
+  const skillInterface = isRecord(value.interface) ? value.interface : null;
+  const shortDescription = projectedString(
+    skillInterface?.shortDescription,
+    MAX_SKILL_SHORT_DESCRIPTION_CHARACTERS,
+  ) ?? projectedString(
+    value.shortDescription,
+    MAX_SKILL_SHORT_DESCRIPTION_CHARACTERS,
+  );
+  if (
+    !name ||
+    !description ||
+    typeof value.enabled !== "boolean" ||
+    typeof value.scope !== "string" ||
+    !SKILL_SCOPES.has(value.scope)
+  ) {
+    return null;
+  }
+  const output: Record<string, unknown> = {
+    name,
+    description,
+    scope: value.scope,
+    enabled: value.enabled,
   };
+  assignDefined(output, "shortDescription", shortDescription);
+  return output;
+}
+
+function projectSkillsListResult(result: unknown): Record<string, unknown> {
+  const data = isRecord(result) && Array.isArray(result.data) ? result.data : [];
+  return {
+    data: data.slice(0, MAX_SKILLS_CWDS).flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const cwd = projectedString(entry.cwd, MAX_SKILLS_CWD_CHARACTERS);
+      if (!cwd || !isAbsolute(cwd)) return [];
+      const skills = Array.isArray(entry.skills)
+        ? entry.skills
+            .slice(0, MAX_SKILLS_PER_CWD)
+            .map(projectSkill)
+            .filter((skill): skill is Record<string, unknown> => skill !== null)
+        : [];
+      const errorCount = Array.isArray(entry.errors) ? entry.errors.length : 0;
+      return [{ cwd, skills, errorCount }];
+    }),
+  };
+}
+
+export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
+  switch (method) {
+    case "config/read": {
+      const config = isRecord(result) && isRecord(result.config) ? result.config : {};
+      return {
+        model: configuredValue(config.model),
+        effort: configuredValue(config.model_reasoning_effort),
+      };
+    }
+    case "thread/name/set":
+      return {};
+    case "thread/metadata/update":
+      return projectThreadMetadataUpdateResult(result);
+    case "skills/list":
+      return projectSkillsListResult(result);
+    default:
+      return sanitizeBrowserVisibleValue(result);
+  }
 }
 
 export function sanitizeBrowserVisibleValue(value: unknown, depth = 0): unknown {

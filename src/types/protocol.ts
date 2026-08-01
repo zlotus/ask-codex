@@ -150,6 +150,7 @@ export interface CodexThread {
   preview?: string;
   cwd?: string;
   model?: string;
+  isPinned?: boolean;
   createdAt?: number | string;
   updatedAt?: number | string;
   recencyAt?: number | string | null;
@@ -178,6 +179,22 @@ export interface ModelInfo {
   inputModalities?: InputModality[];
   defaultReasoningEffort?: string;
   isDefault?: boolean;
+}
+
+export type SkillScope = "user" | "repo" | "system" | "admin";
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  shortDescription?: string;
+  scope: SkillScope;
+  enabled: boolean;
+}
+
+export interface SkillsDirectoryEntry {
+  cwd: string;
+  skills: SkillInfo[];
+  errorCount: number;
 }
 
 export interface ChoiceOption {

@@ -3,8 +3,10 @@ import {
   commandApprovalTarget,
   extractInitialTurnsPage,
   extractModels,
+  extractSkillsDirectory,
   itemText,
   normalizeItemsPage,
+  normalizeThread,
   normalizeTurn,
   normalizeTurnsPage,
   sandboxMode,
@@ -81,6 +83,22 @@ describe("sandboxMode", () => {
   });
 });
 
+describe("thread normalization", () => {
+  it("preserves boolean pin state and drops malformed values", () => {
+    expect(normalizeThread({ id: "pinned", isPinned: true })).toEqual({
+      id: "pinned",
+      isPinned: true,
+    });
+    expect(normalizeThread({ id: "unpinned", isPinned: false })).toEqual({
+      id: "unpinned",
+      isPinned: false,
+    });
+    expect(normalizeThread({ id: "invalid", isPinned: "yes" })).toEqual({
+      id: "invalid",
+    });
+  });
+});
+
 describe("multimodal protocol normalization", () => {
   it("preserves supported model input modalities and drops unknown values", () => {
     expect(extractModels({
@@ -119,6 +137,79 @@ describe("multimodal protocol normalization", () => {
       { type: "localImage", detail: "original" },
       { type: "image", detail: undefined },
     ]);
+  });
+});
+
+describe("skills directory normalization", () => {
+  it("keeps only the minimal browser-visible skill projection", () => {
+    const directory = extractSkillsDirectory({
+      data: [{
+        cwd: "/workspace/project",
+        skills: [{
+          name: "review",
+          description: "Review changes",
+          shortDescription: "Review",
+          scope: "repo",
+          enabled: true,
+          path: "/private/skills/review/SKILL.md",
+          interface: { displayName: "Private display name" },
+          dependencies: { tools: [{ type: "mcp", value: "private-server" }] },
+        }],
+        errorCount: 2,
+        errors: [{ path: "/private/broken-skill", message: "Private parser error" }],
+      }],
+    });
+
+    expect(directory).toEqual([{
+      cwd: "/workspace/project",
+      skills: [{
+        name: "review",
+        description: "Review changes",
+        shortDescription: "Review",
+        scope: "repo",
+        enabled: true,
+      }],
+      errorCount: 2,
+    }]);
+    expect(JSON.stringify(directory)).not.toContain("/private/");
+    expect(JSON.stringify(directory)).not.toContain("Private parser error");
+    expect(JSON.stringify(directory)).not.toContain("displayName");
+    expect(JSON.stringify(directory)).not.toContain("dependencies");
+  });
+
+  it("filters malformed entries and skills while retaining valid siblings", () => {
+    expect(extractSkillsDirectory({
+      data: [
+        {
+          cwd: "/workspace/valid",
+          skills: [
+            { name: "valid", description: "Works", scope: "user", enabled: false },
+            { name: "bad-scope", description: "No", scope: "workspace", enabled: true },
+            { name: "bad-enabled", description: "No", scope: "system", enabled: "yes" },
+            { name: "bad-short", description: "No", shortDescription: 7, scope: "admin", enabled: true },
+          ],
+          errorCount: 0,
+        },
+        { cwd: 7, skills: [], errorCount: 0 },
+        { cwd: "/workspace/no-skills", skills: null, errorCount: 0 },
+        { cwd: "/workspace/bad-count", skills: [], errorCount: -1 },
+      ],
+    })).toEqual([{
+      cwd: "/workspace/valid",
+      skills: [{
+        name: "valid",
+        description: "Works",
+        scope: "user",
+        enabled: false,
+      }],
+      errorCount: 0,
+    }]);
+  });
+
+  it("returns an empty directory for malformed response envelopes", () => {
+    expect(extractSkillsDirectory(null)).toEqual([]);
+    expect(extractSkillsDirectory([])).toEqual([]);
+    expect(extractSkillsDirectory({ data: "invalid" })).toEqual([]);
   });
 });
 

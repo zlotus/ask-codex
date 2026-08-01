@@ -221,12 +221,23 @@ function rpcIdKey(id: RpcId): string {
   return `${typeof id}:${String(id)}`;
 }
 
-function errorPayload(error: unknown): unknown {
-  if (error instanceof CodexRpcError) {
-    return error.rpcError;
-  }
+function errorPayload(method: string, error: unknown): unknown {
   if (error instanceof ClientRpcError) {
     return { code: error.code, message: error.message };
+  }
+  if (method === "skills/list") {
+    const rawCode = error instanceof CodexRpcError && isRecord(error.rpcError)
+      ? error.rpcError.code
+      : undefined;
+    return {
+      code: typeof rawCode === "number" && Number.isSafeInteger(rawCode)
+        ? rawCode
+        : -32_000,
+      message: "Codex app-server could not list skills",
+    };
+  }
+  if (error instanceof CodexRpcError) {
+    return error.rpcError;
   }
   if (error instanceof Error) {
     return { code: -32_000, message: error.message };
@@ -763,7 +774,11 @@ export class AskCodexServer {
       const result = sanitizeBrowserRpcResult(message.method, rawResult);
       this.send(client, { type: "rpcResult", id: message.id, result });
     } catch (error) {
-      this.send(client, { type: "rpcError", id: message.id, error: errorPayload(error) });
+      this.send(client, {
+        type: "rpcError",
+        id: message.id,
+        error: errorPayload(message.method, error),
+      });
     } finally {
       if (pendingAttachmentThreadId) {
         const remaining = (this.pendingAttachmentStarts.get(pendingAttachmentThreadId) ?? 1) - 1;

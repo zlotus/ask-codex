@@ -75,6 +75,163 @@ describe("browser RPC policy", () => {
     },
   );
 
+  it("allows a bounded thread name and projects its empty response", () => {
+    const params = { threadId: "thread-1", name: "  Project navigation  " };
+
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("thread/name/set")).toBe(true);
+    expect(sanitizeBrowserRpcParams("thread/name/set", params)).toEqual({
+      threadId: "thread-1",
+      name: "Project navigation",
+    });
+    expect(sanitizeBrowserRpcResult("thread/name/set", {
+      token: "must not reach the browser",
+    })).toEqual({});
+  });
+
+  it.each([
+    [{ name: "Name" }, "threadId must be a non-empty string"],
+    [{ threadId: "thread-1", name: "   " }, "name must be a bounded single-line string"],
+    [{ threadId: "thread-1", name: "line one\nline two" }, "name must be a bounded single-line string"],
+    [{ threadId: "thread-1", name: "x".repeat(201) }, "name must be a bounded single-line string"],
+    [{ threadId: "thread-1", name: "Name", cwd: "/tmp" }, "does not allow param: cwd"],
+  ])("rejects invalid thread name params %#", (params, message) => {
+    expect(() => sanitizeBrowserRpcParams("thread/name/set", params)).toThrow(message);
+  });
+
+  it("rebuilds thread metadata patches and projects only updated metadata", () => {
+    const params = {
+      threadId: "thread-1",
+      isPinned: true,
+    };
+
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("thread/metadata/update")).toBe(true);
+    expect(sanitizeBrowserRpcParams("thread/metadata/update", params)).toEqual(params);
+    expect(sanitizeBrowserRpcResult("thread/metadata/update", {
+      thread: {
+        id: "thread-1",
+        isPinned: true,
+        gitInfo: {
+          sha: null,
+          branch: "feature/project-navigation",
+          originUrl: "git@example.com:private/project.git",
+          credential: "secret",
+        },
+        path: "/private/session.jsonl",
+        turns: [{ secret: true }],
+      },
+      config: { token: "secret" },
+    })).toEqual({
+      thread: {
+        id: "thread-1",
+        isPinned: true,
+      },
+    });
+    expect(sanitizeBrowserRpcResult("thread/metadata/update", {
+      thread: { id: "thread-1", isPinned: null },
+    })).toEqual({ thread: null });
+  });
+
+  it.each([
+    [{}, "threadId must be a non-empty string"],
+    [{ threadId: "thread-1" }, "isPinned must be a boolean"],
+    [{ threadId: "thread-1", isPinned: null }, "isPinned must be a boolean"],
+    [{ threadId: "thread-1", isPinned: "true" }, "isPinned must be a boolean"],
+    [{ threadId: "thread-1", isPinned: true, gitInfo: null }, "does not allow param: gitInfo"],
+    [{ threadId: "thread-1", isPinned: true, name: "Expanded" }, "does not allow param: name"],
+  ])("rejects invalid thread metadata params %#", (params, message) => {
+    expect(() => sanitizeBrowserRpcParams("thread/metadata/update", params)).toThrow(message);
+  });
+
+  it("rebuilds a bounded read-only skills request", () => {
+    const cwd = process.cwd();
+    const params = { cwds: [cwd], forceReload: true };
+
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("skills/list")).toBe(true);
+    expect(sanitizeBrowserRpcParams("skills/list", params)).toEqual(params);
+    expect(sanitizeBrowserRpcParams("skills/list", {})).toEqual({});
+    expect(sanitizeBrowserRpcParams("skills/list", { cwds: [] })).toEqual({ cwds: [] });
+  });
+
+  it.each([
+    [{ cwds: null }, "cwds must be an array with at most 16 entries"],
+    [{ cwds: ["relative/path"] }, "cwds[0] must be a bounded absolute path"],
+    [{ cwds: ["/tmp/project", "/tmp/project"] }, "cwds must not contain duplicates"],
+    [{ cwds: ["/" + "x".repeat(4_096)] }, "cwds[0] must be a bounded absolute path"],
+    [{ cwds: Array.from({ length: 17 }, (_, index) => `/tmp/project-${index}`) }, "at most 16 entries"],
+    [{ forceReload: null }, "forceReload must be a boolean"],
+    [{ forceReload: "true" }, "forceReload must be a boolean"],
+    [{ perCwdExtraUserRoots: [] }, "does not allow param: perCwdExtraUserRoots"],
+  ])("rejects unsafe skills/list params %#", (params, message) => {
+    expect(() => sanitizeBrowserRpcParams("skills/list", params)).toThrow(message);
+  });
+
+  it("projects skills/list to bounded display metadata without host capability details", () => {
+    expect(sanitizeBrowserRpcResult("skills/list", {
+      data: [{
+        cwd: process.cwd(),
+        skills: [{
+          name: "skill-creator",
+          description: "Create or update a Codex skill",
+          shortDescription: "Create skills",
+          interface: {
+            displayName: "Skill Creator",
+            shortDescription: "Scaffold a reusable skill",
+            brandColor: "#12ab34",
+            iconSmall: "/private/icon.svg",
+            iconLargeUrl: "https://private.example/icon.png",
+            defaultPrompt: "Read private instructions",
+          },
+          dependencies: {
+            tools: [{ type: "shell", command: "private-command", value: "secret" }],
+          },
+          path: "/private/skills/skill-creator/SKILL.md",
+          scope: "repo",
+          enabled: true,
+          extra: "secret",
+        }, {
+          name: "legacy-skill",
+          description: "Uses legacy metadata",
+          shortDescription: "Legacy summary",
+          scope: "user",
+          enabled: false,
+        }, {
+          name: "invalid-skill",
+          description: "Missing required metadata",
+          scope: "unexpected",
+          enabled: true,
+        }],
+        errors: [{
+          path: "/private/skills/broken/SKILL.md",
+          message: "Could not parse skill metadata",
+        }],
+        extra: "secret",
+      }, {
+        cwd: "relative/path",
+        skills: [],
+        errors: [],
+      }],
+      token: "secret",
+    })).toEqual({
+      data: [{
+        cwd: process.cwd(),
+        skills: [{
+          name: "skill-creator",
+          description: "Create or update a Codex skill",
+          shortDescription: "Scaffold a reusable skill",
+          scope: "repo",
+          enabled: true,
+        }, {
+          name: "legacy-skill",
+          description: "Uses legacy metadata",
+          shortDescription: "Legacy summary",
+          scope: "user",
+          enabled: false,
+        }],
+        errorCount: 1,
+      }],
+    });
+  });
+
   it("allows a parameter-free effective model settings read", () => {
     expect(ALLOWED_BROWSER_RPC_METHODS.has("config/read")).toBe(true);
     expect(sanitizeBrowserRpcParams("config/read", {})).toEqual({ includeLayers: false });

@@ -15,10 +15,16 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 
 ## 功能
 
-- 创建、搜索、恢复和刷新 Codex 会话。
-- 在 Active/Archived 视图中管理会话；通过桌面端右键、移动端长按或 `...` 菜单归档
+- 创建、搜索、恢复和刷新 Codex 会话；Active/Archived 视图按工作目录分组，各组内的
+  置顶会话排在其他会话之前。
+- 通过桌面端右键、移动端长按或 `...` 菜单重命名、置顶或取消置顶会话，也可归档
   Active 视图中的空闲会话、恢复 Archived 视图中的会话，或经二次确认永久删除任一视图
-  中的空闲会话。正在执行轮次的会话不会开放归档和删除操作。
+  中的空闲会话。正在执行轮次时仍可重命名和调整置顶状态，但不会开放归档和删除操作。
+- 第三个只读 Skills 标签按工作目录展示官方 `skills/list` 返回的名称、描述、作用域和
+  启用状态。首次打开标签时才加载目录；手动刷新会要求 Codex 跳过缓存重新扫描，
+  `skills/changed` 通知也会刷新已经打开过的目录。网关严格重建请求参数，并从响应中
+  只扁平保留 `interface.shortDescription`，剥离 skill 路径、依赖、其余 interface
+  元数据和具体错误文本。
 - 增量加载长会话历史；默认历史保留有界降级处理，已有分页历史可按条目恢复超大轮次。
 - 流式展示 Agent 消息、推理摘要、计划、命令输出、文件变更、MCP 调用和轮次差异；连续且
   有内容的历史推理会在原位置合并并可展开，进行中轮次底部则保留固定的推理状态槽，推理
@@ -52,12 +58,12 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 
 ### 移动端
 
-<img src="docs/screenshots/mobile.jpg" alt="Ask Codex 移动端界面" width="390">
+<img src="docs/screenshots/mobile.png" alt="Ask Codex 移动端界面" width="390">
 
 ## 环境要求
 
 - Node.js 22.12 或更高版本。
-- 支持有文档记录的 app-server 接口的较新 Codex CLI；当前实现已使用 0.145.0 验证。
+- 支持有文档记录的 app-server 接口的较新 Codex CLI；当前实现已使用 0.146.0 验证。
 - 已完成 Codex 登录；如尚未登录，请先运行 `codex login`。
 
 app-server 自带的 WebSocket 传输仍属于实验功能。Ask Codex 在自己的浏览器网关后

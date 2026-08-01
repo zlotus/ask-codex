@@ -115,6 +115,40 @@ describe("appReducer", () => {
     }));
   });
 
+  it("updates renamed and pinned metadata in every matching thread projection", () => {
+    const state: AppState = {
+      ...initialState,
+      threads: [{ id: "thread-active", name: "Old active", isPinned: false }],
+      archivedThreads: [{ id: "thread-archived", name: "Old archived", isPinned: false }],
+      selectedThreadId: "thread-active",
+      currentThread: { id: "thread-active", name: "Old active", isPinned: false, turns: [] },
+    };
+    const renamed = appReducer(state, {
+      type: "updateThreadMetadata",
+      threadId: "thread-active",
+      metadata: { name: "Renamed", isPinned: true },
+    });
+    const pinnedArchived = appReducer(renamed, {
+      type: "updateThreadMetadata",
+      threadId: "thread-archived",
+      metadata: { isPinned: true },
+    });
+
+    expect(pinnedArchived.threads[0]).toEqual(expect.objectContaining({
+      name: "Renamed",
+      isPinned: true,
+    }));
+    expect(pinnedArchived.currentThread).toEqual(expect.objectContaining({
+      name: "Renamed",
+      isPinned: true,
+      turns: [],
+    }));
+    expect(pinnedArchived.archivedThreads[0]).toEqual(expect.objectContaining({
+      name: "Old archived",
+      isPinned: true,
+    }));
+  });
+
   it("stores the history cursor when hydrating a recent turn page", () => {
     const state = appReducer(initialState, {
       type: "setCurrentThread",

@@ -257,25 +257,46 @@ export function isHttpAuthorized(
 }
 
 export async function validateRpcCwd(method: string, params: unknown): Promise<void> {
-  if (!RPC_METHODS_WITH_CWD.has(method) || !isRecord(params)) {
+  if (!isRecord(params)) {
     return;
   }
+
+  if (method === "skills/list") {
+    if (params.cwds === undefined) return;
+    if (!Array.isArray(params.cwds)) {
+      throw new ClientInputError(`${method} cwds must be an array`);
+    }
+    for (const [index, cwd] of params.cwds.entries()) {
+      await validateDirectory(method, cwd, `cwds[${index}]`);
+    }
+    return;
+  }
+
+  if (!RPC_METHODS_WITH_CWD.has(method)) return;
 
   const cwd = params.cwd;
   if (cwd === undefined || cwd === null) {
     return;
   }
-  if (typeof cwd !== "string" || !isAbsolute(cwd)) {
-    throw new ClientInputError(`${method} cwd must be an absolute path`);
+  await validateDirectory(method, cwd, "cwd");
+}
+
+async function validateDirectory(
+  method: string,
+  value: unknown,
+  label: string,
+): Promise<void> {
+  if (typeof value !== "string" || !isAbsolute(value)) {
+    throw new ClientInputError(`${method} ${label} must be an absolute path`);
   }
 
-  let cwdStat;
+  let directoryStat;
   try {
-    cwdStat = await stat(cwd);
+    directoryStat = await stat(value);
   } catch {
-    throw new ClientInputError(`${method} cwd does not exist`);
+    throw new ClientInputError(`${method} ${label} does not exist`);
   }
-  if (!cwdStat.isDirectory()) {
-    throw new ClientInputError(`${method} cwd must be a directory`);
+  if (!directoryStat.isDirectory()) {
+    throw new ClientInputError(`${method} ${label} must be a directory`);
   }
 }

@@ -10,6 +10,8 @@ import type {
   ModelInfo,
   PlanStep,
   ServerMessage,
+  SkillInfo,
+  SkillsDirectoryEntry,
   TurnPlan,
   ThreadSettings,
   UserQuestion,
@@ -147,7 +149,13 @@ export function normalizeThread(value: unknown): CodexThread | null {
   const turns = rawTurns
     ?.map(normalizeTurn)
     .filter((turn): turn is CodexTurn => turn !== null);
-  return { ...value, id: value.id, ...(turns ? { turns } : {}) };
+  const thread: CodexThread = { ...value, id: value.id, ...(turns ? { turns } : {}) };
+  if (typeof value.isPinned === "boolean") {
+    thread.isPinned = value.isPinned;
+  } else {
+    delete thread.isPinned;
+  }
+  return thread;
 }
 
 export function extractThreads(result: unknown): CodexThread[] {
@@ -253,6 +261,58 @@ export function extractModels(result: unknown): ModelInfo[] {
       isDefault: typeof entry.isDefault === "boolean" ? entry.isDefault : undefined,
     }];
   });
+}
+
+function normalizeSkillInfo(value: unknown): SkillInfo | null {
+  if (
+    !isRecord(value) ||
+    typeof value.name !== "string" ||
+    typeof value.description !== "string" ||
+    (value.shortDescription !== undefined && typeof value.shortDescription !== "string") ||
+    (value.scope !== "user" &&
+      value.scope !== "repo" &&
+      value.scope !== "system" &&
+      value.scope !== "admin") ||
+    typeof value.enabled !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    name: value.name,
+    description: value.description,
+    ...(value.shortDescription !== undefined
+      ? { shortDescription: value.shortDescription }
+      : {}),
+    scope: value.scope,
+    enabled: value.enabled,
+  };
+}
+
+function normalizeSkillsDirectoryEntry(value: unknown): SkillsDirectoryEntry | null {
+  if (
+    !isRecord(value) ||
+    typeof value.cwd !== "string" ||
+    !Array.isArray(value.skills) ||
+    !Number.isInteger(value.errorCount) ||
+    (value.errorCount as number) < 0
+  ) {
+    return null;
+  }
+  const skills = value.skills
+    .map(normalizeSkillInfo)
+    .filter((skill): skill is SkillInfo => skill !== null);
+  return {
+    cwd: value.cwd,
+    skills,
+    errorCount: value.errorCount as number,
+  };
+}
+
+export function extractSkillsDirectory(result: unknown): SkillsDirectoryEntry[] {
+  if (!isRecord(result) || !Array.isArray(result.data)) return [];
+  return result.data
+    .map(normalizeSkillsDirectoryEntry)
+    .filter((entry): entry is SkillsDirectoryEntry => entry !== null);
 }
 
 export function sandboxMode(value: unknown): ThreadSettings["sandbox"] | undefined {

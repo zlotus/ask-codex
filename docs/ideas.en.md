@@ -2,7 +2,7 @@
 
 [简体中文](ideas.md) | **English**
 
-Last reviewed: 2026-07-26
+Last reviewed: 2026-08-01
 
 These are candidates for future planning, not promises, accepted decisions, or
 an ordered roadmap. Move an idea into `progress.en.md` only when it becomes near
@@ -15,8 +15,7 @@ tracking or durable rationale.
   many history pages and large disclosures in one browser session.
 - Optional safe ANSI color rendering for command output; control sequences are
   currently stripped to readable text.
-- Native turn steering using `expectedTurnId`, plus thread rename and fork
-  actions.
+- Native turn steering using `expectedTurnId`, plus thread fork actions.
 - Token usage and rate-limit views that remain useful on mobile.
 
 ## Navigation And Skills

@@ -197,4 +197,17 @@ describe("server security", () => {
     await expect(validateRpcCwd("thread/list", { cwd: "relative-is-irrelevant" }))
       .resolves.toBeUndefined();
   });
+
+  it("validates every requested skills/list directory", async () => {
+    await expect(validateRpcCwd("skills/list", { cwds: [process.cwd()] }))
+      .resolves.toBeUndefined();
+    await expect(validateRpcCwd("skills/list", {
+      cwds: [join(process.cwd(), "does-not-exist")],
+    })).rejects.toThrow("cwds[0] does not exist");
+    await expect(validateRpcCwd("skills/list", {
+      cwds: [join(process.cwd(), "package.json")],
+    })).rejects.toThrow("cwds[0] must be a directory");
+    await expect(validateRpcCwd("skills/list", { cwds: ["relative/path"] }))
+      .rejects.toThrow("cwds[0] must be an absolute path");
+  });
 });

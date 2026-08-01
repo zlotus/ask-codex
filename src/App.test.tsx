@@ -96,6 +96,7 @@ function installRpcFixture() {
       }],
     };
     if (method === "config/read") return { model: "configured-model", effort: "max" };
+    if (method === "skills/list") return { data: [] };
     if (method === "thread/start") {
       return { thread: newThread };
     }
@@ -290,6 +291,247 @@ describe("App thread settings lifecycle", () => {
     expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
   });
 
+  it("renames and pins a thread through the bounded metadata RPCs", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Thread name" }), {
+      target: { value: "  Project navigation  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/name/set", {
+      threadId: "thread-existing",
+      name: "Project navigation",
+    }));
+    await screen.findByRole("button", { name: "Project navigation" });
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Project navigation" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/metadata/update", {
+      threadId: "thread-existing",
+      isPinned: true,
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Project navigation" }));
+    expect(screen.getByRole("menuitem", { name: "Unpin" })).toBeInTheDocument();
+  });
+
+  it("loads the read-only Skills directory on demand and refreshes invalidated data", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "skills/list") {
+        return Promise.resolve({
+          data: [{
+            cwd: "/workspace/existing",
+            skills: [{
+              name: "repo-review",
+              description: "Review repository changes",
+              shortDescription: "Review changes",
+              scope: "repo",
+              enabled: true,
+              path: "/private/repo-review/SKILL.md",
+            }],
+            errorCount: 1,
+          }],
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    expect(socket.rpc).not.toHaveBeenCalledWith("skills/list", expect.anything());
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("skills/list", {
+      cwds: expect.arrayContaining([
+        "/workspace/existing",
+        "/workspace/archived",
+      ]),
+    }));
+    expect(await screen.findByText("repo-review")).toBeInTheDocument();
+    expect(screen.getByText("Review changes")).toBeInTheDocument();
+    expect(screen.getByText("repo")).toBeInTheDocument();
+    expect(screen.getByText("Enabled")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("/private/repo-review/SKILL.md");
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh skills" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("skills/list", {
+      cwds: expect.any(Array),
+      forceReload: true,
+    }));
+
+    const callsBeforeInvalidation = socket.rpc.mock.calls.filter(([method]) => method === "skills/list").length;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "skills/changed",
+      params: {},
+    }));
+    await waitFor(() => expect(
+      socket.rpc.mock.calls.filter(([method]) => method === "skills/list").length,
+    ).toBe(callsBeforeInvalidation + 1));
+
+    const callsAfterInvalidation = socket.rpc.mock.calls
+      .filter(([method]) => method === "skills/list").length;
+    fireEvent.click(screen.getByRole("tab", { name: "Active" }));
+    fireEvent.click(screen.getByRole("button", { name: "Existing thread" }));
+    await screen.findByTitle("Existing thread");
+    await waitFor(() => expect(
+      socket.rpc.mock.calls.filter(([method]) => method === "skills/list").length,
+    ).toBe(callsAfterInvalidation + 1));
+    const latestSkillsCall = socket.rpc.mock.calls.filter(([method]) => method === "skills/list").at(-1);
+    expect(latestSkillsCall?.[1]).not.toHaveProperty("forceReload");
+
+    const callsBeforeReentry = socket.rpc.mock.calls.filter(([method]) => method === "skills/list").length;
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "skills/list")).toHaveLength(
+      callsBeforeReentry,
+    );
+  });
+
+  it("keeps valid Skills visible when an archived project directory no longer exists", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method !== "skills/list") return baseRpc?.(method, params);
+      const cwds = (params as { cwds: string[] }).cwds;
+      const archivedIndex = cwds.indexOf("/workspace/archived");
+      if (archivedIndex >= 0) {
+        return Promise.reject(new Error(`skills/list cwds[${archivedIndex}] does not exist`));
+      }
+      return Promise.resolve({
+        data: cwds.map((cwd) => ({
+          cwd,
+          skills: cwd === "/workspace/existing"
+            ? [{
+                name: "repo-review",
+                description: "Review repository changes",
+                scope: "repo",
+                enabled: true,
+              }]
+            : [],
+          errorCount: 0,
+        })),
+      });
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+
+    expect(await screen.findByText("repo-review")).toBeInTheDocument();
+    expect(screen.getByText("/workspace/archived")).toBeInTheDocument();
+    expect(screen.getByText("1 skill could not be loaded")).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load Skills/)).not.toBeInTheDocument();
+
+    const calls = socket.rpc.mock.calls.filter(([method]) => method === "skills/list");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.[1]).toEqual({
+      cwds: expect.arrayContaining(["/workspace/existing", "/workspace/archived"]),
+    });
+    expect(calls[1]?.[1]).toEqual({
+      cwds: expect.not.arrayContaining(["/workspace/archived"]),
+    });
+  });
+
+  it("does not fall back to the session cwd when every project directory is unavailable", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method !== "skills/list") return baseRpc?.(method, params);
+      return Promise.reject(new Error("skills/list cwds[0] does not exist"));
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ready: true,
+      defaultCwd: existingThread.cwd,
+      authRequired: false,
+    }), { status: 200 })));
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+
+    await waitFor(() => expect(screen.getAllByText("1 skill could not be loaded")).toHaveLength(2));
+    const calls = socket.rpc.mock.calls.filter(([method]) => method === "skills/list");
+    expect(calls).toHaveLength(2);
+    expect(calls.map(([, params]) => (params as { cwds: string[] }).cwds.length)).toEqual([2, 1]);
+    expect(calls.some(([, params]) => (params as { cwds: string[] }).cwds.length === 0)).toBe(false);
+  });
+
+  it("shows an explicit Skills error and retries only through refresh after the first load", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "skills/list"
+        ? Promise.reject(new Error("temporary Skills failure"))
+        : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(await screen.findByText("Skills could not be loaded")).toBeInTheDocument();
+    expect(screen.queryByText("No skills found")).not.toBeInTheDocument();
+
+    const callsAfterFailure = socket.rpc.mock.calls.filter(([method]) => method === "skills/list").length;
+    fireEvent.click(screen.getByRole("tab", { name: "Active" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "skills/list")).toHaveLength(
+      callsAfterFailure,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh skills" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("skills/list", {
+      cwds: expect.any(Array),
+      forceReload: true,
+    }));
+  });
+
+  it("keeps the current cwd inside the bounded Skills project selection", async () => {
+    const projects = Array.from({ length: 18 }, (_, index) => ({
+      ...existingThread,
+      id: `thread-project-${index}`,
+      name: `Project ${index}`,
+      cwd: `/workspace/project-${index}`,
+    }));
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list") {
+        return Promise.resolve({
+          data: (params as { archived?: boolean } | undefined)?.archived ? [] : projects,
+          nextCursor: null,
+        });
+      }
+      if (method === "skills/list") {
+        const cwds = (params as { cwds: string[] }).cwds;
+        return Promise.resolve({
+          data: cwds.map((cwd) => ({ cwd, skills: [], errorCount: 0 })),
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Project 17" });
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("skills/list", {
+      cwds: expect.any(Array),
+    }));
+
+    const request = socket.rpc.mock.calls.find(([method]) => method === "skills/list")?.[1] as {
+      cwds: string[];
+    };
+    expect(request.cwds).toHaveLength(16);
+    expect(request.cwds[0]).toBe("/workspace/default-one");
+    expect(request.cwds).not.toContain("/workspace/project-15");
+    expect(screen.getByText("Showing the 16 most relevant projects")).toBeInTheDocument();
+  });
+
   it("keeps a new thread visible until the canonical list hydrates its first-turn metadata", async () => {
     let threadStarted = false;
     let completionStarted = false;
@@ -368,6 +610,49 @@ describe("App thread settings lifecycle", () => {
     expect(completionListCalls).toBe(2);
     expect(hydratedThread.querySelector(".thread-meta")).not.toHaveTextContent("thread-n");
     expect(document.querySelector(".toolbar-title strong")).toHaveTextContent("First request");
+  });
+
+  it("reloads the thread list when a name notification races the initial response", async () => {
+    let activeListCalls = 0;
+    let resolveInitialList: ((value: unknown) => void) | undefined;
+    let markInitialListRequested: (() => void) | undefined;
+    const initialList = new Promise<unknown>((resolve) => {
+      resolveInitialList = resolve;
+    });
+    const initialListRequested = new Promise<void>((resolve) => {
+      markInitialListRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        activeListCalls += 1;
+        if (activeListCalls === 1) {
+          markInitialListRequested?.();
+          return initialList;
+        }
+        return Promise.resolve({
+          data: [{ ...existingThread, name: "Renamed during load" }],
+          nextCursor: null,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await initialListRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/name/updated",
+      params: { threadId: existingThread.id, threadName: "Renamed during load" },
+    }));
+    await act(async () => {
+      resolveInitialList?.({ data: [], nextCursor: null });
+      await initialList;
+    });
+
+    expect(await screen.findByRole("button", { name: "Renamed during load" })).toBeInTheDocument();
+    expect(activeListCalls).toBeGreaterThanOrEqual(2);
   });
 
   it("ignores an older thread-list refresh that finishes after first-turn hydration", async () => {

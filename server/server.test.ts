@@ -6,9 +6,10 @@ import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  CodexGateway,
-  CodexStatusEvent,
+import {
+  CodexRpcError,
+  type CodexGateway,
+  type CodexStatusEvent,
 } from "./codex-app-server.js";
 import { AskCodexServer, loadConfig, type AskCodexConfig } from "./server.js";
 import type { CodexStatus, RpcId, ServerMessage } from "./types.js";
@@ -1056,6 +1057,124 @@ describe("AskCodexServer", () => {
       error: { code: -32602, message: "turn/start cwd must be an absolute path" },
     });
     expect(gateway.request).not.toHaveBeenCalled();
+  });
+
+  it("validates skills/list directories and returns only projected display metadata", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockResolvedValueOnce({
+      data: [{
+        cwd: process.cwd(),
+        skills: [{
+          name: "skill-creator",
+          description: "Create Codex skills",
+          shortDescription: "Legacy skills summary",
+          interface: {
+            shortDescription: "Create skills",
+            defaultPrompt: "Read private instructions",
+          },
+          path: "/private/skill-creator/SKILL.md",
+          scope: "repo",
+          enabled: true,
+          dependencies: {
+            tools: [{ type: "shell", command: "private-command", value: "secret" }],
+          },
+        }],
+        errors: [],
+      }],
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "skills-list",
+      method: "skills/list",
+      params: { cwds: [process.cwd()], forceReload: true },
+    }));
+    const result = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "skills-list",
+    );
+    expect(gateway.request).toHaveBeenCalledWith("skills/list", {
+      cwds: [process.cwd()],
+      forceReload: true,
+    });
+    expect(result).toEqual({
+      type: "rpcResult",
+      id: "skills-list",
+      result: {
+        data: [{
+          cwd: process.cwd(),
+          skills: [{
+            name: "skill-creator",
+            description: "Create Codex skills",
+            shortDescription: "Create skills",
+            scope: "repo",
+            enabled: true,
+          }],
+          errorCount: 0,
+        }],
+      },
+    });
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "skills-list-file-cwd",
+      method: "skills/list",
+      params: { cwds: [`${process.cwd()}/package.json`] },
+    }));
+    const error = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "skills-list-file-cwd",
+    );
+    expect(error).toEqual({
+      type: "rpcError",
+      id: "skills-list-file-cwd",
+      error: { code: -32602, message: "skills/list cwds[0] must be a directory" },
+    });
+    expect(gateway.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("redacts top-level skills/list app-server errors while preserving their code", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockRejectedValueOnce(new CodexRpcError({
+      code: -32_601,
+      message: "Could not read /private/skills/broken/SKILL.md",
+      data: {
+        path: "/private/skills/broken/SKILL.md",
+        token: "secret",
+      },
+    }));
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "skills-list-error",
+      method: "skills/list",
+      params: { cwds: [process.cwd()] },
+    }));
+    const error = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "skills-list-error",
+    );
+
+    expect(error).toEqual({
+      type: "rpcError",
+      id: "skills-list-error",
+      error: {
+        code: -32_601,
+        message: "Codex app-server could not list skills",
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("/private");
+    expect(JSON.stringify(error)).not.toContain("secret");
   });
 
   it("fails closed for granular permissions and MCP elicitations", async () => {

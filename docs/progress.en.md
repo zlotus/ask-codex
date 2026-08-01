@@ -6,14 +6,14 @@ Last reviewed: 2026-08-01
 
 ## Current Milestone
 
-Bounded thread lifecycle management is implemented. The sidebar separates
-unarchived and archived threads into Active and Archived views, and opens one
-shared action menu from desktop right-click, mobile long press, or an explicit
-action button; a long press never deletes by itself. Idle threads can be
-archived or unarchived, and can be permanently deleted after confirmation,
-while threads with a turn in progress are protected. The next milestone returns
-to project-oriented navigation and read-only discovery without changing the
-manual-approval or remote-access trust model.
+Project-oriented thread navigation and read-only Skills discovery are
+implemented. Active and Archived organize threads by working directory and put
+pinned threads first within each group. The shared action menu adds rename,
+pin, and unpin while turns in progress continue to restrict only archive and
+delete. A third Skills tab presents bounded read-only metadata by working
+directory through the official `skills/list` method. The next milestone moves
+to cross-thread Activity and usage visibility without changing the trust model
+for manual approval, remote access, or host capabilities.
 
 ## Current Baseline
 
@@ -29,15 +29,26 @@ The implementation currently provides:
   metadata. Concurrent list refreshes apply only the latest result, and turn
   completion hydrates the name, preview, and time so a sparse status notification
   cannot make the entry disappear or degrade to a UUID.
-- Active and Archived views with one thread-action menu: desktop right-click,
-  a 550 ms mobile long press, and an explicit `...` entry point all open the
-  same actions. Threads with a turn in progress cannot be archived or deleted;
-  other idle threads can be archived, archived threads can be restored, and
-  either kind of idle thread can be deleted after a confirmation warns that the
-  thread and descendant sessions may be permanently removed. Cross-client
-  archive, restore, and delete notifications reconcile the lists and current
-  selection. Deletion also removes that thread's browser-local image previews
-  from memory and IndexedDB.
+- Active and Archived group threads by exact cwd and place pinned threads first
+  within each group while preserving the existing order of the rest. One thread
+  action menu opens from desktop right-click, a 550 ms mobile long press, or the
+  explicit `...` entry point. Rename, pin, and unpin remain available while a
+  thread has a turn in progress. Threads with active turns still cannot be
+  archived or deleted; other idle threads can be archived, archived threads can
+  be restored, and either kind of idle thread can be deleted after a confirmation
+  warns that the thread and descendant sessions may be permanently removed.
+  Cross-client name, archive, restore, and delete notifications reconcile the
+  lists and current selection. Deletion also removes that thread's browser-local image
+  previews from memory and IndexedDB.
+- A third read-only Skills tab groups skill names, descriptions,
+  `user`/`repo`/`system`/`admin` scopes, and enabled states by cwd, and reports
+  load failures only as a count. The directory starts loading when the tab is
+  first opened. Manual refresh sends `forceReload: true`, while a
+  `skills/changed` notification rescans a directory that has already been
+  loaded. At most 16 directories are loaded with the current cwd first; a
+  deleted historical directory degrades independently instead of hiding valid
+  projects. Separate generation guards prevent older Skills or thread-list
+  responses from replacing newer state.
 - Incremental recent-turn loading through `thread/turns/list`, adaptive page
   sizing, retryable older pages, and summary fallback. App-server chooses the
   default history contract for new threads instead of Ask Codex forcing the
@@ -77,7 +88,13 @@ The implementation currently provides:
   longer resends flattened sandbox state.
 - An Express/WebSocket gateway that starts `codex app-server` over JSONL stdio,
   rebuilds parameters for an explicit RPC allowlist, and routes app-server
-  requests to the owning browser.
+  requests to the owning browser. `thread/name/set`, `thread/metadata/update`,
+  and `skills/list` accept only bounded, field-by-field reconstructed
+  parameters. The Skills response projects only name, description, optional
+  flattened `interface.shortDescription`, scope, enabled state, and an error
+  count per cwd; skill paths, dependencies, remaining interface metadata, and
+  specific error text do not reach the browser. Top-level Skills RPC failures
+  from the upstream app-server also use a fixed redacted message.
 - Composer support for selecting, pasting, previewing, removing, and sending
   PNG, JPEG, and WebP images, including image-only turns, with the entry point
   enabled only when a model explicitly declares image input. Image bytes use
@@ -101,9 +118,10 @@ The implementation currently provides:
 - Deterministic desktop and mobile production visual fixtures that do not
   create a real Codex turn.
 
-This file describes the current verified handoff baseline on `main`. After
-pulling the latest `origin/main`, another device can resume from the ordered
-outcomes in `Next` without relying on prior chat history.
+This file describes the current verified handoff baseline on `main`. Another
+device can pull the latest `origin/main` and resume from `Next` without relying
+on prior chat history; only checks explicitly listed under `Verification` count
+as executed.
 
 ## Known Gaps
 
@@ -111,20 +129,20 @@ outcomes in `Next` without relying on prior chat history.
   not support `thread/items/list`; they remain summary-only when a full single
   turn still exceeds the gateway limit. A paginated thread also cannot recover
   an item that by itself exceeds 1 MiB by shrinking the page further.
-- Paginated threads in Codex CLI 0.145.0 do not support fork, rollback, or
-  detached review. Ask Codex does not currently expose those operations, but
-  the restriction still applies to another client operating on the same
-  native thread.
+- When last verified with Codex CLI 0.145.0, paginated threads did not support
+  fork, rollback, or detached review. Ask Codex does not currently expose those
+  operations, but the restriction still applies to another client operating on
+  the same native thread.
 - Loaded history pages remain mounted. Heavy closed disclosures are lazy and
   Markdown/diff work is bounded, but very long manually expanded histories do
   not yet use viewport virtualization or an aggregate DOM budget.
-- Completed `commandExecution` history does not contain approval reasons in
-  Codex CLI 0.145.0. Ask Codex can retain reasons captured during the current
-  browser session and through in-session resync, but cannot reconstruct them
-  after a page reload or on another device from native thread history alone.
-- The sidebar still lists individual threads without project grouping. There is
-  no Skills view, independent cross-thread Activity view, usage panel, thread
-  rename, or fork action.
+- When last verified with Codex CLI 0.145.0, completed `commandExecution`
+  history did not contain approval reasons. Ask Codex can retain reasons
+  captured during the current browser session and through in-session resync,
+  but cannot reconstruct them after a page reload or on another device from
+  native thread history alone.
+- There is no independent cross-thread Activity view, usage panel, or thread
+  fork action.
 - Image attachments are deleted after a turn completes. Normal subsequent
   Codex context is unaffected, but another native client cannot use the deleted
   `localImage.path` to edit history and reattach the original image; persistent
@@ -138,10 +156,12 @@ outcomes in `Next` without relying on prior chat history.
 
 ## Next
 
-1. Group threads by working directory and add a read-only Skills catalog backed
-   only by the official `skills/list` method.
-2. Add a read-only Activity surface before considering any new host execution
-   capability.
+1. Add an independent read-only Activity surface for viewing current and recent
+   work across threads without claiming thread ownership or changing approval
+   routing.
+2. Add a read-only usage panel through an explicitly allowed and narrowly
+   projected official app-server method; do not add new host execution
+   capabilities first.
 
 Later candidates remain in [`ideas.en.md`](ideas.en.md); their presence there is
 not a delivery commitment.
@@ -167,8 +187,10 @@ not a delivery commitment.
   sizes, ordering, and lifecycle metadata needed for restoration, never the
   token, host paths, original filenames, or one-use attachment ids;
   local-storage failure must not affect an accepted turn.
-- Skills and future host tools must not introduce path or command pass-through
-  around the gateway allowlists.
+- Skills and future host tools must not bypass the gateway allowlists. The
+  Skills directory must continue stripping skill paths, dependencies, interface
+  metadata other than the flattened `interface.shortDescription`, and error
+  text instead of introducing path or command pass-through.
 - Automatic recovery and read-only views must not claim thread ownership or
   redirect approval requests away from the browser that started or resumed it.
 - A browser terminal would bypass Codex approval and therefore requires a
@@ -179,20 +201,16 @@ not a delivery commitment.
 Verification for this round was completed on 2026-08-01 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
+- Current experimental TypeScript bindings were generated from the installed
+  CLI and compared for `thread/name/set`, `thread/metadata/update`,
+  `skills/list`, `skills/changed`, and the related thread and skill fields.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 28 test files and 353 tests, including
-  regressions for missing new-thread list entries, out-of-order refreshes,
-  sparse notifications, and lifecycle mutations. Server tests ran in an
-  environment that permits loopback socket binding.
+- `NODE_ENV=test npm test` passed: 28 test files and 394 tests. Server tests ran
+  in an environment that permits loopback socket binding.
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-thread-race npm run check:visual`
-  passed against the current production build. Desktop and 390x844 mobile
-  fixtures confirmed zero gaps between consecutive activities and exactly one
-  1px rule at every adjacent boundary; first-class collaboration, subagent, and
-  image-view activities all rendered. Empty reasoning stayed out of the stream,
-  and the fixed status slot reused the same root across Active, Idle, and
-  completed states while its internal row, icon, label, position, and height
-  stayed stable during the Active/Idle transition. No horizontal overflow,
-  clipped rich content, overlapping footer content, console errors, or page
-  errors were found. Deterministic browser fixtures intercepted every RPC and
-  created no real Codex turn.
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-project-nav-final npm run
+  check:visual` passed against the current production build. Desktop and
+  390x844 mobile fixtures verified project grouping, in-group pinning, thread
+  menus, Rename, Archived, and Skills layouts without horizontal overflow,
+  clipping, content overlap, console errors, or page errors. Deterministic
+  browser fixtures intercepted every RPC and created no real Codex turn.

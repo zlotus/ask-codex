@@ -18,6 +18,7 @@ import type {
   ModelInfo,
   NotificationMessage,
   ServerRequestMessage,
+  SkillsDirectoryEntry,
   ThreadSettings,
   ToastMessage,
 } from "./types/protocol";
@@ -29,6 +30,7 @@ import {
   extractThreads,
   extractTurn,
   extractModels,
+  extractSkillsDirectory,
   isRecord,
   normalizeItem,
   normalizeThread,
@@ -91,7 +93,21 @@ const TURN_PAGE_SIZE = 10;
 const TURN_ITEM_PAGE_SIZE = 10;
 const MAX_REASONING_PARTS = 16;
 const MAX_PENDING_CANONICAL_THREADS = 8;
+const MAX_SKILLS_PROJECT_CWDS = 16;
 const THREAD_HYDRATION_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
+
+interface SkillsProjectSelection {
+  cwds: string[];
+  truncated: boolean;
+}
+
+function unavailableSkillsCwdIndex(error: unknown, cwdCount: number): number | null {
+  const match = /^skills\/list cwds\[(\d+)\] (?:does not exist|must be a directory)$/
+    .exec(errorMessage(error));
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) && index >= 0 && index < cwdCount ? index : null;
+}
 
 interface ThreadDialogState {
   mode: "new" | "existing";
@@ -167,6 +183,11 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [loadingThreads, setLoadingThreads] = useState(false);
+  const [skillsDirectory, setSkillsDirectory] = useState<SkillsDirectoryEntry[]>([]);
+  const [loadingSkills, setLoadingSkills] = useState(false);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [skillsInvalidationSignal, setSkillsInvalidationSignal] = useState(0);
   const [loadingThread, setLoadingThread] = useState(false);
   const [threadLoadError, setThreadLoadError] = useState<string | null>(null);
   const [resyncSignal, setResyncSignal] = useState(0);
@@ -191,6 +212,9 @@ export default function App() {
   const settingsLoadGenerationRef = useRef(0);
   const threadListRefreshGenerationRef = useRef(0);
   const threadListMutationEpochRef = useRef(0);
+  const skillsLoadGenerationRef = useRef(0);
+  const skillsLoadedRef = useRef(false);
+  const handledSkillsInvalidationRef = useRef(0);
   const pendingCanonicalThreadIdsRef = useRef(new Set<string>());
   const imagePreviewsMountedRef = useRef(false);
   const imagePreviewRegistryRef = useRef<SessionImagePreviewRegistry | null>(null);
@@ -205,6 +229,35 @@ export default function App() {
     () => ({ ...state.settings, ...nextTurnSettings }),
     [nextTurnSettings, state.settings],
   );
+  const projectCwdsKey = useMemo(() => {
+    const seen = new Set<string>();
+    const cwds: string[] = [];
+    let truncated = false;
+    const add = (value: string | undefined): void => {
+      const cwd = value?.trim();
+      if (!cwd || seen.has(cwd)) return;
+      seen.add(cwd);
+      if (cwds.length < MAX_SKILLS_PROJECT_CWDS) cwds.push(cwd);
+      else truncated = true;
+    };
+    add(state.settings.cwd);
+    add(state.currentThread?.cwd);
+    for (const thread of state.threads) add(thread.cwd);
+    for (const thread of state.archivedThreads) add(thread.cwd);
+    add(bootstrap?.defaultCwd);
+    return JSON.stringify({ cwds, truncated });
+  }, [
+    bootstrap?.defaultCwd,
+    state.archivedThreads,
+    state.currentThread?.cwd,
+    state.settings.cwd,
+    state.threads,
+  ]);
+  const projectSelection = useMemo<SkillsProjectSelection>(
+    () => JSON.parse(projectCwdsKey) as SkillsProjectSelection,
+    [projectCwdsKey],
+  );
+  const projectCwds = projectSelection.cwds;
 
   useEffect(() => {
     selectedThreadIdRef.current = state.selectedThreadId;
@@ -354,10 +407,16 @@ export default function App() {
         return;
       }
       case "thread/name/updated": {
-        if (threadId) dispatch({
-          type: "upsertThread",
-          thread: { id: threadId, name: readString(params.threadName) ?? readString(params.name) },
-        });
+        const name = readString(params.threadName) ?? readString(params.name);
+        if (threadId) {
+          threadListMutationEpochRef.current += 1;
+          dispatch({
+            type: "updateThreadMetadata",
+            threadId,
+            metadata: { name },
+          });
+          setThreadHydrationSignal((current) => current + 1);
+        }
         return;
       }
       case "thread/status/changed": {
@@ -502,6 +561,12 @@ export default function App() {
   }, [invalidateSelectedThread, removeImagePreviewsForThread]);
 
   const onNotification = useCallback((message: NotificationMessage) => {
+    if (message.method === "skills/changed") {
+      if (skillsLoadedRef.current) {
+        setSkillsInvalidationSignal((current) => current + 1);
+      }
+      return;
+    }
     const coordinator = resyncCoordinatorRef.current;
     if (message.method === "gateway/resyncRequired") {
       const params = paramsRecord(message.params);
@@ -682,6 +747,85 @@ export default function App() {
       }
     }
   }, [connection, rpc, showToast]);
+
+  const loadSkillsDirectory = useCallback(async (forceReload = false) => {
+    if (connection !== "connected") return;
+    const generation = ++skillsLoadGenerationRef.current;
+    skillsLoadedRef.current = true;
+    setSkillsLoaded(true);
+    setLoadingSkills(true);
+    setSkillsError(null);
+    try {
+      const unavailableCwds = new Set<string>();
+      let remainingCwds = [...projectCwds];
+      let directory: SkillsDirectoryEntry[] = [];
+
+      while (true) {
+        try {
+          const result = await rpc("skills/list", {
+            cwds: remainingCwds,
+            ...(forceReload ? { forceReload: true } : {}),
+          });
+          directory = extractSkillsDirectory(result);
+          break;
+        } catch (error) {
+          const unavailableIndex = unavailableSkillsCwdIndex(error, remainingCwds.length);
+          if (unavailableIndex === null) throw error;
+          unavailableCwds.add(remainingCwds[unavailableIndex]);
+          remainingCwds = remainingCwds.filter((_, index) => index !== unavailableIndex);
+          if (remainingCwds.length === 0 || generation !== skillsLoadGenerationRef.current) break;
+        }
+      }
+
+      if (generation !== skillsLoadGenerationRef.current) return;
+      setSkillsError(null);
+      if (projectCwds.length === 0) {
+        setSkillsDirectory(directory);
+      } else {
+        const directoryByCwd = new Map(directory.map((entry) => [entry.cwd, entry]));
+        setSkillsDirectory(projectCwds.flatMap((cwd) => {
+          if (unavailableCwds.has(cwd)) {
+            return [{ cwd, skills: [], errorCount: 1 }];
+          }
+          const entry = directoryByCwd.get(cwd);
+          return entry ? [entry] : [];
+        }));
+      }
+    } catch (error) {
+      if (generation === skillsLoadGenerationRef.current) {
+        setSkillsError("Skills could not be loaded");
+        showToast(`Could not load Skills: ${errorMessage(error)}`);
+      }
+    } finally {
+      if (generation === skillsLoadGenerationRef.current) {
+        setLoadingSkills(false);
+      }
+    }
+  }, [connection, projectCwds, rpc, showToast]);
+
+  useEffect(() => {
+    if (
+      connection !== "connected" ||
+      !skillsLoadedRef.current ||
+      skillsInvalidationSignal !== handledSkillsInvalidationRef.current
+    ) {
+      return;
+    }
+    void loadSkillsDirectory();
+  }, [connection, loadSkillsDirectory, skillsInvalidationSignal]);
+
+  useEffect(() => {
+    if (
+      connection !== "connected" ||
+      skillsInvalidationSignal === 0 ||
+      skillsInvalidationSignal === handledSkillsInvalidationRef.current ||
+      !skillsLoadedRef.current
+    ) {
+      return;
+    }
+    handledSkillsInvalidationRef.current = skillsInvalidationSignal;
+    void loadSkillsDirectory(true);
+  }, [connection, loadSkillsDirectory, skillsInvalidationSignal]);
 
   useEffect(() => {
     if (connection !== "connected" || threadHydrationSignal === 0) return;
@@ -1137,6 +1281,36 @@ export default function App() {
     );
   }, [state.activeTurnId, state.archivedThreads, state.currentThread?.id, state.threads]);
 
+  const renameThread = useCallback(async (threadId: string, requestedName: string) => {
+    const name = requestedName.trim();
+    if (!name) return;
+    try {
+      await rpc("thread/name/set", { threadId, name });
+      threadListMutationEpochRef.current += 1;
+      dispatch({ type: "updateThreadMetadata", threadId, metadata: { name } });
+      showToast("Thread renamed", "success");
+    } catch (error) {
+      showToast(errorMessage(error));
+    }
+  }, [rpc, showToast]);
+
+  const setThreadPinned = useCallback(async (threadId: string, isPinned: boolean) => {
+    try {
+      const result = await rpc("thread/metadata/update", { threadId, isPinned });
+      const returnedThread = extractThread(result);
+      const nextPinned = returnedThread?.isPinned ?? isPinned;
+      threadListMutationEpochRef.current += 1;
+      dispatch({
+        type: "updateThreadMetadata",
+        threadId,
+        metadata: { isPinned: nextPinned },
+      });
+      showToast(nextPinned ? "Thread pinned" : "Thread unpinned", "success");
+    } catch (error) {
+      showToast(errorMessage(error));
+    }
+  }, [rpc, showToast]);
+
   const archiveThread = useCallback(async (threadId: string) => {
     if (isThreadActive(threadId)) {
       showToast("Active threads cannot be archived");
@@ -1227,14 +1401,25 @@ export default function App() {
         open={sidebarOpen}
         loading={loadingThreads}
         connection={connection}
+        skills={skillsDirectory}
+        skillsLoading={loadingSkills}
+        skillsLoaded={skillsLoaded}
+        skillsError={skillsError}
+        skillsTruncated={projectSelection.truncated}
         isThreadActive={isThreadActive}
         onSearch={setSearch}
         onSelect={(threadId) => void selectThread(threadId)}
         onArchive={(threadId) => void archiveThread(threadId)}
         onUnarchive={(threadId) => void unarchiveThread(threadId)}
         onDelete={(threadId) => void deleteThread(threadId)}
+        onRename={(threadId, name) => void renameThread(threadId, name)}
+        onPin={(threadId, isPinned) => void setThreadPinned(threadId, isPinned)}
         onNew={openNewThread}
-        onRefresh={() => void refreshThreads()}
+        onRefresh={(view) => {
+          if (view === "skills") void loadSkillsDirectory(true);
+          else void refreshThreads();
+        }}
+        onSkillsView={() => void loadSkillsDirectory()}
         onClose={() => setSidebarOpen(false)}
         onToken={() => setTokenOpen(true)}
       />

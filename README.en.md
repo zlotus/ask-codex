@@ -17,12 +17,21 @@ events, but it does not get a general-purpose file-serving endpoint.
 
 ## Features
 
-- Create, search, resume, and refresh Codex threads.
-- Manage threads in Active and Archived views. Desktop right-click, mobile long
-  press, and the `...` menu can archive an idle thread from Active, restore a
-  thread from Archived, or permanently delete an idle thread from either view
-  after confirmation. Archive and delete stay unavailable while a thread has a
-  turn in progress.
+- Create, search, resume, and refresh Codex threads. Active and Archived group
+  threads by working directory, with pinned threads first inside each group.
+- Use desktop right-click, mobile long press, or the `...` menu to rename, pin,
+  or unpin a thread, archive an idle thread from Active, restore a thread from
+  Archived, or permanently delete an idle thread from either view after
+  confirmation. Rename and pin actions remain available during an active turn;
+  archive and delete do not.
+- Browse a third, read-only Skills tab that groups official `skills/list`
+  metadata by working directory and shows each skill's name, description,
+  scope, and enabled state. The directory first loads when the tab is opened;
+  manual refresh asks Codex to bypass its cache, and `skills/changed` refreshes
+  a directory that has already been opened. The gateway strictly rebuilds
+  request parameters, flattens only `interface.shortDescription`, and strips
+  skill paths, dependencies, the remaining interface metadata, and specific
+  error text from the response.
 - Load long thread histories incrementally. Default history keeps bounded
   fallback behavior, while existing paginated history can recover oversized
   turns by item.
@@ -71,13 +80,13 @@ events, but it does not get a general-purpose file-serving endpoint.
 
 ### Mobile
 
-<img src="docs/screenshots/mobile.jpg" alt="Ask Codex mobile interface" width="390">
+<img src="docs/screenshots/mobile.png" alt="Ask Codex mobile interface" width="390">
 
 ## Requirements
 
 - Node.js 22.12 or newer.
 - A recent Codex CLI with the documented app-server interface; the current
-  implementation is verified with 0.145.0.
+  implementation is verified with 0.146.0.
 - An existing Codex login. Run `codex login` first if needed.
 
 The app-server WebSocket transport is experimental. Ask Codex uses the more

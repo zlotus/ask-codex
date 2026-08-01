@@ -38,6 +38,7 @@ export type AppAction =
   | { type: "connection"; state: ConnectionState; detail?: string }
   | { type: "setThreads"; threads: CodexThread[]; protectedThreadIds?: string[] }
   | { type: "setArchivedThreads"; threads: CodexThread[] }
+  | { type: "updateThreadMetadata"; threadId: string; metadata: Partial<Pick<CodexThread, "name" | "isPinned">> }
   | { type: "archiveThread"; threadId: string }
   | { type: "unarchiveThread"; threadId: string; thread?: CodexThread }
   | { type: "deleteThread"; threadId: string }
@@ -568,6 +569,17 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     }
     case "setArchivedThreads":
       return { ...state, archivedThreads: sortThreads(action.threads.map(threadSummary)) };
+    case "updateThreadMetadata": {
+      const update = (thread: CodexThread): CodexThread => (
+        thread.id === action.threadId ? { ...thread, ...action.metadata } : thread
+      );
+      return {
+        ...state,
+        threads: state.threads.map(update),
+        archivedThreads: state.archivedThreads.map(update),
+        currentThread: state.currentThread ? update(state.currentThread) : null,
+      };
+    }
     case "archiveThread": {
       const archived = state.threads.find((thread) => thread.id === action.threadId);
       const moved = {

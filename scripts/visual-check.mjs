@@ -30,6 +30,31 @@ const fixtureThread = {
   createdAt: 1_800_000_000,
   updatedAt: 1_800_000_100,
   status: { type: "idle" },
+  isPinned: true,
+};
+
+const fixtureSiblingThread = {
+  id: "019-visual-sibling-thread",
+  name: "Navigation follow-up",
+  preview: "Verify grouped project navigation",
+  cwd: "/workspace/ask-codex",
+  model: "gpt-5-codex",
+  createdAt: 1_799_999_950,
+  updatedAt: 1_799_999_980,
+  status: { type: "idle" },
+  isPinned: false,
+};
+
+const fixtureOtherProjectThread = {
+  id: "019-visual-other-project",
+  name: "Client dashboard task",
+  preview: "Verify a second project group",
+  cwd: "/workspace/client-dashboard-with-a-long-project-directory-name",
+  model: "gpt-5-codex",
+  createdAt: 1_799_999_700,
+  updatedAt: 1_799_999_750,
+  status: { type: "idle" },
+  isPinned: false,
 };
 
 const fixtureArchivedThread = {
@@ -224,8 +249,38 @@ async function installFixture(page) {
       let result = {};
       if (message.method === "thread/list") {
         result = {
-          data: message.params?.archived ? [fixtureArchivedThread] : [fixtureThread],
+          data: message.params?.archived
+            ? [fixtureArchivedThread]
+            : [fixtureThread, fixtureSiblingThread, fixtureOtherProjectThread],
           nextCursor: null,
+        };
+      } else if (message.method === "skills/list") {
+        result = {
+          data: [{
+            cwd: fixtureThread.cwd,
+            skills: [{
+              name: "project-continuity",
+              description: "Maintain concise repository-owned development context across sessions.",
+              shortDescription: "Maintain cross-session project context.",
+              scope: "repo",
+              enabled: true,
+            }, {
+              name: "disabled-audit-helper-with-a-long-name",
+              description: "A disabled fixture used to verify bounded Skills layout.",
+              scope: "user",
+              enabled: false,
+            }],
+            errorCount: 1,
+          }, {
+            cwd: fixtureOtherProjectThread.cwd,
+            skills: [{
+              name: "release-review",
+              description: "Review release readiness without exposing host paths.",
+              scope: "system",
+              enabled: true,
+            }],
+            errorCount: 0,
+          }],
         };
       } else if (message.method === "model/list") {
         result = {
@@ -679,6 +734,77 @@ async function inspectThreadActionMenu(page) {
   });
 }
 
+async function inspectProjectNavigation(page) {
+  await page.getByRole("button", { name: "Renderer fixture", exact: true }).waitFor();
+  return page.locator(".thread-list").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const groups = [...element.querySelectorAll(".thread-group")];
+    const rows = [...element.querySelectorAll(".thread-row")];
+    const pinnedRow = element.querySelector('[aria-label="Renderer fixture"]');
+    const pinnedIcon = pinnedRow?.querySelector(".thread-pin");
+    const paths = [...element.querySelectorAll(".workspace-group-cwd")];
+    return {
+      groups: groups.length,
+      groupsOpen: groups.every((group) => group.open),
+      rows: rows.length,
+      pinnedVisible: Boolean(pinnedIcon),
+      pathsTruncatedOrContained: paths.every((path) => {
+        const pathBox = path.getBoundingClientRect();
+        return pathBox.left >= box.left && pathBox.right <= box.right &&
+          path.scrollWidth >= path.clientWidth;
+      }),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
+async function inspectRenameThreadDialog(page) {
+  const dialog = page.getByRole("dialog", { name: "Rename thread" });
+  await dialog.waitFor();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Thread name");
+  return dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const input = element.querySelector('[aria-label="Thread name"]');
+    const buttons = [...element.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+    return {
+      fitsViewport: box.left >= 0 && box.top >= 0 &&
+        box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      inputFocused: document.activeElement === input,
+      boundedInput: input?.maxLength === 200,
+      buttonsContained: buttons.every((button) => (
+        button.left >= box.left && button.top >= box.top &&
+        button.right <= box.right && button.bottom <= box.bottom
+      )),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
+async function inspectSkillsDirectory(page) {
+  await page.getByText("project-continuity", { exact: true }).waitFor();
+  return page.locator(".skills-directory").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const groups = [...element.querySelectorAll(".skills-workspace")];
+    const entries = [...element.querySelectorAll(".skill-entry")];
+    const paths = [...element.querySelectorAll(".workspace-group-cwd")];
+    const text = element.textContent ?? "";
+    return {
+      groups: groups.length,
+      groupsOpen: groups.every((group) => group.open),
+      entries: entries.length,
+      hasEnabledState: text.includes("Enabled") && text.includes("Disabled"),
+      hasScopes: text.includes("repo") && text.includes("user") && text.includes("system"),
+      hasBoundedError: /1 skill could not be loaded/i.test(text),
+      noSensitiveFields: !/SKILL\.md|dependencies|interface|private/i.test(text),
+      contentContained: entries.every((entry) => {
+        const entryBox = entry.getBoundingClientRect();
+        return entryBox.left >= box.left && entryBox.right <= box.right;
+      }) && paths.every((path) => path.getBoundingClientRect().right <= box.right),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
 async function inspectDeleteThreadDialog(page) {
   const dialog = page.getByRole("dialog", { name: "Delete thread permanently?" });
   await dialog.waitFor();
@@ -835,10 +961,16 @@ try {
   });
   await page.screenshot({ path: `${outputDirectory}/desktop.png`, fullPage: true });
 
+  const desktopProjectNavigation = await inspectProjectNavigation(page);
   const desktopThreadRow = page.getByRole("button", { name: "Renderer fixture", exact: true });
   await desktopThreadRow.click({ button: "right" });
   const desktopThreadMenu = await inspectThreadActionMenu(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-thread-menu.png`, fullPage: true });
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+  const desktopRenameDialog = await inspectRenameThreadDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-rename-thread.png`, fullPage: true });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await desktopThreadRow.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
   const desktopDeleteDialog = await inspectDeleteThreadDialog(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-delete-thread.png`, fullPage: true });
@@ -849,6 +981,9 @@ try {
     exact: true,
   }).isVisible();
   await page.screenshot({ path: `${outputDirectory}/desktop-archived.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Skills", exact: true }).click();
+  const desktopSkills = await inspectSkillsDirectory(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-skills.png`, fullPage: true });
   await page.getByRole("tab", { name: "Active", exact: true }).click();
 
   await addFixtureImage(page);
@@ -922,6 +1057,7 @@ try {
   await page.getByRole("button", { name: "Open threads" }).click();
   await page.waitForTimeout(250);
   const sidebarBox = await page.locator(".sidebar--open").boundingBox();
+  const mobileProjectNavigation = await inspectProjectNavigation(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sidebar.png`, fullPage: true });
   const mobileMoreButtonVisible = await page.getByRole("button", {
     name: "More actions for Renderer fixture",
@@ -951,6 +1087,10 @@ try {
   const mobileDeleteDialog = await inspectDeleteThreadDialog(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-delete-thread.png`, fullPage: true });
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("tab", { name: "Skills", exact: true }).click();
+  const mobileSkills = await inspectSkillsDirectory(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-skills.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Active", exact: true }).click();
   await page.waitForTimeout(850);
   await selectFixture(page);
   const mobileSentImage = await sendAndInspectFixtureImage(page);
@@ -989,9 +1129,12 @@ try {
       sentImage: desktopSentImage,
       reloadedImage: desktopReloadedImage,
       dialog: desktopDialog,
+      projectNavigation: desktopProjectNavigation,
       threadMenu: desktopThreadMenu,
+      renameThreadDialog: desktopRenameDialog,
       deleteThreadDialog: desktopDeleteDialog,
       archivedVisible: desktopArchivedVisible,
+      skills: desktopSkills,
       rich: desktopRich,
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
@@ -1003,8 +1146,10 @@ try {
       sentImage: mobileSentImage,
       reloadedImage: mobileReloadedImage,
       dialog: mobileDialog,
+      projectNavigation: mobileProjectNavigation,
       threadMenu: mobileThreadMenu,
       deleteThreadDialog: mobileDeleteDialog,
+      skills: mobileSkills,
       moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -1057,11 +1202,22 @@ try {
     !desktopDialog.cwdEditable ||
     !desktopDialog.sandboxEnabled ||
     desktopDialog.sandbox !== "workspace-write" ||
+    desktopProjectNavigation.groups < 2 ||
+    !desktopProjectNavigation.groupsOpen ||
+    desktopProjectNavigation.rows < 3 ||
+    !desktopProjectNavigation.pinnedVisible ||
+    !desktopProjectNavigation.pathsTruncatedOrContained ||
+    desktopProjectNavigation.horizontalOverflow ||
     !desktopThreadMenu.fitsViewport ||
     desktopThreadMenu.width > 200 ||
-    desktopThreadMenu.labels.join(",") !== "Archive,Delete" ||
+    desktopThreadMenu.labels.join(",") !== "Rename,Unpin,Archive,Delete" ||
     !desktopThreadMenu.focusInside ||
     desktopThreadMenu.horizontalOverflow ||
+    !desktopRenameDialog.fitsViewport ||
+    !desktopRenameDialog.inputFocused ||
+    !desktopRenameDialog.boundedInput ||
+    !desktopRenameDialog.buttonsContained ||
+    desktopRenameDialog.horizontalOverflow ||
     !desktopDeleteDialog.fitsViewport ||
     !desktopDeleteDialog.buttonsContained ||
     !desktopDeleteDialog.warnsAboutDescendants ||
@@ -1069,6 +1225,15 @@ try {
     !desktopDeleteDialog.cancelFocused ||
     desktopDeleteDialog.horizontalOverflow ||
     !desktopArchivedVisible ||
+    desktopSkills.groups < 2 ||
+    !desktopSkills.groupsOpen ||
+    desktopSkills.entries < 3 ||
+    !desktopSkills.hasEnabledState ||
+    !desktopSkills.hasScopes ||
+    !desktopSkills.hasBoundedError ||
+    !desktopSkills.noSensitiveFields ||
+    !desktopSkills.contentContained ||
+    desktopSkills.horizontalOverflow ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
     !mobileBefore.toolbarVisible ||
@@ -1106,9 +1271,15 @@ try {
     !mobileDialog.cwdEditable ||
     !mobileDialog.sandboxEnabled ||
     mobileDialog.sandbox !== "workspace-write" ||
+    mobileProjectNavigation.groups < 2 ||
+    !mobileProjectNavigation.groupsOpen ||
+    mobileProjectNavigation.rows < 3 ||
+    !mobileProjectNavigation.pinnedVisible ||
+    !mobileProjectNavigation.pathsTruncatedOrContained ||
+    mobileProjectNavigation.horizontalOverflow ||
     !mobileThreadMenu.fitsViewport ||
     mobileThreadMenu.width > 200 ||
-    mobileThreadMenu.labels.join(",") !== "Archive,Delete" ||
+    mobileThreadMenu.labels.join(",") !== "Rename,Unpin,Archive,Delete" ||
     !mobileThreadMenu.focusInside ||
     mobileThreadMenu.horizontalOverflow ||
     !mobileDeleteDialog.fitsViewport ||
@@ -1117,6 +1288,15 @@ try {
     !mobileDeleteDialog.warnsCannotUndo ||
     !mobileDeleteDialog.cancelFocused ||
     mobileDeleteDialog.horizontalOverflow ||
+    mobileSkills.groups < 2 ||
+    !mobileSkills.groupsOpen ||
+    mobileSkills.entries < 3 ||
+    !mobileSkills.hasEnabledState ||
+    !mobileSkills.hasScopes ||
+    !mobileSkills.hasBoundedError ||
+    !mobileSkills.noSensitiveFields ||
+    !mobileSkills.contentContained ||
+    mobileSkills.horizontalOverflow ||
     !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||
