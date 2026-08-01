@@ -28,6 +28,93 @@ describe("appReducer", () => {
     expect(state.threads[0]?.name).toBe("Refactor parser");
   });
 
+  it("preserves only explicitly protected threads across a canonical list omission", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-new",
+        createdAt: 1_800_000_000,
+        updatedAt: 1_800_000_000,
+        recencyAt: 1_800_000_000,
+        turns: [],
+      },
+    });
+    const protectedState = appReducer(hydrated, {
+      type: "setThreads",
+      threads: [{ id: "thread-existing", name: "Existing", updatedAt: 1_700_000_000 }],
+      protectedThreadIds: ["thread-new"],
+    });
+
+    expect(protectedState.threads.map((thread) => thread.id)).toEqual([
+      "thread-new",
+      "thread-existing",
+    ]);
+    expect(protectedState.threads[0]).toEqual(expect.objectContaining({
+      createdAt: 1_800_000_000,
+      recencyAt: 1_800_000_000,
+    }));
+
+    const canonical = appReducer(protectedState, {
+      type: "setThreads",
+      threads: [{
+        id: "thread-new",
+        preview: "First request",
+        createdAt: 1_800_000_000,
+        updatedAt: 1_800_000_010,
+        recencyAt: 1_800_000_010,
+      }],
+    });
+    expect(canonical.threads).toEqual([
+      expect.objectContaining({ id: "thread-new", preview: "First request" }),
+    ]);
+    expect(canonical.currentThread).toEqual(expect.objectContaining({
+      id: "thread-new",
+      preview: "First request",
+      updatedAt: 1_800_000_010,
+      turns: [],
+    }));
+
+    const replaced = appReducer(canonical, {
+      type: "setThreads",
+      threads: [{ id: "thread-existing", name: "Existing", updatedAt: 1_700_000_000 }],
+    });
+    expect(replaced.threads.map((thread) => thread.id)).toEqual(["thread-existing"]);
+  });
+
+  it("enriches a sparse thread notification from the selected thread snapshot", () => {
+    let state = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "019abcde1234",
+        preview: "First request",
+        createdAt: 1_800_000_000,
+        updatedAt: 1_800_000_000,
+        recencyAt: 1_800_000_000,
+        turns: [],
+      },
+    });
+    state = appReducer(state, { type: "setThreads", threads: [] });
+    state = appReducer(state, {
+      type: "upsertThread",
+      thread: { id: "019abcde1234", status: { type: "idle" } },
+    });
+
+    expect(state.threads).toEqual([
+      expect.objectContaining({
+        id: "019abcde1234",
+        preview: "First request",
+        createdAt: 1_800_000_000,
+        recencyAt: 1_800_000_000,
+        status: { type: "idle" },
+      }),
+    ]);
+    expect(state.currentThread).toEqual(expect.objectContaining({
+      preview: "First request",
+      createdAt: 1_800_000_000,
+      status: { type: "idle" },
+    }));
+  });
+
   it("stores the history cursor when hydrating a recent turn page", () => {
     const state = appReducer(initialState, {
       type: "setCurrentThread",

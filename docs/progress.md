@@ -19,7 +19,9 @@
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
   包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
   发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。未确认成功的发送会与发送期间
-  继续输入的新草稿分开保留。
+  继续输入的新草稿分开保留。新建线程在首轮期间会保留在侧边栏，直到 active 或
+  archived 官方列表确认其元数据；并发列表刷新只采用最新结果，轮次完成后会主动补全
+  名称、预览和时间，因此稀疏状态通知不会使条目消失或退化为 UUID。
 - Active/Archived 双视图和统一的线程动作菜单：桌面端支持右键，移动端支持 550 毫秒
   长按，所有端都有 `...` 入口。正在执行轮次的线程不能归档或删除；其他空闲线程可
   归档，已归档线程可恢复，两类空闲线程均可在明确提示线程及其后代会话可能被永久移除
@@ -126,10 +128,11 @@
 `0.146.0` 完成验证：
 
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：28 个测试文件、347 项测试；服务端测试在允许绑定
-  回环套接字的环境中运行。
+- `NODE_ENV=test npm test` 通过：28 个测试文件、353 项测试，包括新线程列表缺项、
+  乱序刷新、稀疏通知和生命周期变更的回归覆盖；服务端测试在允许绑定回环套接字的
+  环境中运行。
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-activity-stack npm run check:visual` 针对
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-thread-race npm run check:visual` 针对
   当前生产构建通过。桌面端和 390x844 移动端夹具确认连续活动零间隙且每个相邻边界
   恰好一条 1px 横线；正式的 collab/subagent/image-view 活动均实际渲染。空推理未进入
   信息流，固定状态槽在 Active、Idle 和完成态之间复用同一根节点，Active/Idle 切换时

@@ -36,7 +36,7 @@ export interface TurnHistoryState {
 
 export type AppAction =
   | { type: "connection"; state: ConnectionState; detail?: string }
-  | { type: "setThreads"; threads: CodexThread[] }
+  | { type: "setThreads"; threads: CodexThread[]; protectedThreadIds?: string[] }
   | { type: "setArchivedThreads"; threads: CodexThread[] }
   | { type: "archiveThread"; threadId: string }
   | { type: "unarchiveThread"; threadId: string; thread?: CodexThread }
@@ -320,13 +320,17 @@ function upsertThread(threads: CodexThread[], thread: CodexThread): CodexThread[
   if (index < 0) return sortThreads([summary, ...threads]);
   const next = [...threads];
   const existing = threadSummary(next[index]);
-  const recencyAt = latestThreadRecency(existing, summary);
-  next[index] = {
+  next[index] = mergeThreadSummary(existing, summary);
+  return sortThreads(next);
+}
+
+function mergeThreadSummary(existing: CodexThread, incoming: CodexThread): CodexThread {
+  const recencyAt = latestThreadRecency(existing, incoming);
+  return {
     ...existing,
-    ...summary,
+    ...incoming,
     ...(recencyAt !== undefined ? { recencyAt } : {}),
   };
-  return sortThreads(next);
 }
 
 function clearSelectedThread(state: AppState, threadId: string): AppState {
@@ -538,8 +542,30 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ? state.activeReasoningItemIdsByTurn
           : {},
       };
-    case "setThreads":
-      return { ...state, threads: sortThreads(action.threads.map(threadSummary)) };
+    case "setThreads": {
+      let threads = sortThreads(action.threads.map(threadSummary));
+      for (const threadId of new Set(action.protectedThreadIds ?? [])) {
+        if (threads.some((thread) => thread.id === threadId)) continue;
+        const listed = state.threads.find((thread) => thread.id === threadId);
+        const current = state.currentThread?.id === threadId
+          ? threadSummary(state.currentThread)
+          : undefined;
+        const preserved = listed && current
+          ? mergeThreadSummary(current, listed)
+          : listed ?? current;
+        if (preserved) threads = upsertThread(threads, preserved);
+      }
+      const listedCurrent = state.currentThread
+        ? threads.find((thread) => thread.id === state.currentThread?.id)
+        : undefined;
+      const currentThread = state.currentThread && listedCurrent
+        ? {
+            ...state.currentThread,
+            ...mergeThreadSummary(threadSummary(state.currentThread), listedCurrent),
+          }
+        : state.currentThread;
+      return { ...state, threads, currentThread };
+    }
     case "setArchivedThreads":
       return { ...state, archivedThreads: sortThreads(action.threads.map(threadSummary)) };
     case "archiveThread": {
@@ -811,12 +837,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       };
     case "upsertThread": {
       const summary = threadSummary(action.thread);
+      const currentSummary = state.currentThread?.id === summary.id
+        ? threadSummary(state.currentThread)
+        : undefined;
+      const enrichedSummary = currentSummary
+        ? mergeThreadSummary(currentSummary, summary)
+        : summary;
       return {
         ...state,
-        threads: upsertThread(state.threads, summary),
+        threads: upsertThread(state.threads, enrichedSummary),
         currentThread:
-          state.currentThread?.id === summary.id
-            ? { ...state.currentThread, ...summary }
+          state.currentThread?.id === enrichedSummary.id
+            ? { ...state.currentThread, ...enrichedSummary }
             : state.currentThread,
       };
     }

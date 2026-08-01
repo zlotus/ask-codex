@@ -55,6 +55,17 @@ const archivedThread = {
   turns: [],
 };
 
+const newThread = {
+  id: "thread-new",
+  preview: "",
+  createdAt: 1_800_000_000,
+  updatedAt: 1_800_000_000,
+  recencyAt: 1_800_000_000,
+  status: { type: "idle" },
+  cwd: "/workspace/draft",
+  turns: [],
+};
+
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -86,7 +97,7 @@ function installRpcFixture() {
     };
     if (method === "config/read") return { model: "configured-model", effort: "max" };
     if (method === "thread/start") {
-      return { thread: { id: "thread-new", cwd: "/workspace/draft", turns: [] } };
+      return { thread: newThread };
     }
     if (method === "thread/resume") {
       const request = params as { initialTurnsPage?: unknown };
@@ -277,6 +288,236 @@ describe("App thread settings lifecycle", () => {
       threadId: "thread-archived",
     }));
     expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a new thread visible until the canonical list hydrates its first-turn metadata", async () => {
+    let threadStarted = false;
+    let completionStarted = false;
+    let postStartListCalls = 0;
+    let completionListCalls = 0;
+    const postStartSnapshot = {
+      ...existingThread,
+      id: "thread-post-start-snapshot",
+      name: "Post-start snapshot",
+    };
+    const completionSnapshot = {
+      ...existingThread,
+      id: "thread-completion-snapshot",
+      name: "Completion omission",
+    };
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        if (!threadStarted) {
+          return Promise.resolve({ data: [existingThread], nextCursor: null });
+        }
+        if (!completionStarted) {
+          postStartListCalls += 1;
+          return Promise.resolve({ data: [postStartSnapshot], nextCursor: null });
+        }
+        completionListCalls += 1;
+        return Promise.resolve({
+          data: completionListCalls === 1
+            ? [completionSnapshot]
+            : [{
+                ...newThread,
+                preview: "First request",
+                updatedAt: 1_800_000_010,
+                recencyAt: 1_800_000_010,
+              }, existingThread],
+          nextCursor: null,
+        });
+      }
+      if (method === "thread/start") threadStarted = true;
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    await sendMessage();
+    await screen.findByRole("button", { name: "Post-start snapshot" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    expect(postStartListCalls).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: "Untitled thread" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Untitled thread" }).querySelector(".thread-meta"))
+      .not.toHaveTextContent("thread-n");
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/status/changed",
+      params: { threadId: newThread.id, status: { type: "idle" } },
+    }));
+    expect(screen.getByRole("button", { name: "Untitled thread" }).querySelector(".thread-meta"))
+      .not.toHaveTextContent("thread-n");
+
+    completionStarted = true;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: newThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "notLoaded", items: [] },
+      },
+    }));
+
+    await screen.findByRole("button", { name: "Completion omission" });
+    expect(screen.getByRole("button", { name: "Untitled thread" })).toBeInTheDocument();
+    const hydratedThread = await screen.findByRole("button", { name: "First request" });
+    expect(completionListCalls).toBe(2);
+    expect(hydratedThread.querySelector(".thread-meta")).not.toHaveTextContent("thread-n");
+    expect(document.querySelector(".toolbar-title strong")).toHaveTextContent("First request");
+  });
+
+  it("ignores an older thread-list refresh that finishes after first-turn hydration", async () => {
+    let threadStarted = false;
+    let completionStarted = false;
+    let resolveStaleList: ((value: unknown) => void) | undefined;
+    let markStaleListRequested: (() => void) | undefined;
+    const staleList = new Promise<unknown>((resolve) => {
+      resolveStaleList = resolve;
+    });
+    const staleListRequested = new Promise<void>((resolve) => {
+      markStaleListRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        if (!threadStarted) {
+          return Promise.resolve({ data: [existingThread], nextCursor: null });
+        }
+        if (!completionStarted) {
+          markStaleListRequested?.();
+          return staleList;
+        }
+        return Promise.resolve({
+          data: [{
+            ...newThread,
+            preview: "First request",
+            updatedAt: 1_800_000_010,
+            recencyAt: 1_800_000_010,
+          }, existingThread],
+          nextCursor: null,
+        });
+      }
+      if (method === "thread/start") threadStarted = true;
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    await sendMessage();
+    await screen.findByRole("button", { name: "Untitled thread" });
+    await staleListRequested;
+
+    completionStarted = true;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: newThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "notLoaded", items: [] },
+      },
+    }));
+    await screen.findByRole("button", { name: "First request" });
+
+    await act(async () => {
+      resolveStaleList?.({ data: [existingThread], nextCursor: null });
+      await staleList;
+    });
+    expect(screen.getByRole("button", { name: "First request" })).toBeInTheDocument();
+    expect(document.querySelector(".toolbar-title strong")).toHaveTextContent("First request");
+  });
+
+  it("does not let a pre-mutation list response restore a deleted thread", async () => {
+    let deferNextActiveList = false;
+    let resolveStaleList: ((value: unknown) => void) | undefined;
+    let markStaleListRequested: (() => void) | undefined;
+    const staleList = new Promise<unknown>((resolve) => {
+      resolveStaleList = resolve;
+    });
+    const staleListRequested = new Promise<void>((resolve) => {
+      markStaleListRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (
+        deferNextActiveList &&
+        method === "thread/list" &&
+        !(params as { archived?: boolean } | undefined)?.archived
+      ) {
+        deferNextActiveList = false;
+        markStaleListRequested?.();
+        return staleList;
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    deferNextActiveList = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh threads" }));
+    await staleListRequested;
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/deleted",
+      params: { threadId: existingThread.id },
+    }));
+    expect(screen.queryByRole("button", { name: "Existing thread" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveStaleList?.({ data: [existingThread], nextCursor: null });
+      await staleList;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Existing thread" })).not.toBeInTheDocument();
+  });
+
+  it("protects a cross-client thread until the canonical list includes it", async () => {
+    let afterRemoteStart = false;
+    const listMarker = {
+      ...existingThread,
+      id: "thread-list-marker",
+      name: "Canonical omission",
+    };
+    const remoteThread = {
+      ...newThread,
+      id: "thread-remote",
+      name: "Remote thread",
+    };
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (
+        afterRemoteStart &&
+        method === "thread/list" &&
+        !(params as { archived?: boolean } | undefined)?.archived
+      ) {
+        return Promise.resolve({ data: [listMarker], nextCursor: null });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/started",
+      params: { thread: remoteThread },
+    }));
+    await screen.findByRole("button", { name: "Remote thread" });
+
+    afterRemoteStart = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh threads" }));
+    await screen.findByRole("button", { name: "Canonical omission" });
+    expect(screen.getByRole("button", { name: "Remote thread" })).toBeInTheDocument();
   });
 
   it("does not move a thread or regress its displayed activity time after resume", async () => {

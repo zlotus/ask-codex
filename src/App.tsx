@@ -90,6 +90,8 @@ function paramsRecord(value: unknown): Record<string, unknown> {
 const TURN_PAGE_SIZE = 10;
 const TURN_ITEM_PAGE_SIZE = 10;
 const MAX_REASONING_PARTS = 16;
+const MAX_PENDING_CANONICAL_THREADS = 8;
+const THREAD_HYDRATION_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
 
 interface ThreadDialogState {
   mode: "new" | "existing";
@@ -120,6 +122,16 @@ function turnsForDisplay(page: CodexTurnsPage, cursor: string | null): CodexTurn
         },
       }
     : turn);
+}
+
+function rememberPendingCanonicalThread(threadIds: Set<string>, threadId: string): void {
+  threadIds.delete(threadId);
+  threadIds.add(threadId);
+  while (threadIds.size > MAX_PENDING_CANONICAL_THREADS) {
+    const oldest = threadIds.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    threadIds.delete(oldest);
+  }
 }
 
 function queuePendingImagePreview(
@@ -159,6 +171,7 @@ export default function App() {
   const [threadLoadError, setThreadLoadError] = useState<string | null>(null);
   const [resyncSignal, setResyncSignal] = useState(0);
   const [resyncing, setResyncing] = useState(false);
+  const [threadHydrationSignal, setThreadHydrationSignal] = useState(0);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
@@ -176,6 +189,9 @@ export default function App() {
   const bootstrapCwdInitializedRef = useRef(false);
   const nextTurnSettingsInitializedRef = useRef(false);
   const settingsLoadGenerationRef = useRef(0);
+  const threadListRefreshGenerationRef = useRef(0);
+  const threadListMutationEpochRef = useRef(0);
+  const pendingCanonicalThreadIdsRef = useRef(new Set<string>());
   const imagePreviewsMountedRef = useRef(false);
   const imagePreviewRegistryRef = useRef<SessionImagePreviewRegistry | null>(null);
   const imagePreviewStoreRef = useRef<BrowserImagePreviewStore | null>(null);
@@ -330,7 +346,11 @@ export default function App() {
     switch (message.method) {
       case "thread/started": {
         const thread = normalizeThread(params.thread);
-        if (thread) dispatch({ type: "upsertThread", thread });
+        if (thread) {
+          threadListMutationEpochRef.current += 1;
+          rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, thread.id);
+          dispatch({ type: "upsertThread", thread });
+        }
         return;
       }
       case "thread/name/updated": {
@@ -346,17 +366,24 @@ export default function App() {
       }
       case "thread/archived": {
         if (threadId) {
+          threadListMutationEpochRef.current += 1;
+          pendingCanonicalThreadIdsRef.current.delete(threadId);
           invalidateSelectedThread(threadId);
           dispatch({ type: "archiveThread", threadId });
         }
         return;
       }
       case "thread/unarchived": {
-        if (threadId) dispatch({ type: "unarchiveThread", threadId });
+        if (threadId) {
+          threadListMutationEpochRef.current += 1;
+          dispatch({ type: "unarchiveThread", threadId });
+        }
         return;
       }
       case "thread/deleted": {
         if (threadId) {
+          threadListMutationEpochRef.current += 1;
+          pendingCanonicalThreadIdsRef.current.delete(threadId);
           invalidateSelectedThread(threadId);
           removeImagePreviewsForThread(threadId);
           dispatch({ type: "deleteThread", threadId });
@@ -387,6 +414,7 @@ export default function App() {
         const turn = normalizeTurn(params.turn);
         if (turn) dispatch({ type: "upsertTurn", turn, threadId });
         else if (turnId) dispatch({ type: "setTurnStatus", turnId, status: readString(params.status) ?? "completed", error: params.error });
+        if (threadId) setThreadHydrationSignal((current) => current + 1);
         return;
       }
       case "turn/diff/updated": {
@@ -591,7 +619,9 @@ export default function App() {
   }, [loadBootstrap]);
 
   const refreshThreads = useCallback(async () => {
-    if (connection !== "connected") return;
+    if (connection !== "connected") return false;
+    const generation = ++threadListRefreshGenerationRef.current;
+    const mutationEpoch = threadListMutationEpochRef.current;
     setLoadingThreads(true);
     try {
       const listThreads = async (archived: boolean): Promise<CodexThread[]> => {
@@ -619,14 +649,66 @@ export default function App() {
         listThreads(false),
         listThreads(true),
       ]);
-      dispatch({ type: "setThreads", threads });
+      if (
+        generation !== threadListRefreshGenerationRef.current ||
+        mutationEpoch !== threadListMutationEpochRef.current
+      ) {
+        return false;
+      }
+      const canonicalThreadIds = new Set([
+        ...threads.map((thread) => thread.id),
+        ...archivedThreads.map((thread) => thread.id),
+      ]);
+      for (const threadId of pendingCanonicalThreadIdsRef.current) {
+        if (canonicalThreadIds.has(threadId)) {
+          pendingCanonicalThreadIdsRef.current.delete(threadId);
+        }
+      }
+      dispatch({
+        type: "setThreads",
+        threads,
+        protectedThreadIds: [...pendingCanonicalThreadIdsRef.current],
+      });
       dispatch({ type: "setArchivedThreads", threads: archivedThreads });
+      return true;
     } catch (error) {
-      showToast(errorMessage(error));
+      if (generation === threadListRefreshGenerationRef.current) {
+        showToast(errorMessage(error));
+      }
+      return false;
     } finally {
-      setLoadingThreads(false);
+      if (generation === threadListRefreshGenerationRef.current) {
+        setLoadingThreads(false);
+      }
     }
   }, [connection, rpc, showToast]);
+
+  useEffect(() => {
+    if (connection !== "connected" || threadHydrationSignal === 0) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const runAttempt = (attempt: number): void => {
+      timer = window.setTimeout(() => {
+        void refreshThreads().then((applied) => {
+          const nextAttempt = attempt + 1;
+          if (
+            cancelled ||
+            !applied ||
+            pendingCanonicalThreadIdsRef.current.size === 0 ||
+            nextAttempt >= THREAD_HYDRATION_RETRY_DELAYS_MS.length
+          ) {
+            return;
+          }
+          runAttempt(nextAttempt);
+        });
+      }, THREAD_HYDRATION_RETRY_DELAYS_MS[attempt]);
+    };
+    runAttempt(0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [connection, refreshThreads, threadHydrationSignal]);
 
   useEffect(() => {
     if (connection !== "connected") return;
@@ -988,7 +1070,10 @@ export default function App() {
         thread = extractThread(result);
         if (!thread) throw new Error("Codex did not return a new thread");
         setDraftThreadConfigured(false);
+        threadListMutationEpochRef.current += 1;
+        rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, thread.id);
         selectedThreadIdRef.current = thread.id;
+        currentThreadRef.current = thread;
         dispatch({ type: "setCurrentThread", thread });
       }
       if (existingThread) {
@@ -1059,6 +1144,8 @@ export default function App() {
     }
     try {
       await rpc("thread/archive", { threadId });
+      threadListMutationEpochRef.current += 1;
+      pendingCanonicalThreadIdsRef.current.delete(threadId);
       invalidateSelectedThread(threadId);
       dispatch({ type: "archiveThread", threadId });
       showToast("Thread archived", "success");
@@ -1070,6 +1157,7 @@ export default function App() {
   const unarchiveThread = useCallback(async (threadId: string) => {
     try {
       await rpc("thread/unarchive", { threadId });
+      threadListMutationEpochRef.current += 1;
       dispatch({ type: "unarchiveThread", threadId });
       showToast("Thread restored", "success");
     } catch (error) {
@@ -1084,6 +1172,8 @@ export default function App() {
     }
     try {
       await rpc("thread/delete", { threadId });
+      threadListMutationEpochRef.current += 1;
+      pendingCanonicalThreadIdsRef.current.delete(threadId);
       invalidateSelectedThread(threadId);
       removeImagePreviewsForThread(threadId);
       dispatch({ type: "deleteThread", threadId });

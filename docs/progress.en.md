@@ -24,7 +24,11 @@ The implementation currently provides:
   an always-editable responsive multiline composer where Enter inserts a
   newline and either the button or `Ctrl+Enter` sends; `Cmd+Enter` is also
   supported on macOS. Unconfirmed sends remain separate from drafts typed while
-  a send is in flight.
+  a send is in flight. A newly created thread remains in the sidebar throughout
+  its first turn until the canonical active or archived list confirms its
+  metadata. Concurrent list refreshes apply only the latest result, and turn
+  completion hydrates the name, preview, and time so a sparse status notification
+  cannot make the entry disappear or degrade to a UUID.
 - Active and Archived views with one thread-action menu: desktop right-click,
   a 550 ms mobile long press, and an explicit `...` entry point all open the
   same actions. Threads with a turn in progress cannot be archived or deleted;
@@ -176,10 +180,12 @@ Verification for this round was completed on 2026-08-01 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 28 test files and 347 tests. Server tests
-  ran in an environment that permits loopback socket binding.
+- `NODE_ENV=test npm test` passed: 28 test files and 353 tests, including
+  regressions for missing new-thread list entries, out-of-order refreshes,
+  sparse notifications, and lifecycle mutations. Server tests ran in an
+  environment that permits loopback socket binding.
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-activity-stack npm run check:visual`
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-thread-race npm run check:visual`
   passed against the current production build. Desktop and 390x844 mobile
   fixtures confirmed zero gaps between consecutive activities and exactly one
   1px rule at every adjacent boundary; first-class collaboration, subagent, and
