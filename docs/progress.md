@@ -30,16 +30,18 @@
   模式；已有分页线程仍可通过严格受限的 `thread/items/list` 按升序逐页恢复，默认或
   `legacy` 线程保留单轮完整详情重试。
 - 流式显示消息、推理、计划、命令输出、文件变更、MCP 调用、网页搜索、轮次 diff，
-  并为未知条目提供降级渲染；连续推理条目在展示层合并，空的已完成推理会隐藏，只有仍在
-  推理的条目显示活动动画。当前轮次的结构化计划会同时在输入区上方显示为普通布局的紧凑
-  摘要，可展开查看有界滚动的完整步骤；轮次结束后摘要消失，历史计划仍留在原轮次中。
+  并为未知条目提供降级渲染；连续且有内容的历史推理在原位置合并并可展开，进行中轮次底部
+  则保留固定的推理状态槽，活动推理显示动画，无活动推理时显示灰态，从而避免推理生命周期
+  反复改变信息流高度。当前轮次的结构化计划会同时在输入区上方显示为普通布局的紧凑摘要，
+  可展开查看有界滚动的完整步骤；轮次结束后摘要消失，历史计划仍留在原轮次中。
   轮次 diff 明确呈现为位于轮次末尾的整轮变更汇总；其后的轮次 footer 会显示
   app-server 原生的开始时间与总耗时，缺失字段则静默省略。流和消息大小均有明确边界。
   完成或重同步返回的非完整轮次快照不会清空已经流式物化的内容，只有明确的 `full` 快照
   可以替换条目。
 - 可复用的语法高亮代码块、复制和换行控件、结构化统一/并排 diff、安全的原始 diff
-  降级，以及有界的两级工具折叠区；它会分组连续的命令、文件变更、MCP 调用和搜索，
-  同时突出显示助手消息。
+  降级，以及有界的两级工具折叠区；连续且已正式支持的机器活动组成零间距、仅由单条横线
+  分隔的活动栈，包括命令、文件变更、MCP 调用、搜索、动态工具、subagent/collab，以及
+  图片查看和生成，同时突出显示助手消息。
 - 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。捕获到
   的命令审批理由会在当前浏览器会话中继续绑定到对应的确切命令条目。
 - 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
@@ -121,30 +123,16 @@
 ## 验证
 
 本轮已于 2026-08-01 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
-`0.146.0` 完成代码验证：
+`0.146.0` 完成验证：
 
-- `npm run typecheck` 通过。
-- `npm run lint` 通过。
-- `npm test` 通过：27 个文件、336 项测试。服务端测试在允许绑定回环套接字的环境中
-  运行。
-- `npm run build` 通过。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-turn-timing-final npm run check:visual`
-  针对当前生产构建通过。确定性的桌面端和 390×844 移动端夹具覆盖 Active/Archived
-  视图、桌面右键菜单、移动端长按菜单、永久删除确认框、新线程对话框、已配置模型选择、
-  图片草稿预览、发送后及页面重载后缩略图的加载、受控布局和新标签打开行为、工具分组和
-  模拟审批理由，以及连续推理分组、活动推理动画、轮次变更汇总、轮次时间 footer、未确认
-  发送恢复条和当前 Plan dock 的折叠、展开、审批共存及完成后消失；未发现水平溢出、控件
-  重叠、富内容被裁切、控制台错误或页面错误。夹具在删除确认处取消，所有模拟 RPC 均被
-  浏览器测试拦截，没有创建真实 Codex 轮次。
-
-- 从 Codex CLI `0.146.0` 生成的 bindings 已核对：线程包含用于排序的 `recencyAt`，
-  `ThreadSortKey` 支持 `recency_at`；reasoning 的 `summary` 和 `content` 都可能为空，
-  `turn/diff/updated` 是轮次级最新聚合快照；`Turn` 原生提供可空的 `startedAt`、
-  `completedAt` 和 `durationMs`；未创建真实轮次。
-
-2026-07-25 记录的协议验证仍适用于本轮未改变的协议路径：
-
-- 从当时 CLI 生成的 bindings 已核对：`TurnItemsView` 为
-  `notLoaded | summary | full`，`turn/completed` 携带 `Turn` 对象；未创建真实轮次。
-- 直接 app-server 协议烟测通过：省略 `historyMode` 的临时 `thread/start` 返回
-  `historyMode: "legacy"`；未创建真实轮次。
+- `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
+- `NODE_ENV=test npm test` 通过：28 个测试文件、347 项测试；服务端测试在允许绑定
+  回环套接字的环境中运行。
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-activity-stack npm run check:visual` 针对
+  当前生产构建通过。桌面端和 390x844 移动端夹具确认连续活动零间隙且每个相邻边界
+  恰好一条 1px 横线；正式的 collab/subagent/image-view 活动均实际渲染。空推理未进入
+  信息流，固定状态槽在 Active、Idle 和完成态之间复用同一根节点，Active/Idle 切换时
+  内部行、图标、标签、位置和高度保持稳定。未发现水平溢出、富内容裁切、footer 内容
+  重叠、控制台错误或页面错误；所有 RPC 均由确定性浏览器夹具拦截，未创建真实 Codex
+  轮次。

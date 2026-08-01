@@ -27,12 +27,18 @@ events, but it does not get a general-purpose file-serving endpoint.
   fallback behavior, while existing paginated history can recover oversized
   turns by item.
 - Stream agent messages, reasoning summaries, plans, command output, file
-  changes, MCP calls, and turn diffs. Consecutive reasoning items are grouped,
-  structured plans in progress gain a compact expandable status above the
-  composer, and turn diffs are explicitly presented as whole-turn change
-  summaries.
+  changes, MCP calls, and turn diffs. Consecutive historical reasoning with
+  content stays grouped and expandable in place, while each turn in progress
+  keeps a fixed reasoning status slot at its bottom: active reasoning animates
+  and idle reasoning appears muted. Structured plans in progress gain a compact
+  expandable status above the composer, and turn diffs are explicitly presented
+  as whole-turn change summaries.
 - Render syntax-highlighted code blocks with copy and wrap controls, structured
   unified/split diffs, and grouped collapsible tool activity with bounded output.
+  Consecutive first-class machine activities form a zero-gap stack separated only
+  by single rules, including commands, file changes, MCP calls, searches,
+  dynamic tools, subagent/collaboration activity, image views, and image
+  generation.
 - Review command and file-change approvals in the browser, and keep captured
   approval rationale attached to the matching command for the browser session.
 - Answer structured questions from `request_user_input`.

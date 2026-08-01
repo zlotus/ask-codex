@@ -3,12 +3,19 @@ import {
   Brain,
   Braces,
   ChevronRight,
+  Clock3,
   FileCode2,
   Globe,
   Image as ImageIcon,
-  LoaderCircle,
+  ImagePlus,
+  MessagesSquare,
+  Minimize2,
+  ScanEye,
+  Sparkles,
   Terminal,
   User,
+  Users,
+  Workflow,
   Wrench,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -28,7 +35,7 @@ import { LazyDetails } from "./LazyDetails";
 import { Markdown } from "./Markdown";
 import { PlanView } from "./PlanView";
 import { StatusPill } from "./StatusPill";
-import { displayToolStatus, isFailedToolActivity } from "./activityUtils";
+import { displayToolStatus, hasVisibleReasoning, isFailedToolActivity } from "./activityUtils";
 
 const TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS = 24_000;
 const FAILURE_PREVIEW_MAX_CHARACTERS = 360;
@@ -120,6 +127,83 @@ function ToolDisclosureSummary({
   );
 }
 
+function ToolActivityTitle({
+  children,
+  detail,
+  icon,
+}: {
+  children: ReactNode;
+  detail?: string;
+  icon: ReactNode;
+}) {
+  return (
+    <span className="tool-activity-icon-copy">
+      {icon}
+      <span className="tool-activity-title">
+        <strong>{children}</strong>
+        {detail && <span className="command-summary">{detail}</span>}
+      </span>
+    </span>
+  );
+}
+
+function StaticToolActivity({
+  detail,
+  icon,
+  item,
+  title,
+}: {
+  detail?: string;
+  icon: ReactNode;
+  item: CodexItem;
+  title: string;
+}) {
+  const status = displayToolStatus(item);
+  return (
+    <div className={`tool-block tool-activity tool-activity-static${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}>
+      <div className="tool-activity-summary">
+        <span className="tool-activity-main">
+          <ToolActivityTitle detail={detail} icon={icon}>{title}</ToolActivityTitle>
+        </span>
+        {status && <span className="tool-activity-state"><StatusPill status={status} /></span>}
+      </div>
+    </div>
+  );
+}
+
+function ExpandableToolActivity({
+  children,
+  className,
+  detail,
+  disclosureOpen,
+  icon,
+  item,
+  onDisclosureOpenChange,
+  title,
+}: ItemRendererProps & {
+  children: ReactNode;
+  className: string;
+  detail?: string;
+  icon: ReactNode;
+  title: string;
+}) {
+  return (
+    <LazyDetails
+      className={`tool-block tool-activity ${className}${isFailedToolActivity(item) ? " tool-activity--failed" : ""}`}
+      onOpenChange={onDisclosureOpenChange}
+      open={disclosureOpen}
+      summaryClassName="tool-activity-summary"
+      summary={(
+        <ToolDisclosureSummary item={item}>
+          <ToolActivityTitle detail={detail} icon={icon}>{title}</ToolActivityTitle>
+        </ToolDisclosureSummary>
+      )}
+    >
+      {children}
+    </LazyDetails>
+  );
+}
+
 function UserMessage({ imagePreviewUrls, item }: ItemRendererProps) {
   const orderedContent = userMessageContent(item);
   const fallbackText = orderedContent.length === 0 ? itemText(item) : "";
@@ -186,7 +270,6 @@ function AgentMessage({ item }: ItemRendererProps) {
 }
 
 interface ReasoningGroupProps {
-  active?: boolean;
   items: CodexItem[];
 }
 
@@ -197,23 +280,11 @@ function reasoningContent(item: CodexItem) {
   return { summary, detail, omitted };
 }
 
-export function ReasoningGroup({ active = false, items }: ReasoningGroupProps) {
+export function ReasoningGroup({ items }: ReasoningGroupProps) {
   const content = items.map(reasoningContent);
-  const hasContent = content.some(({ summary, detail, omitted }) => summary || detail || omitted > 0);
   const label = items.length > 1 ? `Reasoning (${items.length})` : "Reasoning";
 
-  if (!hasContent) {
-    if (!active) return null;
-    return (
-      <div className="reasoning-block reasoning-block--status" role="status" aria-label="Reasoning in progress">
-        <div className="reasoning-summary">
-          <Brain size={15} aria-hidden="true" />
-          <span>{label}</span>
-          <LoaderCircle size={14} className="reasoning-spinner spin" aria-hidden="true" />
-        </div>
-      </div>
-    );
-  }
+  if (!hasVisibleReasoning(items)) return null;
 
   return (
     <LazyDetails
@@ -223,12 +294,6 @@ export function ReasoningGroup({ active = false, items }: ReasoningGroupProps) {
         <>
           <Brain size={15} aria-hidden="true" />
           <span>{label}</span>
-          {active && (
-            <>
-              <span className="sr-only">Reasoning in progress</span>
-              <LoaderCircle size={14} className="reasoning-spinner spin" aria-hidden="true" />
-            </>
-          )}
           <ChevronRight size={14} className="details-chevron" aria-hidden="true" />
         </>
       )}
@@ -446,6 +511,224 @@ function WebSearch({ disclosureOpen, item, onDisclosureOpenChange }: ItemRendere
   );
 }
 
+function DynamicToolCall(props: ItemRendererProps) {
+  const { item } = props;
+  const namespace = readString(item.namespace);
+  const tool = readString(item.tool) ?? "tool";
+  const title = namespace ? `${namespace} / ${tool}` : tool;
+  const contentItems = Array.isArray(item.contentItems) ? item.contentItems.filter(isRecord) : [];
+  const textOutputs = contentItems.flatMap((entry) => {
+    if (entry.type !== "inputText") return [];
+    const text = readString(entry.text);
+    return text ? [text] : [];
+  });
+  const imageCount = contentItems.filter((entry) => entry.type === "inputImage").length;
+  const audioCount = contentItems.filter((entry) => entry.type === "inputAudio").length;
+  return (
+    <ExpandableToolActivity
+      {...props}
+      className="dynamic-tool-block"
+      icon={<Sparkles size={15} aria-hidden="true" />}
+      title={title}
+    >
+      <div className="tool-activity-details">
+        {item.arguments !== undefined && <JsonBlock value={item.arguments} label="Arguments" />}
+        {textOutputs.map((text, index) => (
+          <CodeBlock
+            code={stripAnsi(text)}
+            key={`${item.id}:output:${index}`}
+            label={textOutputs.length > 1 ? `Output ${index + 1}` : "Output"}
+            maxDisplayCharacters={TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS}
+            truncate="middle"
+          />
+        ))}
+        {(imageCount > 0 || audioCount > 0) && (
+          <div className="tool-output-summary">
+            {imageCount > 0 && <span><ImageIcon size={14} aria-hidden="true" />{imageCount} image output{imageCount === 1 ? "" : "s"}</span>}
+            {audioCount > 0 && <span>{audioCount} audio output{audioCount === 1 ? "" : "s"}</span>}
+          </div>
+        )}
+      </div>
+    </ExpandableToolActivity>
+  );
+}
+
+const COLLAB_TOOL_LABELS: Record<string, string> = {
+  spawnAgent: "Spawn agent",
+  sendInput: "Send agent input",
+  resumeAgent: "Resume agent",
+  wait: "Wait for agents",
+  closeAgent: "Close agent",
+};
+
+function CollabAgentToolCall(props: ItemRendererProps) {
+  const { item } = props;
+  const tool = readString(item.tool) ?? "Agent call";
+  const prompt = readString(item.prompt);
+  const model = readString(item.model);
+  const effort = readString(item.reasoningEffort);
+  const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.length : 0;
+  const states = isRecord(item.agentsStates)
+    ? Object.values(item.agentsStates).filter(isRecord)
+    : [];
+  const stateCounts: Record<string, number> = {};
+  for (const state of states) {
+    const status = readString(state.status);
+    if (status) stateCounts[status] = (stateCounts[status] ?? 0) + 1;
+  }
+  const details = [
+    receivers > 0 ? `${receivers} agent${receivers === 1 ? "" : "s"}` : null,
+    model,
+    effort,
+  ].filter((value): value is string => Boolean(value));
+  return (
+    <ExpandableToolActivity
+      {...props}
+      className="collab-agent-block"
+      detail={details.join(" / ") || undefined}
+      icon={<Users size={15} aria-hidden="true" />}
+      title={COLLAB_TOOL_LABELS[tool] ?? "Agent call"}
+    >
+      <div className="tool-activity-details">
+        {prompt && <CodeBlock code={prompt} label="Prompt" maxDisplayCharacters={20_000} truncate="middle" />}
+        {Object.keys(stateCounts).length > 0 && (
+          <div className="tool-output-summary" aria-label="Agent states">
+            {Object.entries(stateCounts).map(([status, count]) => (
+              <span key={status}>{count} {status}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    </ExpandableToolActivity>
+  );
+}
+
+function SubAgentActivity({ item }: ItemRendererProps) {
+  const kind = readString(item.kind);
+  const labels: Record<string, string> = {
+    started: "Agent started",
+    interacted: "Agent activity",
+    interrupted: "Agent interrupted",
+  };
+  return (
+    <StaticToolActivity
+      icon={<MessagesSquare size={15} aria-hidden="true" />}
+      item={item}
+      title={kind ? labels[kind] ?? "Agent activity" : "Agent activity"}
+    />
+  );
+}
+
+function ImageView({ item }: ItemRendererProps) {
+  return (
+    <StaticToolActivity
+      icon={<ScanEye size={15} aria-hidden="true" />}
+      item={item}
+      title="Viewed image"
+    />
+  );
+}
+
+function Sleep({ item }: ItemRendererProps) {
+  const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs) && item.durationMs >= 0
+    ? item.durationMs
+    : null;
+  const duration = durationMs === null
+    ? undefined
+    : durationMs >= 1_000
+      ? `${(durationMs / 1_000).toLocaleString(undefined, { maximumFractionDigits: 1 })}s`
+      : `${Math.round(durationMs)}ms`;
+  return (
+    <StaticToolActivity
+      detail={duration}
+      icon={<Clock3 size={15} aria-hidden="true" />}
+      item={item}
+      title="Waited"
+    />
+  );
+}
+
+function ImageGeneration(props: ItemRendererProps) {
+  const { item } = props;
+  const prompt = readString(item.revisedPrompt);
+  const hasResult = Boolean(readString(item.result));
+  if (!prompt && !hasResult) {
+    return (
+      <StaticToolActivity
+        icon={<ImagePlus size={15} aria-hidden="true" />}
+        item={item}
+        title="Image generation"
+      />
+    );
+  }
+  return (
+    <ExpandableToolActivity
+      {...props}
+      className="image-generation-block"
+      detail={hasResult ? "result available" : undefined}
+      icon={<ImagePlus size={15} aria-hidden="true" />}
+      title="Image generation"
+    >
+      <div className="tool-activity-details">
+        {prompt && <CodeBlock code={prompt} label="Revised prompt" maxDisplayCharacters={20_000} truncate="middle" />}
+        {hasResult && <div className="tool-output-summary"><span><ImageIcon size={14} aria-hidden="true" />Image result available</span></div>}
+      </div>
+    </ExpandableToolActivity>
+  );
+}
+
+function ReviewMode(props: ItemRendererProps) {
+  const { item } = props;
+  const entered = item.type === "enteredReviewMode";
+  const review = readString(item.review);
+  const title = entered ? "Review started" : "Review completed";
+  if (!review) {
+    return <StaticToolActivity icon={<ScanEye size={15} aria-hidden="true" />} item={item} title={title} />;
+  }
+  return (
+    <ExpandableToolActivity
+      {...props}
+      className="review-activity-block"
+      icon={<ScanEye size={15} aria-hidden="true" />}
+      title={title}
+    >
+      <div className="tool-activity-details"><Markdown compact>{review}</Markdown></div>
+    </ExpandableToolActivity>
+  );
+}
+
+function HookPrompt(props: ItemRendererProps) {
+  const { item } = props;
+  const fragments = Array.isArray(item.fragments) ? item.fragments.filter(isRecord) : [];
+  const text = fragments.flatMap((fragment) => {
+    const value = readString(fragment.text);
+    return value ? [value] : [];
+  }).join("\n\n");
+  if (!text) {
+    return <StaticToolActivity icon={<Workflow size={15} aria-hidden="true" />} item={item} title="Hook prompt" />;
+  }
+  return (
+    <ExpandableToolActivity
+      {...props}
+      className="hook-prompt-block"
+      icon={<Workflow size={15} aria-hidden="true" />}
+      title="Hook prompt"
+    >
+      <div className="tool-activity-details"><Markdown compact>{text}</Markdown></div>
+    </ExpandableToolActivity>
+  );
+}
+
+function ContextCompaction({ item }: ItemRendererProps) {
+  return (
+    <StaticToolActivity
+      icon={<Minimize2 size={15} aria-hidden="true" />}
+      item={item}
+      title="Context compacted"
+    />
+  );
+}
+
 function UnknownItem({ item }: ItemRendererProps) {
   const text = itemText(item);
   const visible = Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "type"].includes(key)));
@@ -480,10 +763,29 @@ export function ItemRenderer(props: ItemRendererProps) {
       return <FileChange {...props} />;
     case "mcpToolCall":
       return <McpToolCall {...props} />;
+    case "dynamicToolCall":
+      return <DynamicToolCall {...props} />;
+    case "collabAgentToolCall":
+      return <CollabAgentToolCall {...props} />;
+    case "subAgentActivity":
+      return <SubAgentActivity item={item} />;
     case "plan":
       return <PlanItem item={item} />;
     case "webSearch":
       return <WebSearch {...props} />;
+    case "imageView":
+      return <ImageView item={item} />;
+    case "sleep":
+      return <Sleep item={item} />;
+    case "imageGeneration":
+      return <ImageGeneration {...props} />;
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+      return <ReviewMode {...props} />;
+    case "hookPrompt":
+      return <HookPrompt {...props} />;
+    case "contextCompaction":
+      return <ContextCompaction item={item} />;
     default:
       if (item.type.toLowerCase().includes("plan")) return <PlanItem item={item} />;
       return <UnknownItem item={item} />;

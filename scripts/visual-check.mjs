@@ -93,6 +93,29 @@ const fixtureTurns = [
         changes: [{ path: "src/client.ts", kind: { type: "update", move_path: null }, diff: filePatch }],
       },
       {
+        id: "collab-agent",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Inspect the responsive activity layout.",
+        model: "gpt-5-codex",
+        reasoningEffort: "medium",
+        receiverThreadIds: ["019-visual-subagent"],
+        agentsStates: { "019-visual-subagent": { status: "completed", message: null } },
+      },
+      {
+        id: "subagent-activity",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "019-visual-subagent",
+        agentPath: "/workspace/ask-codex/.agents/visual",
+      },
+      {
+        id: "image-view",
+        type: "imageView",
+        path: "/workspace/ask-codex/visual-fixture.png",
+      },
+      {
         id: "agent-finish",
         type: "agentMessage",
         status: "completed",
@@ -324,6 +347,26 @@ async function inspectRichLayout(page) {
         );
       })
       .map((element) => element.className);
+    const activityStackLayouts = [...document.querySelectorAll(".activity-stack")].map((stack) => {
+      const children = [...stack.children].filter((element) => (
+        element.matches(".reasoning-block, .tool-activity, .activity-group")
+      ));
+      const boundaries = children.slice(1).map((element, index) => {
+        const previous = children[index];
+        const previousBox = previous.getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        const previousStyle = window.getComputedStyle(previous);
+        const style = window.getComputedStyle(element);
+        return {
+          gap: box.top - previousBox.bottom,
+          dividerWidth: Number.parseFloat(previousStyle.borderBottomWidth) +
+            Number.parseFloat(style.borderTopWidth),
+        };
+      });
+      return { children: children.length, boundaries };
+    });
+    const activityTitles = [...document.querySelectorAll(".tool-activity-title > strong")]
+      .map((element) => element.textContent?.trim());
     return {
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       clipped,
@@ -335,6 +378,14 @@ async function inspectRichLayout(page) {
         .filter((element) => element.textContent?.includes("Reasoning (2)")).length,
       commands: document.querySelectorAll(".command-block").length,
       activityGroups: document.querySelectorAll(".activity-group").length,
+      activityStacks: activityStackLayouts.length,
+      stackedActivityRuns: activityStackLayouts.filter(({ children }) => children > 1).length,
+      activityStackGapViolations: activityStackLayouts.flatMap(({ boundaries }) => boundaries)
+        .filter(({ gap }) => Math.abs(gap) > 0.5).length,
+      activityStackDividerViolations: activityStackLayouts.flatMap(({ boundaries }) => boundaries)
+        .filter(({ dividerWidth }) => Math.abs(dividerWidth - 1) > 0.01).length,
+      formalActivityLabels: ["Spawn agent", "Agent started", "Viewed image"]
+        .filter((label) => activityTitles.includes(label)),
       hiddenActivitySummaries: [...document.querySelectorAll(".command-summary")].filter((element) => {
         const box = element.getBoundingClientRect();
         return window.getComputedStyle(element).display === "none" || box.width === 0 || box.height === 0;
@@ -357,32 +408,104 @@ async function inspectRichLayout(page) {
 }
 
 async function inspectActiveReasoning(page, fixture, screenshotPath) {
+  const turnId = "turn-live-reasoning";
   const item = { id: "reasoning-live", type: "reasoning", summary: [], content: [] };
+  fixture.notify("turn/started", {
+    threadId: fixtureThread.id,
+    turn: {
+      id: turnId,
+      status: "inProgress",
+      startedAt: 1_800_000_110,
+      items: [],
+    },
+  });
   fixture.notify("item/started", {
     threadId: fixtureThread.id,
-    turnId: "turn-newest",
+    turnId,
     item,
   });
-  const status = page.getByRole("status", { name: "Reasoning in progress" });
+  const turn = page.locator(`[data-turn-id="${turnId}"]`);
+  await turn.waitFor();
+  const status = turn.getByRole("status", { name: "Turn status" });
   await status.waitFor();
+  await status.getByText("Reasoning active", { exact: true }).waitFor();
   await status.scrollIntoViewIfNeeded();
   await page.screenshot({ path: screenshotPath, fullPage: true });
-  const result = await status.evaluate((element) => {
+  const active = await status.evaluate((element) => {
     const box = element.getBoundingClientRect();
-    const spinner = element.querySelector(".reasoning-spinner");
+    const turnBox = element.closest(".turn")?.getBoundingClientRect();
+    const line = element.querySelector(".turn-reasoning-status");
+    const spinner = line?.querySelector("svg");
+    const label = line?.querySelector("span");
+    element.__askCodexVisualStatusSlot = true;
+    if (line) line.__askCodexVisualStatusLine = true;
+    if (spinner) spinner.__askCodexVisualStatusSpinner = true;
+    if (label) label.__askCodexVisualStatusLabel = true;
     return {
       fitsViewport: box.left >= 0 && box.right <= window.innerWidth,
       nonExpandable: element.tagName === "DIV" && !element.querySelector("summary"),
       spinnerAnimation: spinner ? window.getComputedStyle(spinner).animationName : null,
+      height: box.height,
+      relativeTop: turnBox ? box.top - turnBox.top : null,
     };
   });
   fixture.notify("item/completed", {
     threadId: fixtureThread.id,
-    turnId: "turn-newest",
+    turnId,
     item,
   });
-  await status.waitFor({ state: "hidden" });
-  return result;
+  await status.getByText("Reasoning idle", { exact: true }).waitFor();
+  const idle = await status.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const turnBox = element.closest(".turn")?.getBoundingClientRect();
+    const line = element.querySelector(".turn-reasoning-status");
+    const spinner = line?.querySelector("svg");
+    const label = line?.querySelector("span");
+    return {
+      sameSlot: element.__askCodexVisualStatusSlot === true,
+      sameLine: line?.__askCodexVisualStatusLine === true,
+      sameSpinner: spinner?.__askCodexVisualStatusSpinner === true,
+      sameLabel: label?.__askCodexVisualStatusLabel === true,
+      spinnerAnimation: spinner ? window.getComputedStyle(spinner).animationName : null,
+      height: box.height,
+      relativeTop: turnBox ? box.top - turnBox.top : null,
+      emptyReasoningHidden: !element.closest(".turn")?.querySelector(".reasoning-block, .activity-stack"),
+    };
+  });
+  fixture.notify("turn/completed", {
+    threadId: fixtureThread.id,
+    turn: {
+      id: turnId,
+      status: "completed",
+      startedAt: 1_800_000_110,
+      completedAt: 1_800_000_112,
+      durationMs: 2_000,
+      items: [item],
+    },
+  });
+  await status.getByText("completed", { exact: true }).waitFor();
+  const completed = await status.evaluate((element) => ({
+    sameSlot: element.__askCodexVisualStatusSlot === true,
+    hasMetadata: Boolean(element.querySelector(".turn-meta")),
+    hasReasoningStatus: Boolean(element.querySelector(".turn-reasoning-status")),
+  }));
+  return {
+    fitsViewport: active.fitsViewport,
+    nonExpandable: active.nonExpandable,
+    spinnerAnimation: active.spinnerAnimation,
+    idleSpinnerAnimation: idle.spinnerAnimation,
+    sameSlot: idle.sameSlot,
+    sameLine: idle.sameLine,
+    sameSpinner: idle.sameSpinner,
+    sameLabel: idle.sameLabel,
+    stableHeight: Math.abs(active.height - idle.height) <= 0.5,
+    stablePosition: active.relativeTop !== null && idle.relativeTop !== null &&
+      Math.abs(active.relativeTop - idle.relativeTop) <= 0.5,
+    emptyReasoningHidden: idle.emptyReasoningHidden,
+    completedSameSlot: completed.sameSlot,
+    completedHasMetadata: completed.hasMetadata,
+    completedReasoningHidden: !completed.hasReasoningStatus,
+  };
 }
 
 async function inspectFailedSubmission(page, fixture, screenshotPath) {
@@ -1005,6 +1128,11 @@ try {
     desktopRich.groupedReasoningLabels !== 1 ||
     desktopRich.commands === 0 ||
     desktopRich.activityGroups === 0 ||
+    desktopRich.activityStacks === 0 ||
+    desktopRich.stackedActivityRuns === 0 ||
+    desktopRich.activityStackGapViolations > 0 ||
+    desktopRich.activityStackDividerViolations > 0 ||
+    desktopRich.formalActivityLabels.join(",") !== "Spawn agent,Agent started,Viewed image" ||
     desktopRich.hiddenActivitySummaries > 0 ||
     desktopRich.reasonBlocks === 0 ||
     desktopRich.scrollingToolOutputs === 0 ||
@@ -1015,6 +1143,17 @@ try {
     !desktopActiveReasoning.fitsViewport ||
     !desktopActiveReasoning.nonExpandable ||
     desktopActiveReasoning.spinnerAnimation !== "spin" ||
+    desktopActiveReasoning.idleSpinnerAnimation !== "none" ||
+    !desktopActiveReasoning.sameSlot ||
+    !desktopActiveReasoning.sameLine ||
+    !desktopActiveReasoning.sameSpinner ||
+    !desktopActiveReasoning.sameLabel ||
+    !desktopActiveReasoning.stableHeight ||
+    !desktopActiveReasoning.stablePosition ||
+    !desktopActiveReasoning.emptyReasoningHidden ||
+    !desktopActiveReasoning.completedSameSlot ||
+    !desktopActiveReasoning.completedHasMetadata ||
+    !desktopActiveReasoning.completedReasoningHidden ||
     !desktopFailedSubmission.actionsUsable ||
     !desktopFailedSubmission.fitsViewport ||
     !desktopFailedSubmission.sendDisabled ||
@@ -1044,6 +1183,11 @@ try {
     mobileRich.reasoningBlocks !== 1 ||
     mobileRich.reasoningEntries !== 2 ||
     mobileRich.groupedReasoningLabels !== 1 ||
+    mobileRich.activityStacks === 0 ||
+    mobileRich.stackedActivityRuns === 0 ||
+    mobileRich.activityStackGapViolations > 0 ||
+    mobileRich.activityStackDividerViolations > 0 ||
+    mobileRich.formalActivityLabels.join(",") !== "Spawn agent,Agent started,Viewed image" ||
     mobileRich.hiddenActivitySummaries > 0 ||
     mobileRich.scrollingToolOutputs === 0 ||
     mobileRich.toolOutputTruncations === 0 ||
@@ -1053,6 +1197,17 @@ try {
     !mobileActiveReasoning.fitsViewport ||
     !mobileActiveReasoning.nonExpandable ||
     mobileActiveReasoning.spinnerAnimation !== "spin" ||
+    mobileActiveReasoning.idleSpinnerAnimation !== "none" ||
+    !mobileActiveReasoning.sameSlot ||
+    !mobileActiveReasoning.sameLine ||
+    !mobileActiveReasoning.sameSpinner ||
+    !mobileActiveReasoning.sameLabel ||
+    !mobileActiveReasoning.stableHeight ||
+    !mobileActiveReasoning.stablePosition ||
+    !mobileActiveReasoning.emptyReasoningHidden ||
+    !mobileActiveReasoning.completedSameSlot ||
+    !mobileActiveReasoning.completedHasMetadata ||
+    !mobileActiveReasoning.completedReasoningHidden ||
     !mobileFailedSubmission.actionsUsable ||
     !mobileFailedSubmission.fitsViewport ||
     !mobileFailedSubmission.sendDisabled ||

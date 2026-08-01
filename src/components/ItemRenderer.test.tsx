@@ -247,7 +247,7 @@ describe("ItemRenderer", () => {
     expect(screen.queryByText("Third summary")).not.toBeInTheDocument();
   });
 
-  it("shows one non-expandable live row for adjacent empty reasoning", () => {
+  it("keeps empty reasoning out of the activity stream while its fixed status slot changes in place", () => {
     const turn = {
       id: "turn-live-reasoning",
       status: "inProgress",
@@ -260,12 +260,58 @@ describe("ItemRenderer", () => {
       <TurnView activeReasoningItemIds={["reasoning-2"]} turn={turn} />,
     );
 
-    expect(screen.getByRole("status", { name: "Reasoning in progress" })).toHaveTextContent("Reasoning (2)");
-    expect(container.querySelector(".reasoning-spinner")).toBeInTheDocument();
-    expect(container.querySelector(".reasoning-block")?.tagName).toBe("DIV");
+    const statusSlot = screen.getByRole("status", { name: "Turn status" });
+    const statusSlotClassName = statusSlot.className;
+    const statusLine = container.querySelector(".turn-reasoning-status");
+    const statusChildren = statusLine ? [...statusLine.children] : [];
+    expect(statusSlot).toHaveClass("turn-status-slot--in-progress");
+    expect(statusSlot).toHaveTextContent("Reasoning active");
+    expect(statusLine).not.toBeNull();
+    expect(statusChildren).toHaveLength(2);
+    expect(container.querySelector(".turn-reasoning-status svg")).toHaveClass("spin");
+    expect(container.querySelector(".reasoning-block")).not.toBeInTheDocument();
+    expect(container.querySelector(".activity-stack")).not.toBeInTheDocument();
 
     rerender(<TurnView activeReasoningItemIds={[]} turn={turn} />);
-    expect(screen.queryByText("Reasoning (2)")).not.toBeInTheDocument();
+
+    const idleStatusSlot = screen.getByRole("status", { name: "Turn status" });
+    const idleStatusLine = container.querySelector(".turn-reasoning-status");
+    expect(idleStatusSlot).toBe(statusSlot);
+    expect(idleStatusLine).toBe(statusLine);
+    expect(idleStatusSlot.className).toBe(statusSlotClassName);
+    expect(idleStatusSlot).toHaveClass("turn-status-slot--in-progress");
+    expect(idleStatusSlot).toHaveTextContent("Reasoning idle");
+    expect(idleStatusLine ? [...idleStatusLine.children] : []).toEqual(statusChildren);
+    expect(container.querySelector(".turn-reasoning-status svg")).not.toHaveClass("spin");
+    expect(container.querySelector(".reasoning-block")).not.toBeInTheDocument();
+    expect(container.querySelector(".activity-stack")).not.toBeInTheDocument();
+  });
+
+  it("stacks consecutive reasoning and tool activities but breaks around semantic messages", () => {
+    const { container } = render(<TurnView turn={{
+      id: "turn-activity-stacks",
+      status: "inProgress",
+      items: [
+        { id: "reasoning-1", type: "reasoning", summary: ["First reasoning"], content: [] },
+        { id: "command-1", type: "commandExecution", command: "pwd", status: "completed" },
+        { id: "image-1", type: "imageView", path: "/private/first.png" },
+        { id: "agent-1", type: "agentMessage", text: "Semantic boundary" },
+        { id: "reasoning-2", type: "reasoning", summary: ["Second reasoning"], content: [] },
+        { id: "search-1", type: "webSearch", query: "documented API", status: "completed" },
+      ],
+    }} />);
+
+    const stacks = [...container.querySelectorAll(".activity-stack")];
+    const message = container.querySelector(".message--agent");
+    expect(stacks).toHaveLength(2);
+    expect(stacks[0].querySelectorAll(":scope > .reasoning-block")).toHaveLength(1);
+    expect(stacks[0].querySelectorAll(":scope > .activity-group")).toHaveLength(1);
+    expect(stacks[1].querySelectorAll(":scope > .reasoning-block")).toHaveLength(1);
+    expect(stacks[1].querySelectorAll(":scope > .tool-activity")).toHaveLength(1);
+    expect(message).not.toBeNull();
+    expect(stacks[0].compareDocumentPosition(message as Node) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect((message as Node).compareDocumentPosition(stacks[1]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(message?.closest(".activity-stack")).toBeNull();
   });
 
   it("makes omitted overflow reasoning parts explicit", () => {
@@ -363,6 +409,127 @@ describe("ItemRenderer", () => {
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.queryByText("passed")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".activity-group-list > .tool-activity")).toHaveLength(4);
+  });
+
+  it("groups formal machine activities and renders their safe details lazily", () => {
+    const { container } = render(<TurnView turn={{
+      id: "turn-formal-activities",
+      items: [
+        {
+          id: "dynamic-1",
+          type: "dynamicToolCall",
+          namespace: "tools",
+          tool: "search",
+          status: "completed",
+          arguments: { query: "documented API" },
+          contentItems: [
+            { type: "inputText", text: "Found the API reference" },
+            { type: "inputImage", imageUrl: "file:///private/dynamic-result.png" },
+          ],
+          success: true,
+        },
+        {
+          id: "collab-1",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "thread-private-sender",
+          receiverThreadIds: ["thread-private-receiver"],
+          prompt: "Inspect the renderer",
+          model: "gpt-test",
+          reasoningEffort: "medium",
+          agentsStates: { "thread-private-receiver": { status: "completed", message: null } },
+        },
+        {
+          id: "subagent-1",
+          type: "subAgentActivity",
+          kind: "started",
+          agentThreadId: "thread-private-agent",
+          agentPath: "/private/agents/renderer",
+        },
+        { id: "image-view-1", type: "imageView", path: "/private/screenshots/result.png" },
+      ],
+    }} />);
+
+    expect(screen.getByText("1 dynamic tool, 1 agent call, 1 agent update, 1 image view")).toBeInTheDocument();
+    expect(screen.queryByText("Found the API reference")).not.toBeInTheDocument();
+    openDetails("1 dynamic tool, 1 agent call, 1 agent update, 1 image view");
+    expect(container.querySelectorAll(".activity-group-list > .tool-activity")).toHaveLength(4);
+    expect(screen.getByText("tools / search")).toBeInTheDocument();
+    expect(screen.getByText("Spawn agent")).toBeInTheDocument();
+    expect(screen.getByText("Agent started")).toBeInTheDocument();
+    expect(screen.getByText("Viewed image")).toBeInTheDocument();
+    expect(screen.queryByText("Found the API reference")).not.toBeInTheDocument();
+
+    openDetails("tools / search");
+    expect(screen.getByText("Found the API reference")).toBeInTheDocument();
+    expect(screen.getByText("1 image output")).toBeInTheDocument();
+    openDetails("Spawn agent");
+    expect(screen.getByText("Inspect the renderer")).toBeInTheDocument();
+    expect(screen.getByLabelText("Agent states")).toHaveTextContent("1 completed");
+    expect(document.body).not.toHaveTextContent("/private/");
+    expect(document.body).not.toHaveTextContent("thread-private");
+    expect(document.body).not.toHaveTextContent("file://");
+  });
+
+  it("renders the remaining formal activity events without exposing generated paths", () => {
+    render(<TurnView turn={{
+      id: "turn-formal-events",
+      items: [
+        { id: "sleep-1", type: "sleep", durationMs: 1_500 },
+        {
+          id: "image-generation-1",
+          type: "imageGeneration",
+          status: "completed",
+          revisedPrompt: "A compact command palette",
+          result: "file:///private/generated/result.png",
+          savedPath: "/private/generated/result.png",
+        },
+        { id: "review-1", type: "enteredReviewMode", review: "Review the current changes" },
+        { id: "compact-1", type: "contextCompaction" },
+        {
+          id: "hook-1",
+          type: "hookPrompt",
+          fragments: [{ text: "Check project policy", hookRunId: "private-hook-run" }],
+        },
+      ],
+    }} />);
+
+    openDetails("1 image generation, 1 wait, 1 review event, 1 compaction, 1 hook prompt");
+    expect(screen.getByText("Waited")).toBeInTheDocument();
+    expect(screen.getByText("1.5s")).toBeInTheDocument();
+    expect(screen.getByText("Image generation")).toBeInTheDocument();
+    expect(screen.getByText("Review started")).toBeInTheDocument();
+    expect(screen.getByText("Context compacted")).toBeInTheDocument();
+    expect(screen.getByText("Hook prompt")).toBeInTheDocument();
+    expect(screen.queryByText("A compact command palette")).not.toBeInTheDocument();
+
+    openDetails("Image generation");
+    expect(screen.getByText("A compact command palette")).toBeInTheDocument();
+    expect(screen.getByText("Image result available")).toBeInTheDocument();
+    openDetails("Hook prompt");
+    expect(screen.getByText("Check project policy")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("/private/generated");
+    expect(document.body).not.toHaveTextContent("file://");
+    expect(document.body).not.toHaveTextContent("private-hook-run");
+  });
+
+  it("marks unsuccessful dynamic tools as failed and keeps truly unknown items as fallback details", () => {
+    const { container, rerender } = render(<TurnView turn={{
+      id: "turn-dynamic-failed",
+      items: [
+        { id: "dynamic-1", type: "dynamicToolCall", tool: "lookup", status: "completed", success: false },
+        { id: "image-view-1", type: "imageView", path: "/private/result.png" },
+      ],
+    }} />);
+
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(container.querySelector(".activity-group")).toHaveClass("activity-group--failed");
+
+    rerender(<ItemRenderer item={{ id: "future-1", type: "futureMachineItem", value: "future payload" }} />);
+    expect(screen.getByText("futureMachineItem")).toBeInTheDocument();
+    openDetails("futureMachineItem");
+    expect(screen.getByText(/future payload/)).toBeInTheDocument();
   });
 
   it("breaks activity groups around assistant and plan items", () => {

@@ -1,37 +1,20 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { CodexItem, CodexTurn } from "../types/protocol";
-import { errorMessage, formatTimestamp, timestampMilliseconds, userMessageImages } from "../utils/protocol";
+import { errorMessage, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
 import { ItemRenderer, ReasoningGroup } from "./ItemRenderer";
 import { LazyDetails } from "./LazyDetails";
 import { PlanView } from "./PlanView";
-import { StatusPill } from "./StatusPill";
-import { isToolActivityItem } from "./activityUtils";
+import { TurnStatusSlot } from "./TurnStatusSlot";
+import { hasVisibleReasoning, isToolActivityItem } from "./activityUtils";
 
 interface TurnViewProps {
   activeReasoningItemIds?: readonly string[];
   imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
   onLoadFullDetail?: (turnId: string) => void;
-}
-
-const secondsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
-
-function formatDuration(value: unknown): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
-  if (value < 1_000) return `${Math.round(value)}ms`;
-  if (value < 60_000) return `${secondsFormatter.format(value / 1_000)}s`;
-  const totalSeconds = Math.round(value / 1_000);
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  return [
-    ...(hours > 0 ? [`${hours}h`] : []),
-    ...(minutes > 0 ? [`${minutes}m`] : []),
-    ...(seconds > 0 || (hours === 0 && minutes === 0) ? [`${seconds}s`] : []),
-  ].join(" ");
 }
 
 interface ActivityDisclosureState {
@@ -46,11 +29,27 @@ function renderItems(
   items: CodexItem[],
   disclosure: ActivityDisclosureState,
   imagePreviewUrls: readonly string[],
-  activeReasoningItemIds: ReadonlySet<string>,
 ) {
-  const rendered = [];
+  const rendered: ReactNode[] = [];
+  let activityRun: ReactNode[] = [];
+  let activityRunId: string | null = null;
   let index = 0;
   let previewOffset = 0;
+
+  const appendActivity = (id: string, node: ReactNode) => {
+    if (activityRunId === null) activityRunId = id;
+    activityRun.push(node);
+  };
+  const flushActivityRun = () => {
+    if (activityRun.length === 0 || activityRunId === null) return;
+    rendered.push((
+      <div className="activity-stack" key={`activity-stack-${activityRunId}`}>
+        {activityRun}
+      </div>
+    ));
+    activityRun = [];
+    activityRunId = null;
+  };
 
   while (index < items.length) {
     const item = items[index];
@@ -61,17 +60,16 @@ function renderItems(
         reasoningItems.push(items[nextIndex]);
         nextIndex += 1;
       }
-      rendered.push((
-        <ReasoningGroup
-          active={reasoningItems.some((entry) => activeReasoningItemIds.has(entry.id))}
-          items={reasoningItems}
-          key={`reasoning-${reasoningItems[0].id}`}
-        />
-      ));
+      if (hasVisibleReasoning(reasoningItems)) {
+        appendActivity(reasoningItems[0].id, (
+          <ReasoningGroup items={reasoningItems} key={`reasoning-${reasoningItems[0].id}`} />
+        ));
+      }
       index = nextIndex;
       continue;
     }
     if (!isToolActivityItem(item)) {
+      flushActivityRun();
       const localImageCount = item.type === "userMessage"
         ? userMessageImages(item).filter((image) => image.type === "localImage").length
         : 0;
@@ -92,7 +90,7 @@ function renderItems(
     if (activities.length >= 2) {
       // The first item id remains stable as streamed items are appended to this group.
       const groupId = activities[0].id;
-      rendered.push((
+      appendActivity(groupId, (
         <ActivityGroup
           items={activities}
           key={`activity-${groupId}`}
@@ -103,7 +101,7 @@ function renderItems(
         />
       ));
     } else {
-      rendered.push((
+      appendActivity(item.id, (
         <ItemRenderer
           disclosureOpen={disclosure.itemOpenIds.has(item.id)}
           key={item.id}
@@ -115,6 +113,7 @@ function renderItems(
     index = nextIndex;
   }
 
+  flushActivityRun();
   return rendered;
 }
 
@@ -138,12 +137,6 @@ export function TurnView({
           ? hasItemPages ? "Retry more detail" : "Retry full detail"
           : hasItemPages ? "Load more detail" : "Load full detail";
   const omissions = turn.recoveryOmissions ?? [];
-  const activeReasoningIds = new Set(activeReasoningItemIds);
-  const startedAtMs = timestampMilliseconds(turn.startedAt);
-  const startedAt = startedAtMs === null ? "" : formatTimestamp(startedAtMs);
-  const duration = formatDuration(turn.durationMs);
-  const completedStatus = turn.status && turn.status !== "inProgress" ? turn.status : undefined;
-  const hasMetadata = Boolean(startedAt || duration);
 
   const updateOpenIds = (
     setter: typeof setItemOpenIds,
@@ -204,7 +197,7 @@ export function TurnView({
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {renderItems(turn.items, disclosure, imagePreviewUrls, activeReasoningIds)}
+      {renderItems(turn.items, disclosure, imagePreviewUrls)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />
@@ -225,21 +218,7 @@ export function TurnView({
           <DiffViewer diff={turn.diff} />
         </LazyDetails>
       )}
-      {(hasMetadata || completedStatus) && (
-        <div className="turn-footer">
-          {hasMetadata && (
-            <div className="turn-meta" role="group" aria-label="Turn details">
-              {startedAt && startedAtMs !== null && (
-                <time className="turn-meta__item" dateTime={new Date(startedAtMs).toISOString()}>
-                  Started {startedAt}
-                </time>
-              )}
-              {duration && <span className="turn-meta__item">Duration {duration}</span>}
-            </div>
-          )}
-          {completedStatus && <StatusPill status={completedStatus} />}
-        </div>
-      )}
+      <TurnStatusSlot reasoningActive={activeReasoningItemIds.length > 0} turn={turn} />
     </section>
   );
 }

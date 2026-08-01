@@ -42,11 +42,14 @@ The implementation currently provides:
   threads retain the one-turn full-detail retry.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering. Consecutive
-  reasoning items are grouped for display, empty completed reasoning is hidden,
-  and only actively reasoning items animate. The current turn's structured
-  plan also appears above the composer as a compact normal-layout summary that
-  expands into a bounded scrolling step list; the summary disappears when the
-  turn ends while the historical plan stays in its original turn. A turn diff
+  historical reasoning with content stays grouped and expandable in place,
+  while each turn in progress keeps a fixed reasoning status slot at its bottom:
+  active reasoning animates and idle reasoning appears muted, so reasoning
+  lifecycles no longer repeatedly change the stream height. The current turn's
+  structured plan also appears above the composer as a compact normal-layout
+  summary that expands into a bounded scrolling step list; the summary
+  disappears when the turn ends while the historical plan stays in its original
+  turn. A turn diff
   is explicitly shown as a whole-turn change summary at the end of its turn;
   the following turn footer shows the app-server's native start time and total
   duration, silently omitting missing fields. Stream and message sizes remain
@@ -55,8 +58,10 @@ The implementation currently provides:
   replace items.
 - Reusable syntax-highlighted code blocks, copy and wrap controls, structured
   unified/split diffs, safe raw-diff fallback, and bounded two-level tool
-  disclosures that group consecutive commands, file changes, MCP calls, and
-  searches while keeping assistant messages prominent.
+  disclosures. Consecutive first-class machine activities form a zero-gap stack
+  separated only by single rules, including commands, file changes, MCP calls,
+  searches, dynamic tools, subagent/collaboration activity, image views, and
+  image generation, while assistant messages remain prominent.
 - Browser handling for command and file-change approvals and structured
   `request_user_input` requests. Captured command approval reasons remain
   attached to the exact command item for the current browser session.
@@ -167,42 +172,21 @@ not a delivery commitment.
 
 ## Verification
 
-This round of code verification was completed on 2026-08-01 with Node.js
+Verification for this round was completed on 2026-08-01 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
-- `npm run typecheck` passed.
-- `npm run lint` passed.
-- `npm test` passed: 27 files, 336 tests. The server tests were run in an
-  environment that permits loopback socket binding.
-- `npm run build` passed.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173 ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-turn-timing-final npm run check:visual`
-  passed against the current production build. Deterministic desktop and
-  390x844 mobile fixtures covered the Active and Archived views, desktop
-  context menu, mobile long-press menu, permanent-delete confirmation,
-  new-thread dialog, configured model selections, draft image previews,
-  thumbnail loading, bounded layout and new-tab behavior after sending and
-  reloading, grouped tools, a simulated approval reason, consecutive reasoning
-  grouping, active-reasoning animation, whole-turn change summaries, turn timing
-  footers, the unconfirmed-send recovery row, and the current Plan dock while
-  collapsed, expanded alongside an approval, and dismissed after completion. No
-  horizontal overflow, overlapping controls, clipped rich content, console errors,
-  or page errors were found. The fixture canceled at deletion confirmation,
-  intercepted all simulated RPCs in the browser test, and created no real Codex
-  turn.
-
-- Bindings generated from Codex CLI `0.146.0` were checked: threads include
-  `recencyAt` for ordering and `ThreadSortKey` supports `recency_at`; reasoning
-  `summary` and `content` may both be empty, and `turn/diff/updated` is the
-  latest turn-level aggregate snapshot; `Turn` natively provides nullable
-  `startedAt`, `completedAt`, and `durationMs`. No real turn was created.
-
-The protocol verification recorded on 2026-07-25 still applies to the
-protocol paths unchanged in this round:
-
-- Bindings from the CLI current at that time were generated and checked:
-  `TurnItemsView` is
-  `notLoaded | summary | full`, and `turn/completed` carries a `Turn` object.
-  No real turn was created.
-- A direct app-server protocol smoke check passed: an ephemeral `thread/start`
-  without `historyMode` returned `historyMode: "legacy"`; no real turn was
-  created.
+- `npm run typecheck`, `npm run lint`, and `npm run build` passed.
+- `NODE_ENV=test npm test` passed: 28 test files and 347 tests. Server tests
+  ran in an environment that permits loopback socket binding.
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-activity-stack npm run check:visual`
+  passed against the current production build. Desktop and 390x844 mobile
+  fixtures confirmed zero gaps between consecutive activities and exactly one
+  1px rule at every adjacent boundary; first-class collaboration, subagent, and
+  image-view activities all rendered. Empty reasoning stayed out of the stream,
+  and the fixed status slot reused the same root across Active, Idle, and
+  completed states while its internal row, icon, label, position, and height
+  stayed stable during the Active/Idle transition. No horizontal overflow,
+  clipped rich content, overlapping footer content, console errors, or page
+  errors were found. Deterministic browser fixtures intercepted every RPC and
+  created no real Codex turn.
