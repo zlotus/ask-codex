@@ -5,6 +5,7 @@ import {
   extractModels,
   itemText,
   normalizeItemsPage,
+  normalizeTurn,
   normalizeTurnsPage,
   sandboxMode,
   userMessageContent,
@@ -122,6 +123,27 @@ describe("multimodal protocol normalization", () => {
 });
 
 describe("turn page normalization", () => {
+  it("keeps valid turn timing and drops malformed values", () => {
+    expect(normalizeTurn({
+      id: "turn-timed",
+      items: [],
+      startedAt: 1_800_000_000,
+      completedAt: null,
+      durationMs: 2_450,
+    })).toEqual(expect.objectContaining({
+      startedAt: 1_800_000_000,
+      completedAt: null,
+      durationMs: 2_450,
+    }));
+    expect(normalizeTurn({
+      id: "turn-invalid-timing",
+      items: [],
+      startedAt: "yesterday",
+      completedAt: Number.POSITIVE_INFINITY,
+      durationMs: -1,
+    })).toEqual({ id: "turn-invalid-timing", items: [] });
+  });
+
   it("normalizes an initial resume page without changing protocol order", () => {
     expect(extractInitialTurnsPage({
       initialTurnsPage: {

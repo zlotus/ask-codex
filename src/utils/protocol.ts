@@ -129,7 +129,16 @@ export function normalizeTurn(value: unknown): CodexTurn | null {
   if (!isRecord(value) || typeof value.id !== "string") return null;
   const rawItems = Array.isArray(value.items) ? value.items : [];
   const items = rawItems.map(normalizeItem).filter((item): item is CodexItem => item !== null);
-  return { ...value, id: value.id, items };
+  const turn: CodexTurn = { ...value, id: value.id, items };
+  for (const field of ["startedAt", "completedAt", "durationMs"] as const) {
+    const raw = value[field];
+    if (raw === null || (typeof raw === "number" && Number.isFinite(raw) && raw >= 0)) {
+      turn[field] = raw;
+    } else {
+      delete turn[field];
+    }
+  }
+  return turn;
 }
 
 export function normalizeThread(value: unknown): CodexThread | null {

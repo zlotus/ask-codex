@@ -689,12 +689,16 @@ describe("App thread settings lifecycle", () => {
           status: "completed",
           itemsView: "notLoaded",
           items: [],
+          startedAt: 1_800_000_000,
+          completedAt: 1_800_000_002.5,
+          durationMs: 2_500,
         },
       },
     }));
 
     expect(screen.getByText("Streamed response remains visible")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Turn details" })).toHaveTextContent("Duration 2.5s");
     expect(screen.queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
   });
 

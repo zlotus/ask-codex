@@ -1891,8 +1891,33 @@ details[open] > summary .details-chevron {
 
 .turn-footer {
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px 12px;
   margin-top: 11px;
+}
+
+.turn-meta {
+  display: flex;
+  flex: 1 1 240px;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 4px 12px;
+  color: #666d66;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+}
+
+.turn-meta__item {
+  white-space: nowrap;
+}
+
+.turn-footer > .status-pill {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .active-plan-dock {

@@ -1,7 +1,7 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { CodexItem, CodexTurn } from "../types/protocol";
-import { errorMessage, userMessageImages } from "../utils/protocol";
+import { errorMessage, formatTimestamp, timestampMilliseconds, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
 import { ItemRenderer, ReasoningGroup } from "./ItemRenderer";
@@ -15,6 +15,23 @@ interface TurnViewProps {
   imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
   onLoadFullDetail?: (turnId: string) => void;
+}
+
+const secondsFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+function formatDuration(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  if (value < 1_000) return `${Math.round(value)}ms`;
+  if (value < 60_000) return `${secondsFormatter.format(value / 1_000)}s`;
+  const totalSeconds = Math.round(value / 1_000);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    ...(hours > 0 ? [`${hours}h`] : []),
+    ...(minutes > 0 ? [`${minutes}m`] : []),
+    ...(seconds > 0 || (hours === 0 && minutes === 0) ? [`${seconds}s`] : []),
+  ].join(" ");
 }
 
 interface ActivityDisclosureState {
@@ -122,6 +139,11 @@ export function TurnView({
           : hasItemPages ? "Load more detail" : "Load full detail";
   const omissions = turn.recoveryOmissions ?? [];
   const activeReasoningIds = new Set(activeReasoningItemIds);
+  const startedAtMs = timestampMilliseconds(turn.startedAt);
+  const startedAt = startedAtMs === null ? "" : formatTimestamp(startedAtMs);
+  const duration = formatDuration(turn.durationMs);
+  const completedStatus = turn.status && turn.status !== "inProgress" ? turn.status : undefined;
+  const hasMetadata = Boolean(startedAt || duration);
 
   const updateOpenIds = (
     setter: typeof setItemOpenIds,
@@ -203,8 +225,20 @@ export function TurnView({
           <DiffViewer diff={turn.diff} />
         </LazyDetails>
       )}
-      {turn.status && turn.status !== "inProgress" && (
-        <div className="turn-footer"><StatusPill status={turn.status} /></div>
+      {(hasMetadata || completedStatus) && (
+        <div className="turn-footer">
+          {hasMetadata && (
+            <div className="turn-meta" role="group" aria-label="Turn details">
+              {startedAt && startedAtMs !== null && (
+                <time className="turn-meta__item" dateTime={new Date(startedAtMs).toISOString()}>
+                  Started {startedAt}
+                </time>
+              )}
+              {duration && <span className="turn-meta__item">Duration {duration}</span>}
+            </div>
+          )}
+          {completedStatus && <StatusPill status={completedStatus} />}
+        </div>
       )}
     </section>
   );

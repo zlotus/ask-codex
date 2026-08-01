@@ -292,6 +292,58 @@ describe("ItemRenderer", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Turn details" })).not.toBeInTheDocument();
+  });
+
+  it("renders native turn start time and duration in the footer", () => {
+    render(<TurnView turn={{
+      id: "turn-timed",
+      status: "completed",
+      items: [],
+      startedAt: 1_800_000_000,
+      completedAt: 1_800_000_002.5,
+      durationMs: 2_500,
+    }} />);
+
+    const details = screen.getByRole("group", { name: "Turn details" });
+    expect(details).toHaveTextContent("Started");
+    expect(details).toHaveTextContent("Duration 2.5s");
+    expect(details.querySelector("time")).toHaveAttribute(
+      "datetime",
+      new Date(1_800_000_000_000).toISOString(),
+    );
+  });
+
+  it.each([
+    [450, "Duration 450ms"],
+    [60_000, "Duration 1m"],
+    [3_661_000, "Duration 1h 1m 1s"],
+  ])("formats a %ims turn duration as %s", (durationMs, expected) => {
+    render(<TurnView turn={{ id: `turn-${durationMs}`, items: [], durationMs }} />);
+
+    expect(screen.getByRole("group", { name: "Turn details" })).toHaveTextContent(expected);
+  });
+
+  it("hides null or invalid turn timing", () => {
+    const { rerender } = render(<TurnView turn={{
+      id: "turn-untimed",
+      status: "inProgress",
+      items: [],
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    }} />);
+
+    expect(screen.queryByRole("group", { name: "Turn details" })).not.toBeInTheDocument();
+
+    rerender(<TurnView turn={{
+      id: "turn-invalid-timing",
+      status: "inProgress",
+      items: [],
+      startedAt: Number.POSITIVE_INFINITY,
+      durationMs: -1,
+    }} />);
+    expect(screen.queryByRole("group", { name: "Turn details" })).not.toBeInTheDocument();
   });
 
   it("groups consecutive tool activities and keeps their details lazy", () => {
@@ -416,9 +468,16 @@ describe("ItemRenderer", () => {
       id: "turn-1",
       status: "completed",
       items: [],
+      startedAt: 1_800_000_000,
+      durationMs: 1_000,
       diff: "@@ -1 +1 @@\n-old\n+new",
     }} />);
 
+    const diff = container.querySelector(".turn-diff");
+    const footer = container.querySelector(".turn-footer");
+    expect(diff).not.toBeNull();
+    expect(footer).not.toBeNull();
+    expect((diff as Node).compareDocumentPosition(footer as Node) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector(".diff-viewer")).not.toBeInTheDocument();
     openDetails("Changes in this turn");
     expect(container.querySelector(".diff-viewer")).toBeInTheDocument();

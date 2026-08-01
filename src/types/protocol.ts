@@ -112,6 +112,9 @@ export interface CodexTurn {
   status?: TurnStatus;
   items: CodexItem[];
   error?: unknown;
+  startedAt?: number | null;
+  completedAt?: number | null;
+  durationMs?: number | null;
   diff?: string;
   plan?: TurnPlan;
   recoveryOmissions?: string[];

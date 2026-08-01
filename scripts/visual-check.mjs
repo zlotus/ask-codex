@@ -57,6 +57,9 @@ const fixtureTurns = [
   {
     id: "turn-newest",
     status: "completed",
+    startedAt: 1_800_000_060,
+    completedAt: 1_800_000_100,
+    durationMs: 40_250,
     items: [
       {
         id: "reasoning-one",
@@ -101,6 +104,9 @@ const fixtureTurns = [
   {
     id: "turn-older",
     status: "completed",
+    startedAt: 1_800_000_010,
+    completedAt: 1_800_000_025,
+    durationMs: 15_000,
     items: [
       {
         id: "user",
@@ -299,11 +305,23 @@ async function openRichDetails(page) {
 
 async function inspectRichLayout(page) {
   return page.evaluate(() => {
-    const selectors = [".reasoning-block", ".code-block", ".diff-viewer", ".command-block", ".activity-group"];
+    const selectors = [
+      ".reasoning-block",
+      ".code-block",
+      ".diff-viewer",
+      ".command-block",
+      ".activity-group",
+      ".turn-footer",
+      ".turn-meta",
+      ".turn-meta__item",
+    ];
     const clipped = selectors.flatMap((selector) => [...document.querySelectorAll(selector)])
       .filter((element) => {
         const box = element.getBoundingClientRect();
-        return box.left < 0 || box.right > window.innerWidth + 1;
+        const footer = element.closest(".turn-footer")?.getBoundingClientRect();
+        return box.left < 0 || box.right > window.innerWidth + 1 || Boolean(
+          footer && (box.left < footer.left - 1 || box.right > footer.right + 1),
+        );
       })
       .map((element) => element.className);
     return {
@@ -325,6 +343,15 @@ async function inspectRichLayout(page) {
       scrollingToolOutputs: [...document.querySelectorAll(".tool-activity .code-block-content")]
         .filter((element) => element.scrollHeight > element.clientHeight).length,
       toolOutputTruncations: document.querySelectorAll(".tool-activity .code-block-truncation").length,
+      turnFooters: document.querySelectorAll(".turn-footer").length,
+      turnMetadata: document.querySelectorAll(".turn-meta").length,
+      overlappingTurnFooterContent: [...document.querySelectorAll(".turn-footer")]
+        .filter((footer) => {
+          const metadata = footer.querySelector(".turn-meta")?.getBoundingClientRect();
+          const status = footer.querySelector(".status-pill")?.getBoundingClientRect();
+          return Boolean(metadata && status && metadata.left < status.right && metadata.right > status.left &&
+            metadata.top < status.bottom && metadata.bottom > status.top);
+        }).length,
     };
   });
 }
@@ -982,6 +1009,9 @@ try {
     desktopRich.reasonBlocks === 0 ||
     desktopRich.scrollingToolOutputs === 0 ||
     desktopRich.toolOutputTruncations === 0 ||
+    desktopRich.turnFooters < 2 ||
+    desktopRich.turnMetadata < 2 ||
+    desktopRich.overlappingTurnFooterContent > 0 ||
     !desktopActiveReasoning.fitsViewport ||
     !desktopActiveReasoning.nonExpandable ||
     desktopActiveReasoning.spinnerAnimation !== "spin" ||
@@ -1017,6 +1047,9 @@ try {
     mobileRich.hiddenActivitySummaries > 0 ||
     mobileRich.scrollingToolOutputs === 0 ||
     mobileRich.toolOutputTruncations === 0 ||
+    mobileRich.turnFooters < 2 ||
+    mobileRich.turnMetadata < 2 ||
+    mobileRich.overlappingTurnFooterContent > 0 ||
     !mobileActiveReasoning.fitsViewport ||
     !mobileActiveReasoning.nonExpandable ||
     mobileActiveReasoning.spinnerAnimation !== "spin" ||
