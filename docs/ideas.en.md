@@ -2,7 +2,7 @@
 
 [简体中文](ideas.md) | **English**
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-02
 
 These are candidates for future planning, not promises, accepted decisions, or
 an ordered roadmap. Move an idea into `progress.en.md` only when it becomes near
@@ -16,7 +16,6 @@ tracking or durable rationale.
 - Optional safe ANSI color rendering for command output; control sequences are
   currently stripped to readable text.
 - Native turn steering using `expectedTurnId`, plus thread fork actions.
-- Token usage and rate-limit views that remain useful on mobile.
 
 ## Navigation And Skills
 
@@ -30,8 +29,6 @@ tracking or durable rationale.
 
 - A persistent message queue that can be prepared on one device and consumed by
   the active thread without duplicate or stale-turn delivery.
-- Connection recovery that makes long-running turns and pending approvals clear
-  after a mobile browser sleeps or reconnects.
 
 ## Host Capabilities
 

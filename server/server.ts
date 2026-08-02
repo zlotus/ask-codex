@@ -40,9 +40,9 @@ import {
   ALLOWED_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
   materializeTurnStartAttachments,
+  sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
-  sanitizeBrowserVisibleValue,
 } from "./rpc-policy.js";
 import { normalizeServerRequestResponse } from "./server-request-policy.js";
 import {
@@ -221,11 +221,19 @@ function rpcIdKey(id: RpcId): string {
   return `${typeof id}:${String(id)}`;
 }
 
+const FIXED_APP_SERVER_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  "skills/list": "Codex app-server could not list skills",
+  "account/read": "Codex app-server could not read account status",
+  "account/rateLimits/read": "Codex app-server could not read rate limits",
+  "account/usage/read": "Codex app-server could not read account usage",
+};
+
 function errorPayload(method: string, error: unknown): unknown {
   if (error instanceof ClientRpcError) {
     return { code: error.code, message: error.message };
   }
-  if (method === "skills/list") {
+  const fixedMessage = FIXED_APP_SERVER_ERROR_MESSAGES[method];
+  if (fixedMessage) {
     const rawCode = error instanceof CodexRpcError && isRecord(error.rpcError)
       ? error.rpcError.code
       : undefined;
@@ -233,7 +241,7 @@ function errorPayload(method: string, error: unknown): unknown {
       code: typeof rawCode === "number" && Number.isSafeInteger(rawCode)
         ? rawCode
         : -32_000,
-      message: "Codex app-server could not list skills",
+      message: fixedMessage,
     };
   }
   if (error instanceof CodexRpcError) {
@@ -659,7 +667,7 @@ export class AskCodexServer {
       this.broadcast({
         type: "notification",
         method,
-        params: sanitizeBrowserVisibleValue(params),
+        params: sanitizeBrowserNotificationParams(method, params),
       });
     });
     this.codex.on("request", (id, method, params) => {

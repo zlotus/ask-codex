@@ -935,6 +935,57 @@ describe("AskCodexServer", () => {
     ]);
   });
 
+  it("broadcasts only sparse projected account rate-limit updates", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    gateway.emit("notification", "account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 61,
+          description: "private window",
+        },
+        planType: "plus",
+        email: "private@example.com",
+        accountId: "private-account-id",
+        resetCredit: {
+          id: "opaque-private-id",
+          description: "secret reset credit",
+        },
+      },
+      email: "private@example.com",
+      description: "secret account metadata",
+    });
+    const notification = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "account/rateLimits/updated",
+    );
+
+    expect(notification).toEqual({
+      type: "notification",
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "codex",
+          primary: {
+            usedPercent: 61,
+          },
+          planType: "plus",
+        },
+      },
+    });
+    expect(JSON.stringify(notification)).not.toMatch(
+      /private|secret|opaque|email|description/i,
+    );
+  });
+
   it("does not change approval ownership when another client reads thread data", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
@@ -1175,6 +1226,54 @@ describe("AskCodexServer", () => {
     });
     expect(JSON.stringify(error)).not.toContain("/private");
     expect(JSON.stringify(error)).not.toContain("secret");
+  });
+
+  it.each([
+    ["account/read", "Codex app-server could not read account status"],
+    ["account/rateLimits/read", "Codex app-server could not read rate limits"],
+    ["account/usage/read", "Codex app-server could not read account usage"],
+  ])("redacts top-level %s app-server errors", async (method, fixedMessage) => {
+    const gateway = new FakeGateway();
+    gateway.request.mockRejectedValueOnce(new CodexRpcError({
+      code: -32_603,
+      message: "Account private@example.com could not read /private/usage.json",
+      data: {
+        accountId: "private-account-id",
+        email: "private@example.com",
+        resetCreditId: "opaque-private-credit",
+        description: "secret description",
+      },
+    }));
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "account-monitor-error",
+      method,
+      params: {},
+    }));
+    const error = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "account-monitor-error",
+    );
+
+    expect(gateway.request).toHaveBeenCalledWith(
+      method,
+      method === "account/read" ? {} : undefined,
+    );
+    expect(error).toEqual({
+      type: "rpcError",
+      id: "account-monitor-error",
+      error: {
+        code: -32_603,
+        message: fixedMessage,
+      },
+    });
+    expect(JSON.stringify(error)).not.toMatch(/private|secret|opaque|email|description/i);
   });
 
   it("fails closed for granular permissions and MCP elicitations", async () => {

@@ -2,18 +2,19 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-02
 
 ## Current Milestone
 
-Project-oriented thread navigation and read-only Skills discovery are
-implemented. Active and Archived organize threads by working directory and put
-pinned threads first within each group. The shared action menu adds rename,
-pin, and unpin while turns in progress continue to restrict only archive and
-delete. A third Skills tab presents bounded read-only metadata by working
-directory through the official `skills/list` method. The next milestone moves
-to cross-thread Activity and usage visibility without changing the trust model
-for manual approval, remote access, or host capabilities.
+Cross-thread runtime monitoring is implemented. A third Activity tab provides
+a read-only directory of attention, running, and recent thread states; the
+toolbar distinguishes connection, automatic retry, and read-only
+resynchronization; and a Usage panel presents current-thread tokens, account
+activity, and rate-limit windows. Every account method remains explicitly
+allowlisted and narrowly projected. Reconnection neither replays writes nor
+claims a thread through background `thread/resume`, so the trust model for
+manual approval, remote access, and host capabilities is unchanged. The next
+near-term item has not been selected.
 
 ## Current Baseline
 
@@ -40,7 +41,7 @@ The implementation currently provides:
   Cross-client name, archive, restore, and delete notifications reconcile the
   lists and current selection. Deletion also removes that thread's browser-local image
   previews from memory and IndexedDB.
-- A third read-only Skills tab groups skill names, descriptions,
+- A fourth read-only Skills tab groups skill names, descriptions,
   `user`/`repo`/`system`/`admin` scopes, and enabled states by cwd, and reports
   load failures only as a count. The directory starts loading when the tab is
   first opened. Manual refresh sends `forceReload: true`, while a
@@ -49,6 +50,43 @@ The implementation currently provides:
   deleted historical directory degrades independently instead of hiding valid
   projects. Separate generation guards prevent older Skills or thread-list
   responses from replacing newer state.
+- A third read-only Activity tab combines native thread runtime status,
+  `activeFlags`, pending requests, and bounded `turn/started`, `turn/completed`,
+  and `thread/status/changed` events into Needs attention, Running now, and
+  Recent sections. The recent-event ring retains only a thread id, optional
+  turn id, activity kind, time, and turn duration when available; names and cwd
+  values used for display come from the read-only thread list. It never retains
+  cross-thread command output, MCP parameters, or file contents. An explicit
+  idle snapshot supersedes a transient running event left from before a
+  disconnect. Viewing or refreshing Activity reads the thread list without
+  resuming or claiming threads or changing approval routing; selecting an entry
+  follows the normal explicit user flow.
+- The toolbar displays Connecting, retry attempts, Disconnected/Error,
+  Connected · Syncing, Sync failed, Ready, or Working and supports immediate
+  retry. WebSocket backoff resets only after Codex is actually ready. The first
+  ready state establishes a baseline. Retrying a Codex child-process Error uses a
+  bounded read-only `model/list` probe to trigger the gateway restart, while a
+  WebSocket failure rebuilds the browser connection. A later ready state on the
+  same or a new connection uses `thread/read` and
+  `thread/turns/list` to resynchronize the selected thread from a read-only
+  snapshot before sending is re-enabled, reusing the bounded notification
+  buffer and two-pass coordinator. A failed sync keeps sending disabled and
+  offers a read-only retry. Disconnects clear stale browser approvals, while
+  the gateway reoffers requests that remain unresolved after reconnection.
+  Recovery does not replay unconfirmed writes such as `turn/start`; if a
+  disconnect interrupted a thread's first load, the user must explicitly retry
+  it rather than invoking ownership-changing background `thread/resume`.
+- The toolbar Usage dialog shows the selected thread from an in-memory LRU of
+  at most 32 token snapshots, latest-context use, account totals and recent
+  daily activity, and single- or multi-bucket rate windows, reset times, and a
+  safe credit summary. Account reads call `account/usage/read` and
+  `account/rateLimits/read` concurrently. Rolling
+  `account/rateLimits/updated` notifications merge sparsely. Updates received
+  during a read cannot be overwritten by its older response, absent or null
+  account metadata does not erase a full snapshot, and rolling buckets remain
+  capped at 32. Reached rate or spend-control limits are called out explicitly.
+  API-key and Bedrock sign-in modes that do not support account usage degrade
+  independently in the panel without a misleading toast.
 - Incremental recent-turn loading through `thread/turns/list`, adaptive page
   sizing, retryable older pages, and summary fallback. App-server chooses the
   default history contract for new threads instead of Ask Codex forcing the
@@ -94,7 +132,12 @@ The implementation currently provides:
   flattened `interface.shortDescription`, scope, enabled state, and an error
   count per cwd; skill paths, dependencies, remaining interface metadata, and
   specific error text do not reach the browser. Top-level Skills RPC failures
-  from the upstream app-server also use a fixed redacted message.
+  from the upstream app-server also use a fixed redacted message. Account usage
+  and rate-limit reads accept only empty browser parameters and send no params
+  upstream. Results project at most 366 daily buckets and 32 rate-limit
+  buckets while dropping account identity, reset-credit details, and unknown
+  fields. `account/rateLimits/updated` uses the same field-level sparse
+  projection, and all three account-read failures use fixed redacted messages.
 - Composer support for selecting, pasting, previewing, removing, and sending
   PNG, JPEG, and WebP images, including image-only turns, with the entry point
   enabled only when a model explicitly declares image input. Image bytes use
@@ -141,8 +184,13 @@ as executed.
   captured during the current browser session and through in-session resync,
   but cannot reconstruct them after a page reload or on another device from
   native thread history alone.
-- There is no independent cross-thread Activity view, usage panel, or thread
-  fork action.
+- Activity's recent-event ring exists only in the current page and is not a
+  persistent audit log. Realtime visibility is limited to threads the current
+  Ask Codex app-server process can list or broadcast; another CLI or IDE
+  process does not share its item-level live stream. `account/usage/read` and
+  account rate limits may also be unavailable for a sign-in mode or service,
+  and this data is not an API bill or exact USD cost. Thread fork remains
+  unavailable.
 - Image attachments are deleted after a turn completes. Normal subsequent
   Codex context is unaffected, but another native client cannot use the deleted
   `localImage.path` to edit history and reattach the original image; persistent
@@ -156,14 +204,8 @@ as executed.
 
 ## Next
 
-1. Add an independent read-only Activity surface for viewing current and recent
-   work across threads without claiming thread ownership or changing approval
-   routing.
-2. Add a read-only usage panel through an explicitly allowed and narrowly
-   projected official app-server method; do not add new host execution
-   capabilities first.
-
-Later candidates remain in [`ideas.en.md`](ideas.en.md); their presence there is
+This near-term milestone is complete; the next item has not been selected.
+Candidates remain in [`ideas.en.md`](ideas.en.md), and their presence there is
 not a delivery commitment.
 
 ## Risks And Watchpoints
@@ -193,24 +235,33 @@ not a delivery commitment.
   text instead of introducing path or command pass-through.
 - Automatic recovery and read-only views must not claim thread ownership or
   redirect approval requests away from the browser that started or resumed it.
+  Ordinary reconnection and Codex restart may retry bounded read-only requests,
+  never unconfirmed writes.
+- Account usage and rate-limit methods must retain empty-parameter rebuilding,
+  field-level result and notification projections, bounded collections, and
+  fixed upstream error messages. Rolling rate-limit notifications are sparse
+  updates and must not clear the latest full snapshot with absent or null fields.
 - A browser terminal would bypass Codex approval and therefore requires a
   separate threat model, isolation boundary, and explicit opt-in.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-01 with Node.js
+Verification for this round was completed on 2026-08-02 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - Current experimental TypeScript bindings were generated from the installed
-  CLI and compared for `thread/name/set`, `thread/metadata/update`,
-  `skills/list`, `skills/changed`, and the related thread and skill fields.
+  CLI and compared for `thread/status/changed`, `thread/tokenUsage/updated`,
+  `account/rateLimits/read`, `account/rateLimits/updated`,
+  `account/usage/read`, thread `activeFlags`, and the related unions.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 28 test files and 394 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 32 test files and 435 tests. Server tests ran
   in an environment that permits loopback socket binding.
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-project-nav-final npm run
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-runtime-monitoring-final-2 npm run
   check:visual` passed against the current production build. Desktop and
-  390x844 mobile fixtures verified project grouping, in-group pinning, thread
-  menus, Rename, Archived, and Skills layouts without horizontal overflow,
-  clipping, content overlap, console errors, or page errors. Deterministic
-  browser fixtures intercepted every RPC and created no real Codex turn.
+  390x844 mobile fixtures verified the four-tab sidebar, all three Activity
+  sections, all three Usage sections, and contained header actions while
+  retaining coverage for project navigation, Skills, rich content, the fixed
+  reasoning slot, images, and the composer. There was no horizontal overflow,
+  clipping, content overlap, console error, or page error. Deterministic browser
+  fixtures intercepted every RPC and created no real Codex turn.

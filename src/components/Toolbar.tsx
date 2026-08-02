@@ -1,4 +1,4 @@
-import { AlertCircle, Settings2, ShieldAlert } from "lucide-react";
+import { Gauge, RefreshCw, Settings2, ShieldAlert } from "lucide-react";
 import type { ConnectionState, ThreadSettings } from "../types/protocol";
 import { MobileMenuButton } from "./Sidebar";
 
@@ -8,6 +8,12 @@ interface ToolbarProps {
   connection: ConnectionState;
   connectionDetail: string;
   running: boolean;
+  syncing: boolean;
+  syncError: string | null;
+  retryAttempt: number;
+  onUsage: () => void;
+  onReconnect: () => void;
+  onResync: () => void;
   onSettings: () => void;
   onMenu: () => void;
 }
@@ -25,11 +31,24 @@ export function Toolbar({
   connection,
   connectionDetail,
   running,
+  syncing,
+  syncError,
+  retryAttempt,
+  onUsage,
+  onReconnect,
+  onResync,
   onSettings,
   onMenu,
 }: ToolbarProps) {
   const sandbox = sandboxStatus(settings.sandbox);
-  const status = connection === "connected" ? (running ? "Working" : "Ready") : connectionDetail;
+  const connectedStatus = syncing ? (
+    <><span className="toolbar-status-prefix">Connected · </span>Syncing</>
+  ) : running ? "Working" : "Ready";
+  const retryStatus = retryAttempt > 0
+    ? `${connection === "connecting" ? "Reconnecting" : "Retrying"} · attempt ${retryAttempt}`
+    : connectionDetail;
+  const retryShortStatus = retryAttempt > 0 ? `Retry ${retryAttempt}` : connection === "connecting" ? "Connecting" : "Retry";
+  const retryTitle = `${connectionDetail}${retryAttempt > 0 ? ` · attempt ${retryAttempt}` : ""}. Retry connection now`;
   return (
     <header className="toolbar">
       <div className="toolbar-title">
@@ -37,16 +56,56 @@ export function Toolbar({
         <strong title={title}>{title}</strong>
       </div>
       <div className="toolbar-actions">
-        <span className={`toolbar-status toolbar-status--${connection}`} title={connectionDetail}>
-          {connection !== "connected" && <AlertCircle size={13} aria-hidden="true" />}
-          {status}
-        </span>
+        {connection === "connected" && syncError ? (
+          <button
+            className="toolbar-status toolbar-status-button toolbar-status--error"
+            type="button"
+            title={`${syncError}. Retry live state sync`}
+            aria-label={`${syncError}. Retry live state sync`}
+            onClick={onResync}
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            <span className="toolbar-status-label toolbar-status-label--long">Sync failed · Retry</span>
+            <span className="toolbar-status-label toolbar-status-label--short" aria-hidden="true">Sync retry</span>
+          </button>
+        ) : connection === "connected" ? (
+          <span
+            className={`toolbar-status toolbar-status--connected${syncing ? " toolbar-status--syncing" : ""}`}
+            title={syncing ? "Connected · syncing current thread" : connectionDetail}
+            role="status"
+            aria-live="polite"
+          >
+            {syncing && <RefreshCw className="spin" size={13} aria-hidden="true" />}
+            <span className="toolbar-status-label">{connectedStatus}</span>
+          </span>
+        ) : (
+          <button
+            className={`toolbar-status toolbar-status-button toolbar-status--${connection}`}
+            type="button"
+            title={retryTitle}
+            aria-label={retryTitle}
+            onClick={onReconnect}
+          >
+            <RefreshCw className={connection === "connecting" ? "spin" : undefined} size={13} aria-hidden="true" />
+            <span className="toolbar-status-label toolbar-status-label--long">{retryStatus}</span>
+            <span className="toolbar-status-label toolbar-status-label--short" aria-hidden="true">{retryShortStatus}</span>
+          </button>
+        )}
         {sandbox && (
           <span className={`toolbar-risk toolbar-risk--${settings.sandbox}`} title={`Sandbox: ${sandbox}`}>
             <ShieldAlert size={13} aria-hidden="true" />
             <span>{sandbox}</span>
           </span>
         )}
+        <button
+          className="icon-button toolbar-usage-button"
+          type="button"
+          title="Usage and limits"
+          aria-label="Usage and limits"
+          onClick={onUsage}
+        >
+          <Gauge size={16} aria-hidden="true" />
+        </button>
         <button
           className="icon-button toolbar-settings-button"
           type="button"

@@ -197,6 +197,85 @@ export interface SkillsDirectoryEntry {
   errorCount: number;
 }
 
+export interface TokenUsageBreakdown {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}
+
+export interface ThreadTokenUsage {
+  total: TokenUsageBreakdown;
+  last: TokenUsageBreakdown;
+  modelContextWindow: number | null;
+}
+
+export interface AccountUsageSummary {
+  lifetimeTokens: number | null;
+  peakDailyTokens: number | null;
+  longestRunningTurnSec: number | null;
+  currentStreakDays: number | null;
+  longestStreakDays: number | null;
+}
+
+export interface AccountUsageDailyBucket {
+  startDate: string;
+  tokens: number;
+}
+
+export interface AccountUsageSnapshot {
+  summary: AccountUsageSummary;
+  dailyUsageBuckets: AccountUsageDailyBucket[] | null;
+}
+
+export interface RateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface CreditsSnapshot {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
+export interface RateLimitSnapshot {
+  limitId: string | null;
+  limitName: string | null;
+  primary: RateLimitWindow | null;
+  secondary: RateLimitWindow | null;
+  credits: CreditsSnapshot | null;
+  spendControlReached: boolean | null;
+  planType: string | null;
+  rateLimitReachedType: string | null;
+}
+
+export interface AccountRateLimitsSnapshot {
+  rateLimits: RateLimitSnapshot | null;
+  rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+}
+
+export type ActivityKind =
+  | "waitingApproval"
+  | "waitingInput"
+  | "running"
+  | "systemError"
+  | "failed"
+  | "interrupted"
+  | "completed"
+  | "updated";
+
+export interface ThreadActivityEvent {
+  threadId: string;
+  turnId?: string;
+  kind: ActivityKind;
+  occurredAt: number;
+  durationMs?: number;
+}
+
 export interface ChoiceOption {
   label: string;
   description?: string;

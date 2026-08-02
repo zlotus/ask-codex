@@ -2,15 +2,15 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-01
+最后审阅：2026-08-02
 
 ## 当前里程碑
 
-面向项目的线程导航和只读 Skills 发现已经实现：Active 和 Archived 视图按工作目录
-组织线程，组内优先显示置顶线程；统一动作菜单支持重命名、置顶和取消置顶，而运行中的
-轮次只继续限制归档与删除。第三个 Skills 标签通过官方 `skills/list` 按工作目录展示
-有界的只读元数据。下一个里程碑转向跨线程 Activity 和用量可见性，同时不改变人工审批、
-远程访问或宿主机能力的信任模型。
+跨线程运行监控已经实现：第三个 Activity 标签提供只读的待处理、运行中和近期线程目录；
+工具栏明确区分连接、自动重试和只读重同步；Usage 面板展示当前线程 token、账户活动与
+速率窗口。所有账户方法仍经过显式 allowlist 和严格投影，重连恢复不会重放写请求或通过
+后台 `thread/resume` 认领线程，因此人工审批、远程访问和宿主机能力的信任模型没有改变。
+下一项近期工作尚未选定。
 
 ## 当前基线
 
@@ -28,11 +28,34 @@
   归档或删除；其他空闲线程可归档，已归档线程可恢复，两类空闲线程均可在明确提示线程
   及其后代会话可能被永久移除后确认删除。来自其他客户端的名称、归档、恢复和删除通知
   会同步列表与当前选择；删除还会清理该线程在内存和 IndexedDB 中的浏览器本地图片预览。
-- 第三个只读 Skills 标签按 cwd 展示 skill 名称、描述、`user`/`repo`/`system`/`admin`
+- 第四个只读 Skills 标签按 cwd 展示 skill 名称、描述、`user`/`repo`/`system`/`admin`
   作用域和启用状态，并只用计数提示无法加载的条目。目录在首次打开标签时开始加载；手动
   刷新发送 `forceReload: true`，`skills/changed` 通知则使已经加载过的目录重新扫描。
   最多加载 16 个目录且当前 cwd 优先；已删除的历史目录会单独降级，不会遮蔽其他项目。
   请求与线程列表刷新分别采用 generation 保护，较旧响应不会覆盖较新的目录或线程状态。
+- 第三个只读 Activity 标签将线程原生 runtime status、`activeFlags`、待处理请求以及有界的
+  `turn/started`、`turn/completed` 和 `thread/status/changed` 事件合成为 Needs attention、
+  Running now 和 Recent 三段目录。近期事件环只保存线程 ID、可选轮次 ID、活动种类、时间
+  和可用时的轮次耗时，显示所需的名称与 cwd 来自只读线程列表；它不跨线程保留命令输出、
+  MCP 参数或文件内容。显式 idle 快照会压过断线前遗留的瞬时运行事件。查看或刷新 Activity
+  只读取线程列表，不会恢复、认领线程或改变审批路由，点击条目才执行正常的用户选择流程。
+- 工具栏显示 Connecting、重试次数、Disconnected/Error、Connected · Syncing、Sync
+  failed、Ready 或 Working，并允许立即重试。WebSocket 退避次数只在 Codex 真正 ready
+  后清零；首次 ready 建立基线，Codex 子进程 Error 状态的重试使用有界 `model/list`
+  只读探测触发网关重启，WebSocket 故障则重建浏览器连接。同一连接或新连接上的后续 ready
+  会在重新启用
+  发送前通过 `thread/read` 和
+  `thread/turns/list` 对当前线程执行只读快照同步，并继续复用有界通知缓冲与两阶段协调器。
+  同步失败会继续禁用发送并提供只读重试；断线会清理浏览器中的旧审批，网关仍会在重连后
+  重新投递尚未解决的请求。恢复不会自动重放 `turn/start` 等未确认写操作；若断线打断了
+  用户首次加载线程，则要求用户明确重试，也不会调用会改变 owner 的后台 `thread/resume`。
+- 工具栏 Usage 对话框显示最多 32 个线程的内存 token 快照中的当前线程数据、最近上下文
+  占用、账户累计和最近每日活动，以及单 bucket 或多 bucket 速率窗口、重置时间和安全的
+  credit 摘要。账户读取并行调用 `account/usage/read` 与 `account/rateLimits/read`；滚动
+  `account/rateLimits/updated` 按稀疏语义合并，读取期间抵达的更新不会被较旧响应覆盖，
+  缺失或空账户元数据不会清除完整快照，滚动 bucket 也保持 32 条上限。已触及的速率或
+  spend-control 上限会明确标出；API key 或 Bedrock 等不支持账户用量的登录会在面板内
+  独立降级，不产生误导性 toast。
 - 通过 `thread/turns/list` 增量加载近期轮次，支持自适应分页大小、可重试的更早页面和
   摘要降级。新线程由 app-server 选择默认历史契约，不再强制实验性的 `paginated`
   模式；已有分页线程仍可通过严格受限的 `thread/items/list` 按升序逐页恢复，默认或
@@ -61,7 +84,10 @@
   `thread/metadata/update` 和 `skills/list` 只接受逐字段重建的有界参数；Skills 响应
   只向浏览器投影名称、描述、扁平化的 `interface.shortDescription`、作用域、启用状态和
   每个 cwd 的错误计数，不转发 skill 路径、依赖、其余 interface 元数据或具体错误文本；
-  来自上游 app-server 的顶层 Skills RPC 错误也使用固定消息脱敏。
+  来自上游 app-server 的顶层 Skills RPC 错误也使用固定消息脱敏。账户用量和限额读取只
+  接受空参数并向上游发送无参数请求；结果最多投影 366 个每日 bucket 和 32 个限额 bucket，
+  丢弃账户身份、reset-credit 细节和未知字段。`account/rateLimits/updated` 通知使用同样的
+  逐字段稀疏投影，三类账户读取错误均使用固定消息脱敏。
 - 输入框支持选择、粘贴、预览、删除和单独发送 PNG、JPEG、WebP 图片，并只在模型明确
   声明图片输入能力时开放入口。图片二进制通过复用现有 HTTP 令牌与 Origin/Host 策略的
   临时附件端点上传，一次性 ID 在网关内重建为官方 `localImage` 路径；数量、字节、并发、
@@ -93,7 +119,10 @@
 - 上次在 Codex CLI 0.145.0 上验证时，已完成的 `commandExecution` 历史不包含审批
   理由。Ask Codex 可以保留当前浏览器会话期间捕获的理由，并在会话内重新同步时保留
   它们，但页面刷新后或换到另一台设备时，无法从原生线程历史重建这些理由。
-- 尚无独立的跨线程 Activity 视图、用量面板或线程 fork 操作。
+- Activity 的近期事件环只存在于当前页面内，并不是持久审计日志。实时状态范围限于当前
+  Ask Codex app-server 进程能够列出或广播的线程；其他 CLI/IDE 进程不会共享逐项实时流。
+  `account/usage/read` 和账户速率限制也可能因认证方式或服务端支持情况不可用，并且这些
+  数据不是 API 账单或精确美元成本。线程 fork 仍未开放。
 - 图片附件会在轮次完成后删除。Codex 的正常后续上下文不受影响，但其他原生客户端无法
   再使用已删除的 `localImage.path` 编辑历史并重新附加原图片；持久附件所有权和回收
   尚未设计。浏览器本地预览不是跨设备附件存储，只在同一浏览器配置文件和 Origin 中
@@ -103,12 +132,8 @@
 
 ## 后续步骤
 
-1. 增加独立的只读 Activity 界面，以便跨线程查看进行中和近期活动，同时不认领线程或
-   改变审批路由。
-2. 通过明确允许且严格投影的官方 app-server 方法增加只读用量面板；在此之前不增加新的
-   宿主机执行能力。
-
-更远期的候选项保留在 [`ideas.md`](ideas.md) 中；出现在该文档中并不代表交付承诺。
+本轮近期里程碑已经完成；下一项尚未选定。候选项保留在 [`ideas.md`](ideas.md) 中，
+出现在该文档中并不代表交付承诺。
 
 ## 风险与注意事项
 
@@ -132,21 +157,25 @@
   路径、依赖、`interface.shortDescription` 之外的 interface 元数据和错误文本，不能
   引入路径或命令透传。
 - 自动恢复和只读视图不得声称拥有线程，也不得把审批请求从启动或恢复该线程的浏览器
-  重定向出去。
+  重定向出去。普通重连和 Codex 重启只能自动重试有界只读请求，不得重放未确认写操作。
+- 账户用量与限额方法必须继续使用空参数重建、结果和通知逐字段投影、有界集合及固定上游
+  错误消息；滚动限额通知是稀疏更新，不能用缺失或空字段清除最近的完整快照。
 - 浏览器终端会绕过 Codex 审批，因此需要独立的威胁模型、隔离边界和显式启用机制。
 
 ## 验证
 
-本轮已于 2026-08-01 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+本轮已于 2026-08-02 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.146.0` 完成验证：
 
-- 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对 `thread/name/set`、
-  `thread/metadata/update`、`skills/list`、`skills/changed` 及相关线程和 skill 字段。
+- 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
+  `thread/status/changed`、`thread/tokenUsage/updated`、`account/rateLimits/read`、
+  `account/rateLimits/updated`、`account/usage/read`、线程 `activeFlags` 以及相关联合类型。
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：28 个测试文件、394 项测试；服务端测试在允许绑定回环
+- `NODE_ENV=test npm test` 通过：32 个测试文件、435 项测试；服务端测试在允许绑定回环
   套接字的环境中运行。
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-project-nav-final npm run check:visual`
-  针对当前生产构建通过。桌面端和 390x844 移动端夹具确认项目分组、组内置顶、线程菜单、
-  Rename、Archived 和 Skills 布局均受控，未发现水平溢出、裁切、内容重叠、console error
-  或 page error。所有 RPC 均由确定性浏览器夹具拦截，没有创建真实 Codex 轮次。
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-runtime-monitoring-final-2 npm run
+  check:visual` 针对当前生产构建通过。桌面端和 390x844 移动端夹具确认四标签侧栏、
+  Activity 三段目录、Usage 三个区块及标题栏操作均在边界内，并继续覆盖项目导航、Skills、
+  富内容、推理状态槽、图片和输入区；未发现水平溢出、裁切、内容重叠、console error 或
+  page error。所有 RPC 均由确定性浏览器夹具拦截，没有创建真实 Codex 轮次。

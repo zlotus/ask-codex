@@ -63,6 +63,9 @@ accepted decision. Record only verification that was actually run.
 - Treat `ASK_CODEX_WORKSPACE` as an initial directory, not an access boundary.
 - Unsupported granular permission grants and MCP elicitations must fail closed.
 - Preserve an existing `externalSandbox` instead of overriding it on resume.
+- Automatic connection recovery and read-only cross-thread views must not call
+  `thread/resume` or change approval ownership. They may automatically retry
+  only bounded read requests and must never replay unconfirmed writes.
 
 ## Protocol Changes
 

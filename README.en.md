@@ -18,13 +18,16 @@ events, but it does not get a general-purpose file-serving endpoint.
 ## Features
 
 - Create, search, resume, and refresh Codex threads. Active and Archived group
-  threads by working directory, with pinned threads first inside each group.
+  threads by working directory, with pinned threads first inside each group. A
+  third read-only Activity tab collects cross-thread approval, input, running,
+  and recent states. Viewing the directory does not resume or claim threads in
+  the background; selecting an entry opens that thread explicitly.
 - Use desktop right-click, mobile long press, or the `...` menu to rename, pin,
   or unpin a thread, archive an idle thread from Active, restore a thread from
   Archived, or permanently delete an idle thread from either view after
   confirmation. Rename and pin actions remain available during an active turn;
   archive and delete do not.
-- Browse a third, read-only Skills tab that groups official `skills/list`
+- Browse a fourth, read-only Skills tab that groups official `skills/list`
   metadata by working directory and shows each skill's name, description,
   scope, and enabled state. The directory first loads when the tab is opened;
   manual refresh asks Codex to bypass its cache, and `skills/changed` refreshes
@@ -55,6 +58,21 @@ events, but it does not get a general-purpose file-serving endpoint.
   then select the next-turn model and reasoning effort beside the composer.
   Initial selections come from Codex's effective configuration; alternatives
   come from `model/list`.
+- Open a read-only Usage panel from the toolbar for current-thread tokens,
+  latest-context use, account activity, and rate-limit windows. Account data
+  comes from narrowly allowed and projected `account/usage/read` and
+  `account/rateLimits/read` calls. Sign-in modes that do not support them show
+  an unavailable state instead of presenting the data as billing or USD cost.
+  Rolling updates cannot be overwritten by an older read, and reached rate or
+  spend limits are called out explicitly.
+- The toolbar distinguishes connection, automatic retry attempts, and
+  resynchronization, and provides an immediate retry action. A bounded read-only
+  probe restarts Codex after a child-process error, while a WebSocket failure
+  rebuilds the browser connection. The selected thread is then restored from a
+  read-only snapshot before sending is re-enabled. A failed sync remains
+  blocking and exposes a read-only retry. Unconfirmed writes are not replayed,
+  and background `thread/resume` is not used in a way that could change
+  approval routing.
 - Keep editing text drafts while a turn runs or the connection resynchronizes.
   Enter inserts a newline; send with the button or `Ctrl+Enter`, with
   `Cmd+Enter` also supported on macOS. Unconfirmed sends remain separate from

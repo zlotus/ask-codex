@@ -27,6 +27,8 @@ function sidebarProps(overrides: Partial<ComponentProps<typeof Sidebar>> = {}): 
     open: true,
     loading: false,
     connection: "connected" as const,
+    recentActivities: [],
+    pendingRequests: [],
     skills: [],
     skillsLoading: false,
     skillsLoaded: false,
@@ -253,6 +255,11 @@ describe("Sidebar thread lifecycle actions", () => {
     expect(props.onArchive).not.toHaveBeenCalled();
 
     fireEvent.keyDown(archivedTab, { key: "ArrowRight" });
+    const activityTab = screen.getByRole("tab", { name: "Activity" });
+    expect(activityTab).toHaveAttribute("aria-selected", "true");
+    expect(activityTab).toHaveFocus();
+
+    fireEvent.keyDown(activityTab, { key: "ArrowRight" });
     const skillsTab = screen.getByRole("tab", { name: "Skills" });
     expect(skillsTab).toHaveAttribute("aria-selected", "true");
     expect(skillsTab).toHaveFocus();

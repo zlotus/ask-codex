@@ -10,8 +10,11 @@ import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
 
 const socket = vi.hoisted(() => ({
   connection: "connected",
+  retryAttempt: 0,
+  readySequence: 1,
   rpc: vi.fn(),
   respond: vi.fn(),
+  reconnect: vi.fn(),
   onNotification: null as ((message: NotificationMessage) => void) | null,
   onRequest: null as ((message: ServerRequestMessage) => void) | null,
 }));
@@ -26,9 +29,11 @@ vi.mock("./hooks/useCodexSocket", () => ({
     return {
       connection: socket.connection,
       connectionDetail: "Ready",
+      retryAttempt: socket.retryAttempt,
+      readySequence: socket.readySequence,
       rpc: socket.rpc,
       respond: socket.respond,
-      reconnect: vi.fn(),
+      reconnect: socket.reconnect,
     };
   },
 }));
@@ -97,6 +102,25 @@ function installRpcFixture() {
     };
     if (method === "config/read") return { model: "configured-model", effort: "max" };
     if (method === "skills/list") return { data: [] };
+    if (method === "thread/read") return { thread: existingThread };
+    if (method === "thread/turns/list") {
+      return { data: [], nextCursor: null, backwardsCursor: null };
+    }
+    if (method === "account/rateLimits/read") {
+      return { rateLimits: null, rateLimitsByLimitId: null };
+    }
+    if (method === "account/usage/read") {
+      return {
+        summary: {
+          lifetimeTokens: null,
+          peakDailyTokens: null,
+          longestRunningTurnSec: null,
+          currentStreakDays: null,
+          longestStreakDays: null,
+        },
+        dailyUsageBuckets: null,
+      };
+    }
     if (method === "thread/start") {
       return { thread: newThread };
     }
@@ -221,9 +245,12 @@ describe("App thread settings lifecycle", () => {
     revokeObjectURL.mockClear();
     socket.rpc.mockReset();
     socket.respond.mockReset();
+    socket.reconnect.mockReset();
     socket.onNotification = null;
     socket.onRequest = null;
     socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 1;
     installRpcFixture();
   });
 
@@ -289,6 +316,340 @@ describe("App thread settings lifecycle", () => {
       threadId: "thread-archived",
     }));
     expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
+  });
+
+  it("surfaces bounded thread activity and normalized usage notifications", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "account/rateLimits/read") {
+        return Promise.resolve({
+          rateLimits: {
+            limitId: "codex",
+            limitName: "Codex",
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: null },
+            secondary: null,
+            credits: null,
+            planType: "plus",
+            rateLimitReachedType: null,
+          },
+          rateLimitsByLimitId: null,
+        });
+      }
+      if (method === "account/usage/read") {
+        return Promise.resolve({
+          summary: {
+            lifetimeTokens: 25_000,
+            peakDailyTokens: 8_000,
+            longestRunningTurnSec: 90,
+            currentStreakDays: 3,
+            longestStreakDays: 7,
+          },
+          dailyUsageBuckets: [{ startDate: "2026-08-02", tokens: 1_200 }],
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: existingThread.id,
+        tokenUsage: {
+          total: {
+            totalTokens: 2_200,
+            inputTokens: 1_500,
+            cachedInputTokens: 500,
+            cacheWriteInputTokens: 0,
+            outputTokens: 700,
+            reasoningOutputTokens: 200,
+          },
+          last: {
+            totalTokens: 1_000,
+            inputTokens: 700,
+            cachedInputTokens: 300,
+            cacheWriteInputTokens: 0,
+            outputTokens: 300,
+            reasoningOutputTokens: 100,
+          },
+          modelContextWindow: 4_000,
+        },
+      },
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Usage and limits" }));
+    expect(await screen.findByRole("dialog", { name: "Usage and limits" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(socket.rpc).toHaveBeenCalledWith("account/rateLimits/read", {});
+      expect(socket.rpc).toHaveBeenCalledWith("account/usage/read", {});
+    });
+    expect(screen.getByRole("progressbar", { name: "Latest context window used" }))
+      .toHaveAttribute("value", "25");
+    expect(screen.getByText("Thread total").parentElement).toHaveTextContent("2.2K");
+    expect(await screen.findByText("25% used")).toBeInTheDocument();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 75 },
+        },
+      },
+    }));
+    expect(await screen.findByText("75% used")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: {
+          id: "turn-activity",
+          status: "completed",
+          itemsView: "notLoaded",
+          items: [],
+          completedAt: 1_800_000_010,
+          durationMs: 2_500,
+        },
+      },
+    }));
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/status/changed",
+      params: { threadId: existingThread.id, status: { type: "idle" } },
+    }));
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(await screen.findByRole("button", { name: /Existing thread.*Completed.*2.5s/ }))
+      .toBeInTheDocument();
+  });
+
+  it("treats unsupported account usage APIs as an in-panel unavailable state", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "account/rateLimits/read" || method === "account/usage/read") {
+        return Promise.reject(new Error("not supported for API key authentication"));
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "Usage and limits" }));
+    expect(await screen.findByText(
+      "Account activity and rate limits are unavailable for this sign-in.",
+    )).toBeInTheDocument();
+    expect(document.querySelector(".toast")).not.toBeInTheDocument();
+  });
+
+  it("uses a read-only snapshot to resync the selected thread after reconnecting", async () => {
+    let resolveThreadRead: ((value: unknown) => void) | undefined;
+    const pendingThreadRead = new Promise<unknown>((resolve) => {
+      resolveThreadRead = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "thread/read" ? pendingThreadRead : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    expect(socket.rpc).not.toHaveBeenCalledWith("thread/read", expect.anything());
+    expect(screen.getByLabelText("Model for next turn")).toBeEnabled();
+    const resumeCallsBeforeReconnect = socket.rpc.mock.calls
+      .filter(([method]) => method === "thread/resume").length;
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeDisabled());
+
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/read", {
+      threadId: existingThread.id,
+      includeTurns: false,
+    }));
+    expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/resume"))
+      .toHaveLength(resumeCallsBeforeReconnect);
+
+    await act(async () => {
+      resolveThreadRead?.({ thread: existingThread });
+      await pendingThreadRead;
+    });
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/turns/list", {
+      threadId: existingThread.id,
+      limit: 10,
+      sortDirection: "desc",
+      itemsView: "full",
+    }));
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeEnabled());
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/read")).toHaveLength(1);
+  });
+
+  it("blocks writes after a failed resync until a read-only retry succeeds", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    let failNextRead = true;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/read" && failNextRead) {
+        failNextRead = false;
+        return Promise.reject(new Error("snapshot unavailable"));
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+
+    const retry = await screen.findByRole("button", { name: /Retry live state sync/ });
+    expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/read"))
+      .toHaveLength(2));
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeEnabled());
+    expect(screen.queryByRole("button", { name: /Retry live state sync/ })).not.toBeInTheDocument();
+  });
+
+  it("requires an explicit thread retry when disconnect interrupts the initial load", async () => {
+    let rejectResume: ((reason?: unknown) => void) | undefined;
+    const pendingResume = new Promise<unknown>((_resolve, reject) => {
+      rejectResume = reject;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    let resumeReady = false;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/resume" && !resumeReady) return pendingResume;
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByText("Loading thread");
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await act(async () => rejectResume?.(new Error("Connection closed before Codex replied")));
+    await screen.findByRole("button", { name: "Retry thread" });
+
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+    expect(await screen.findByText(/Connection restored\. Retry the thread/)).toBeInTheDocument();
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
+    expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
+
+    resumeReady = true;
+    fireEvent.click(screen.getByRole("button", { name: "Retry thread" }));
+    await screen.findByTitle("Existing thread");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(2);
+  });
+
+  it("clears stale approval requests when the transport disconnects", async () => {
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+    await screen.findByRole("button", { name: "Existing thread" });
+
+    act(() => socket.onRequest?.({
+      type: "request",
+      id: "stale-approval",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: existingThread.id,
+        turnId: "turn-stale",
+        itemId: "command-stale",
+        command: "npm test",
+        cwd: existingThread.cwd,
+        availableDecisions: ["accept", "decline"],
+      },
+    }));
+    expect(document.querySelector(".approval-panel")).toBeInTheDocument();
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(document.querySelector(".approval-panel")).not.toBeInTheDocument());
+  });
+
+  it("merges rate-limit notifications that arrive while a usage read is pending", async () => {
+    let resolveRateLimits: ((value: unknown) => void) | undefined;
+    const pendingRateLimits = new Promise<unknown>((resolve) => {
+      resolveRateLimits = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "account/rateLimits/read" ? pendingRateLimits : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "Usage and limits" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("account/rateLimits/read", {}));
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 75, windowDurationMins: 300, resetsAt: null },
+        },
+      },
+    }));
+    expect(await screen.findByText("75% used")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRateLimits?.({
+        rateLimits: {
+          limitId: "codex",
+          limitName: "Codex",
+          primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: null },
+          secondary: null,
+          credits: null,
+          spendControlReached: false,
+          planType: "plus",
+          rateLimitReachedType: null,
+        },
+        rateLimitsByLimitId: null,
+      });
+      await pendingRateLimits;
+    });
+    expect(await screen.findByText("75% used")).toBeInTheDocument();
+    expect(screen.queryByText("25% used")).not.toBeInTheDocument();
+  });
+
+  it("uses a read-only probe to restart Codex after an app-server error", async () => {
+    socket.connection = "error";
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Retry connection now/ }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("model/list", { limit: 1 }));
+    expect(socket.reconnect).not.toHaveBeenCalled();
   });
 
   it("renames and pins a thread through the bounded metadata RPCs", async () => {

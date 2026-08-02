@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { ActivePlanDock } from "./components/ActivePlanDock";
 import { Composer } from "./components/Composer";
@@ -8,9 +8,12 @@ import { ThreadSettingsDialog } from "./components/ThreadSettingsDialog";
 import { Toasts } from "./components/Toasts";
 import { TokenDialog } from "./components/TokenDialog";
 import { Toolbar } from "./components/Toolbar";
+import { UsageDialog } from "./components/UsageDialog";
 import { useCodexSocket } from "./hooks/useCodexSocket";
 import { appReducer, initialState } from "./state/appReducer";
 import type {
+  AccountRateLimitsSnapshot,
+  AccountUsageSnapshot,
   BootstrapInfo,
   CodexThread,
   CodexTurn,
@@ -19,7 +22,9 @@ import type {
   NotificationMessage,
   ServerRequestMessage,
   SkillsDirectoryEntry,
+  ThreadActivityEvent,
   ThreadSettings,
+  ThreadTokenUsage,
   ToastMessage,
 } from "./types/protocol";
 import {
@@ -40,6 +45,13 @@ import {
   sandboxMode,
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
+import {
+  activityEventFromNotification,
+  extractAccountRateLimits,
+  extractAccountUsage,
+  extractThreadTokenUsage,
+  mergeAccountRateLimitUpdate,
+} from "./utils/monitoring";
 import {
   MAX_IMAGE_PREVIEW_BYTES,
   MAX_IMAGE_PREVIEW_COUNT,
@@ -94,6 +106,9 @@ const TURN_ITEM_PAGE_SIZE = 10;
 const MAX_REASONING_PARTS = 16;
 const MAX_PENDING_CANONICAL_THREADS = 8;
 const MAX_SKILLS_PROJECT_CWDS = 16;
+const MAX_THREAD_USAGE_SNAPSHOTS = 32;
+const MAX_ACTIVITY_EVENTS = 48;
+const MAX_RATE_LIMIT_UPDATE_EVENTS = 64;
 const THREAD_HYDRATION_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
 
 interface SkillsProjectSelection {
@@ -180,6 +195,15 @@ export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapInfo | null>(null);
   const [bootstrapError, setBootstrapError] = useState("");
   const [tokenOpen, setTokenOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [accountUsage, setAccountUsage] = useState<AccountUsageSnapshot | null>(null);
+  const [rateLimits, setRateLimits] = useState<AccountRateLimitsSnapshot | null>(null);
+  const [threadUsageById, setThreadUsageById] = useState(
+    () => new Map<string, ThreadTokenUsage>(),
+  );
+  const [recentActivities, setRecentActivities] = useState<ThreadActivityEvent[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [loadingThreads, setLoadingThreads] = useState(false);
@@ -192,6 +216,7 @@ export default function App() {
   const [threadLoadError, setThreadLoadError] = useState<string | null>(null);
   const [resyncSignal, setResyncSignal] = useState(0);
   const [resyncing, setResyncing] = useState(false);
+  const [resyncError, setResyncError] = useState<string | null>(null);
   const [threadHydrationSignal, setThreadHydrationSignal] = useState(0);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
@@ -207,6 +232,10 @@ export default function App() {
   const historyLoadsRef = useRef(new Set<string>());
   const detailLoadsRef = useRef(new Set<string>());
   const resyncCoordinatorRef = useRef(new ResyncCoordinator());
+  const handledReadySequenceRef = useRef(0);
+  const usageLoadGenerationRef = useRef(0);
+  const rateLimitRevisionRef = useRef(0);
+  const rateLimitUpdatesRef = useRef<Array<{ revision: number; params: unknown }>>([]);
   const bootstrapCwdInitializedRef = useRef(false);
   const nextTurnSettingsInitializedRef = useRef(false);
   const settingsLoadGenerationRef = useRef(0);
@@ -386,6 +415,7 @@ export default function App() {
     currentThreadRef.current = null;
     setLoadingThread(false);
     setThreadLoadError(null);
+    setResyncError(null);
     setSandboxOverride(null);
     setThreadDialog(null);
   }, []);
@@ -395,8 +425,38 @@ export default function App() {
     const threadId = readString(params.threadId);
     const turnId = readString(params.turnId);
     const itemId = readString(params.itemId);
+    const activity = activityEventFromNotification(message);
+    if (activity) {
+      setRecentActivities((current) => [...current, activity].slice(-MAX_ACTIVITY_EVENTS));
+    }
 
     switch (message.method) {
+      case "thread/tokenUsage/updated": {
+        const usage = extractThreadTokenUsage(params);
+        if (threadId && usage) {
+          setThreadUsageById((current) => {
+            const next = new Map(current);
+            next.delete(threadId);
+            next.set(threadId, usage);
+            while (next.size > MAX_THREAD_USAGE_SNAPSHOTS) {
+              const oldestThreadId = next.keys().next().value as string | undefined;
+              if (oldestThreadId === undefined) break;
+              next.delete(oldestThreadId);
+            }
+            return next;
+          });
+        }
+        return;
+      }
+      case "account/rateLimits/updated": {
+        const revision = ++rateLimitRevisionRef.current;
+        rateLimitUpdatesRef.current = [
+          ...rateLimitUpdatesRef.current,
+          { revision, params },
+        ].slice(-MAX_RATE_LIMIT_UPDATE_EVENTS);
+        setRateLimits((current) => mergeAccountRateLimitUpdate(current, params));
+        return;
+      }
       case "thread/started": {
         const thread = normalizeThread(params.thread);
         if (thread) {
@@ -585,6 +645,7 @@ export default function App() {
       }
       coordinator.request();
       dispatch({ type: "clearActiveReasoningItems" });
+      setResyncError(null);
       setResyncing(true);
       setResyncSignal((current) => current + 1);
       return;
@@ -617,7 +678,15 @@ export default function App() {
   }, []);
 
   const socketEnabled = Boolean(bootstrap && (!bootstrap.authRequired || token));
-  const { connection, connectionDetail, rpc, respond } = useCodexSocket({
+  const {
+    connection,
+    connectionDetail,
+    retryAttempt,
+    readySequence,
+    rpc,
+    respond,
+    reconnect,
+  } = useCodexSocket({
     enabled: socketEnabled,
     token,
     onNotification,
@@ -635,8 +704,74 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (connection !== "connected") dispatch({ type: "clearActiveReasoningItems" });
+    if (connection !== "connected") {
+      dispatch({ type: "clearActiveReasoningItems" });
+      dispatch({ type: "clearRequests" });
+    }
   }, [connection]);
+
+  const refreshUsage = useCallback(async () => {
+    const generation = ++usageLoadGenerationRef.current;
+    const rateLimitRevision = rateLimitRevisionRef.current;
+    if (connection !== "connected") {
+      setUsageLoading(false);
+      setUsageError("Connect to Codex to load account usage and rate limits.");
+      return;
+    }
+
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const [rateLimitResult, accountUsageResult] = await Promise.allSettled([
+        rpc("account/rateLimits/read", {}),
+        rpc("account/usage/read", {}),
+      ]);
+      if (generation !== usageLoadGenerationRef.current) return;
+
+      const nextRateLimits = rateLimitResult.status === "fulfilled"
+        ? extractAccountRateLimits(rateLimitResult.value)
+        : null;
+      const nextAccountUsage = accountUsageResult.status === "fulfilled"
+        ? extractAccountUsage(accountUsageResult.value)
+        : null;
+      if (nextRateLimits) {
+        const currentRevision = rateLimitRevisionRef.current;
+        const rollingUpdates = rateLimitUpdatesRef.current.filter((entry) => (
+          entry.revision > rateLimitRevision
+        ));
+        if (currentRevision - rateLimitRevision === rollingUpdates.length) {
+          setRateLimits(rollingUpdates.reduce<AccountRateLimitsSnapshot | null>(
+            (snapshot, entry) => mergeAccountRateLimitUpdate(snapshot, entry.params),
+            nextRateLimits,
+          ));
+        }
+      }
+      if (nextAccountUsage) setAccountUsage(nextAccountUsage);
+
+      if (!nextRateLimits && !nextAccountUsage) {
+        setUsageError("Account activity and rate limits are unavailable for this sign-in.");
+      } else if (!nextRateLimits) {
+        setUsageError("Rate limits are unavailable for this sign-in.");
+      } else if (!nextAccountUsage) {
+        setUsageError("Account activity is unavailable for this sign-in.");
+      }
+    } finally {
+      if (generation === usageLoadGenerationRef.current) setUsageLoading(false);
+    }
+  }, [connection, rpc]);
+
+  const openUsage = useCallback(() => {
+    setUsageOpen(true);
+    void refreshUsage();
+  }, [refreshUsage]);
+
+  const retryConnection = useCallback(() => {
+    if (connection !== "error") {
+      reconnect();
+      return;
+    }
+    void rpc("model/list", { limit: 1 }).catch(() => reconnect());
+  }, [connection, reconnect, rpc]);
 
   const loadBootstrap = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -899,6 +1034,7 @@ export default function App() {
     dispatch({ type: "selectThread", threadId });
     setSidebarOpen(false);
     setThreadLoadError(null);
+    setResyncError(null);
     setLoadingThread(true);
     try {
       const resumed = await resumeThreadForHistory(rpc, threadId, TURN_PAGE_SIZE);
@@ -965,6 +1101,9 @@ export default function App() {
     void refreshThreads();
     let restart = false;
     let baseline = currentThreadRef.current;
+    const canReconcile = Boolean(
+      baseline && baseline.id === selectedThreadIdRef.current,
+    );
     try {
       for (let pass = 0; pass < 2; pass += 1) {
         const threadId = selectedThreadIdRef.current;
@@ -979,7 +1118,10 @@ export default function App() {
           snapshot = await loadResyncSnapshot(threadId);
         } catch (error) {
           for (const message of coordinator.abort()) applyNotification(message);
-          showToast(`Live state refresh failed: ${errorMessage(error)}`);
+          const detail = `Live state refresh failed: ${errorMessage(error)}`;
+          if (canReconcile) setResyncError(detail);
+          else setThreadLoadError("Connection restored, but the thread still needs to be loaded again.");
+          showToast(detail);
           return;
         }
 
@@ -997,7 +1139,12 @@ export default function App() {
           snapshot,
           result.notifications,
         );
-        dispatch({ type: "reconcileCurrentThread", thread: snapshot });
+        if (canReconcile) {
+          dispatch({ type: "reconcileCurrentThread", thread: snapshot });
+          setResyncError(null);
+        } else {
+          setThreadLoadError("Connection restored. Retry the thread to finish loading it.");
+        }
         for (const message of notifications) applyNotification(message);
         baseline = snapshot;
         if (result.rerun) continue;
@@ -1009,6 +1156,33 @@ export default function App() {
       if (restart) setResyncSignal((current) => current + 1);
     }
   }, [applyNotification, loadResyncSnapshot, refreshThreads, showToast]);
+
+  const retryResync = useCallback(() => {
+    if (!selectedThreadIdRef.current) {
+      setResyncError(null);
+      return;
+    }
+    resyncCoordinatorRef.current.request();
+    dispatch({ type: "clearActiveReasoningItems" });
+    setResyncError(null);
+    setResyncing(true);
+    setResyncSignal((current) => current + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (
+      connection !== "connected" ||
+      readySequence === 0 ||
+      readySequence <= handledReadySequenceRef.current
+    ) {
+      return;
+    }
+    const previousReadySequence = handledReadySequenceRef.current;
+    handledReadySequenceRef.current = readySequence;
+    if (previousReadySequence === 0 || !selectedThreadIdRef.current) return;
+
+    retryResync();
+  }, [connection, readySequence, retryResync]);
 
   useEffect(() => {
     if (connection !== "connected" || loadingThread) return;
@@ -1169,6 +1343,7 @@ export default function App() {
       selectedThreadIdRef.current = null;
       setLoadingThread(false);
       setThreadLoadError(null);
+      setResyncError(null);
       setDraftThreadConfigured(true);
       setSandboxOverride(null);
       nextTurnSettingsInitializedRef.current = true;
@@ -1376,10 +1551,17 @@ export default function App() {
   }, [respond, showToast]);
 
   const saveToken = useCallback((nextToken: string) => {
+    usageLoadGenerationRef.current += 1;
+    rateLimitRevisionRef.current = 0;
+    rateLimitUpdatesRef.current = [];
     saveStoredToken(nextToken);
     setToken(nextToken);
     setTokenOpen(false);
     setBootstrapError("");
+    setAccountUsage(null);
+    setRateLimits(null);
+    setUsageError(null);
+    setUsageLoading(false);
   }, []);
 
   const requiredToken = Boolean(bootstrap?.authRequired && !token) || bootstrapError.includes("ASK_CODEX_TOKEN");
@@ -1390,6 +1572,7 @@ export default function App() {
       ))
     : undefined;
   const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
+  const syncing = resyncing;
 
   return (
     <div className="app-shell">
@@ -1401,6 +1584,8 @@ export default function App() {
         open={sidebarOpen}
         loading={loadingThreads}
         connection={connection}
+        recentActivities={recentActivities}
+        pendingRequests={state.pendingRequests}
         skills={skillsDirectory}
         skillsLoading={loadingSkills}
         skillsLoaded={skillsLoaded}
@@ -1430,6 +1615,12 @@ export default function App() {
           connection={connection}
           connectionDetail={bootstrapError || connectionDetail}
           running={Boolean(state.activeTurnId)}
+          syncing={syncing}
+          syncError={resyncError}
+          retryAttempt={retryAttempt}
+          onUsage={openUsage}
+          onReconnect={retryConnection}
+          onResync={retryResync}
           onSettings={openThreadSettings}
           onMenu={() => setSidebarOpen(true)}
         />
@@ -1461,7 +1652,7 @@ export default function App() {
           onReject={rejectRequest}
         />
         <Composer
-          disabled={connection !== "connected" || loadingThread || resyncing || threadLoadError !== null}
+          disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           settings={composerSettings}
           models={models}
@@ -1495,6 +1686,16 @@ export default function App() {
         error={bootstrapError || undefined}
         onSave={saveToken}
         onClose={() => setTokenOpen(false)}
+      />
+      <UsageDialog
+        open={usageOpen}
+        loading={usageLoading}
+        threadUsage={state.currentThread ? threadUsageById.get(state.currentThread.id) ?? null : null}
+        accountUsage={accountUsage}
+        rateLimits={rateLimits}
+        error={usageError}
+        onRefresh={() => void refreshUsage()}
+        onClose={() => setUsageOpen(false)}
       />
       <Toasts toasts={state.toasts} onClose={(id) => dispatch({ type: "removeToast", id })} />
     </div>

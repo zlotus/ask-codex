@@ -41,7 +41,7 @@ const fixtureSiblingThread = {
   model: "gpt-5-codex",
   createdAt: 1_799_999_950,
   updatedAt: 1_799_999_980,
-  status: { type: "idle" },
+  status: { type: "active", activeFlags: ["waitingOnApproval"] },
   isPinned: false,
 };
 
@@ -53,7 +53,7 @@ const fixtureOtherProjectThread = {
   model: "gpt-5-codex",
   createdAt: 1_799_999_700,
   updatedAt: 1_799_999_750,
-  status: { type: "idle" },
+  status: { type: "active", activeFlags: [] },
   isPinned: false,
 };
 
@@ -299,6 +299,35 @@ async function installFixture(page) {
         };
       } else if (message.method === "config/read") {
         result = { model: "gpt-5-codex", effort: "high" };
+      } else if (message.method === "account/rateLimits/read") {
+        result = {
+          rateLimits: {
+            limitId: "codex",
+            limitName: "Codex",
+            primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1_800_003_600 },
+            secondary: { usedPercent: 18, windowDurationMins: 10_080, resetsAt: 1_800_604_800 },
+            credits: { hasCredits: true, unlimited: false, balance: "12.50" },
+            planType: "plus",
+            rateLimitReachedType: null,
+          },
+          rateLimitsByLimitId: null,
+        };
+      } else if (message.method === "account/usage/read") {
+        result = {
+          summary: {
+            lifetimeTokens: 1_250_000,
+            peakDailyTokens: 92_000,
+            longestRunningTurnSec: 185,
+            currentStreakDays: 4,
+            longestStreakDays: 11,
+          },
+          dailyUsageBuckets: [
+            { startDate: "2026-07-30", tokens: 45_000 },
+            { startDate: "2026-07-31", tokens: 67_000 },
+            { startDate: "2026-08-01", tokens: 38_000 },
+            { startDate: "2026-08-02", tokens: 72_000 },
+          ],
+        };
       } else if (message.method === "thread/resume") {
         result = {
           thread: { ...fixtureThread, turns: [] },
@@ -321,6 +350,33 @@ async function installFixture(page) {
       socket.send(JSON.stringify({ type: "rpcResult", id: message.id, result }));
       if (message.method === "thread/resume") {
         globalThis.setTimeout(() => {
+          socket.send(JSON.stringify({
+            type: "notification",
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: fixtureThread.id,
+              turnId: "turn-newest",
+              tokenUsage: {
+                total: {
+                  totalTokens: 84_000,
+                  inputTokens: 60_000,
+                  cachedInputTokens: 24_000,
+                  cacheWriteInputTokens: 0,
+                  outputTokens: 24_000,
+                  reasoningOutputTokens: 8_000,
+                },
+                last: {
+                  totalTokens: 20_000,
+                  inputTokens: 14_000,
+                  cachedInputTokens: 6_000,
+                  cacheWriteInputTokens: 0,
+                  outputTokens: 6_000,
+                  reasoningOutputTokens: 2_000,
+                },
+                modelContextWindow: 200_000,
+              },
+            },
+          }));
           socket.send(JSON.stringify({
             type: "request",
             id: "visual-command-approval",
@@ -805,6 +861,59 @@ async function inspectSkillsDirectory(page) {
   });
 }
 
+async function inspectActivityDirectory(page) {
+  await page.getByRole("heading", { name: /Needs attention/ }).waitFor();
+  await page.getByRole("heading", { name: /Running now/ }).waitFor();
+  await page.getByRole("heading", { name: /Recent/ }).waitFor();
+  return page.locator(".activity-directory").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const rows = [...element.querySelectorAll(".activity-entry")];
+    const text = element.textContent ?? "";
+    return {
+      rows: rows.length,
+      hasAttention: text.includes("Approval needed"),
+      hasRunning: text.includes("Running"),
+      hasRecent: text.includes("Updated"),
+      contentContained: rows.every((row) => {
+        const rowBox = row.getBoundingClientRect();
+        return rowBox.left >= box.left && rowBox.right <= box.right;
+      }),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
+async function inspectUsageDialog(page) {
+  const dialog = page.getByRole("dialog", { name: "Usage and limits" });
+  await dialog.waitFor();
+  await page.getByText("42% used", { exact: true }).waitFor();
+  await page.getByText("Account activity", { exact: true }).waitFor();
+  return dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const scroll = element.querySelector(".usage-dialog-scroll");
+    const headings = [...element.querySelectorAll(".usage-section > h2")]
+      .map((heading) => heading.textContent?.trim());
+    const buttons = [...element.querySelectorAll("button")]
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim());
+    return {
+      fitsViewport: box.left >= 0 && box.top >= 0 &&
+        box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      sections: headings,
+      progressBars: element.querySelectorAll("progress").length,
+      hasThreadUsage: (element.textContent ?? "").includes("Thread total"),
+      readOnlyActions: buttons.every((label) => label === "Refresh usage" || label === "Close"),
+      actionsContained: [...element.querySelectorAll(".usage-dialog-actions button")]
+        .every((button) => {
+          const buttonBox = button.getBoundingClientRect();
+          return buttonBox.left >= box.left && buttonBox.right <= box.right &&
+            buttonBox.top >= box.top && buttonBox.bottom <= box.bottom;
+        }),
+      contentContained: Boolean(scroll && scroll.scrollWidth <= scroll.clientWidth + 1),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
 async function inspectDeleteThreadDialog(page) {
   const dialog = page.getByRole("dialog", { name: "Delete thread permanently?" });
   await dialog.waitFor();
@@ -984,7 +1093,16 @@ try {
   await page.getByRole("tab", { name: "Skills", exact: true }).click();
   const desktopSkills = await inspectSkillsDirectory(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-skills.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  const desktopActivity = await inspectActivityDirectory(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-activity.png`, fullPage: true });
   await page.getByRole("tab", { name: "Active", exact: true }).click();
+
+  await selectFixture(page);
+  await page.getByRole("button", { name: "Usage and limits", exact: true }).click();
+  const desktopUsage = await inspectUsageDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/desktop-usage.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
 
   await addFixtureImage(page);
   const desktopComposerImage = await inspectComposerImage(page);
@@ -1090,9 +1208,16 @@ try {
   await page.getByRole("tab", { name: "Skills", exact: true }).click();
   const mobileSkills = await inspectSkillsDirectory(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-skills.png`, fullPage: true });
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
+  const mobileActivity = await inspectActivityDirectory(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-activity.png`, fullPage: true });
   await page.getByRole("tab", { name: "Active", exact: true }).click();
   await page.waitForTimeout(850);
   await selectFixture(page);
+  await page.getByRole("button", { name: "Usage and limits", exact: true }).click();
+  const mobileUsage = await inspectUsageDialog(page);
+  await page.screenshot({ path: `${outputDirectory}/mobile-usage.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   const mobileSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
   const mobileReloadedImage = await reloadAndInspectFixtureImage(page);
@@ -1135,6 +1260,8 @@ try {
       deleteThreadDialog: desktopDeleteDialog,
       archivedVisible: desktopArchivedVisible,
       skills: desktopSkills,
+      activity: desktopActivity,
+      usage: desktopUsage,
       rich: desktopRich,
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
@@ -1150,6 +1277,8 @@ try {
       threadMenu: mobileThreadMenu,
       deleteThreadDialog: mobileDeleteDialog,
       skills: mobileSkills,
+      activity: mobileActivity,
+      usage: mobileUsage,
       moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -1234,6 +1363,20 @@ try {
     !desktopSkills.noSensitiveFields ||
     !desktopSkills.contentContained ||
     desktopSkills.horizontalOverflow ||
+    desktopActivity.rows < 3 ||
+    !desktopActivity.hasAttention ||
+    !desktopActivity.hasRunning ||
+    !desktopActivity.hasRecent ||
+    !desktopActivity.contentContained ||
+    desktopActivity.horizontalOverflow ||
+    !desktopUsage.fitsViewport ||
+    desktopUsage.sections.join(",") !== "Current thread,Rate limits,Account activity" ||
+    desktopUsage.progressBars < 3 ||
+    !desktopUsage.hasThreadUsage ||
+    !desktopUsage.readOnlyActions ||
+    !desktopUsage.actionsContained ||
+    !desktopUsage.contentContained ||
+    desktopUsage.horizontalOverflow ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
     !mobileBefore.toolbarVisible ||
@@ -1297,6 +1440,20 @@ try {
     !mobileSkills.noSensitiveFields ||
     !mobileSkills.contentContained ||
     mobileSkills.horizontalOverflow ||
+    mobileActivity.rows < 3 ||
+    !mobileActivity.hasAttention ||
+    !mobileActivity.hasRunning ||
+    !mobileActivity.hasRecent ||
+    !mobileActivity.contentContained ||
+    mobileActivity.horizontalOverflow ||
+    !mobileUsage.fitsViewport ||
+    mobileUsage.sections.join(",") !== "Current thread,Rate limits,Account activity" ||
+    mobileUsage.progressBars < 3 ||
+    !mobileUsage.hasThreadUsage ||
+    !mobileUsage.readOnlyActions ||
+    !mobileUsage.actionsContained ||
+    !mobileUsage.contentContained ||
+    mobileUsage.horizontalOverflow ||
     !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||

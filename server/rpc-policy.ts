@@ -21,6 +21,8 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "model/list",
   "config/read",
   "account/read",
+  "account/rateLimits/read",
+  "account/usage/read",
 ]);
 
 const MAX_CONFIG_VALUE_CHARACTERS = 512;
@@ -33,6 +35,11 @@ const MAX_SKILLS_PER_CWD = 256;
 const MAX_SKILL_NAME_CHARACTERS = 256;
 const MAX_SKILL_DESCRIPTION_CHARACTERS = 4_096;
 const MAX_SKILL_SHORT_DESCRIPTION_CHARACTERS = 512;
+const MAX_ACCOUNT_USAGE_DAILY_BUCKETS = 366;
+const MAX_RATE_LIMIT_BUCKETS = 32;
+const MAX_RATE_LIMIT_ID_CHARACTERS = 128;
+const MAX_RATE_LIMIT_NAME_CHARACTERS = 256;
+const MAX_DECIMAL_CHARACTERS = 64;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 const SANDBOX_MODES = new Set([
@@ -45,6 +52,28 @@ const SORT_DIRECTIONS = new Set(["asc", "desc"]);
 const TURN_ITEMS_VIEWS = new Set(["notLoaded", "summary", "full"]);
 const IMAGE_DETAILS = new Set(["auto", "low", "high", "original"]);
 const SKILL_SCOPES = new Set(["user", "repo", "system", "admin"]);
+const PLAN_TYPES = new Set([
+  "free",
+  "go",
+  "plus",
+  "pro",
+  "prolite",
+  "team",
+  "self_serve_business_usage_based",
+  "business",
+  "ent26",
+  "enterprise_cbp_usage_based",
+  "enterprise",
+  "edu",
+  "unknown",
+]);
+const RATE_LIMIT_REACHED_TYPES = new Set([
+  "rate_limit_reached",
+  "workspace_owner_credits_depleted",
+  "workspace_member_credits_depleted",
+  "workspace_owner_usage_limit_reached",
+  "workspace_member_usage_limit_reached",
+]);
 const SOURCE_KINDS = new Set([
   "cli",
   "vscode",
@@ -670,6 +699,12 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
       assignDefined(output, "refreshToken", optionalBoolean(method, input, "refreshToken"));
       return output;
     }
+    case "account/rateLimits/read":
+    case "account/usage/read": {
+      const input = paramsObject(method, params);
+      assertOnlyKeys(method, input, []);
+      return undefined;
+    }
     default:
       throw new ClientInputError(`${method} has no browser RPC policy`);
   }
@@ -750,6 +785,307 @@ function projectSkillsListResult(result: unknown): Record<string, unknown> {
   };
 }
 
+function projectedNonNegativeInteger(value: unknown): number | null {
+  if (typeof value === "bigint") {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function projectedPercentage(value: unknown): number | null {
+  return typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0 &&
+      value <= 100
+    ? value
+    : null;
+}
+
+function projectedBoundedString(value: unknown, maximum: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 &&
+      trimmed.length <= maximum &&
+      !containsControlCharacters(trimmed)
+    ? trimmed
+    : null;
+}
+
+function projectedRateLimitId(value: unknown): string | null {
+  const projected = projectedBoundedString(value, MAX_RATE_LIMIT_ID_CHARACTERS);
+  return projected && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(projected)
+    ? projected
+    : null;
+}
+
+function projectedDecimalString(value: unknown): string | null {
+  const projected = projectedBoundedString(value, MAX_DECIMAL_CHARACTERS);
+  if (!projected || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(projected)) return null;
+  const numeric = Number(projected);
+  return Number.isFinite(numeric) && numeric <= Number.MAX_SAFE_INTEGER
+    ? projected
+    : null;
+}
+
+function projectedUsageDate(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return null;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= daysInMonth ? value : null;
+}
+
+function projectAccountUsageResult(result: unknown): Record<string, unknown> {
+  const summary = isRecord(result) && isRecord(result.summary) ? result.summary : {};
+  const dailyUsageBuckets = isRecord(result) ? result.dailyUsageBuckets : null;
+  return {
+    summary: {
+      lifetimeTokens: projectedNonNegativeInteger(summary.lifetimeTokens),
+      peakDailyTokens: projectedNonNegativeInteger(summary.peakDailyTokens),
+      longestRunningTurnSec: projectedNonNegativeInteger(summary.longestRunningTurnSec),
+      currentStreakDays: projectedNonNegativeInteger(summary.currentStreakDays),
+      longestStreakDays: projectedNonNegativeInteger(summary.longestStreakDays),
+    },
+    dailyUsageBuckets: Array.isArray(dailyUsageBuckets)
+      ? dailyUsageBuckets
+          .slice(-MAX_ACCOUNT_USAGE_DAILY_BUCKETS)
+          .flatMap((bucket) => {
+            if (!isRecord(bucket)) return [];
+            const startDate = projectedUsageDate(bucket.startDate);
+            const tokens = projectedNonNegativeInteger(bucket.tokens);
+            return startDate && tokens !== null ? [{ startDate, tokens }] : [];
+          })
+      : null,
+  };
+}
+
+function projectAccountReadResult(result: unknown): Record<string, unknown> {
+  const account = isRecord(result) && isRecord(result.account) ? result.account : null;
+  let projectedAccount: Record<string, unknown> | null = null;
+  if (account?.type === "apiKey") {
+    projectedAccount = { type: "apiKey" };
+  } else if (
+    account?.type === "chatgpt" &&
+    typeof account.planType === "string" &&
+    PLAN_TYPES.has(account.planType)
+  ) {
+    projectedAccount = { type: "chatgpt", planType: account.planType };
+  } else if (
+    account?.type === "amazonBedrock" &&
+    typeof account.usesCodexManagedCredentials === "boolean"
+  ) {
+    projectedAccount = {
+      type: "amazonBedrock",
+      usesCodexManagedCredentials: account.usesCodexManagedCredentials,
+    };
+  }
+  return {
+    account: projectedAccount,
+    requiresOpenaiAuth: isRecord(result) && typeof result.requiresOpenaiAuth === "boolean"
+      ? result.requiresOpenaiAuth
+      : false,
+  };
+}
+
+function projectRateLimitWindow(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const usedPercent = projectedPercentage(value.usedPercent);
+  const windowDurationMins = value.windowDurationMins === null
+    ? null
+    : projectedNonNegativeInteger(value.windowDurationMins);
+  const resetsAt = value.resetsAt === null
+    ? null
+    : projectedNonNegativeInteger(value.resetsAt);
+  if (
+    usedPercent === null ||
+    (windowDurationMins === null && value.windowDurationMins !== null)
+  ) {
+    return null;
+  }
+  if (resetsAt === null && value.resetsAt !== null) return null;
+  return { usedPercent, windowDurationMins, resetsAt };
+}
+
+function projectSparseRateLimitWindow(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const output: Record<string, unknown> = {};
+
+  if (Object.hasOwn(value, "usedPercent")) {
+    assignDefined(output, "usedPercent", projectedPercentage(value.usedPercent) ?? undefined);
+  }
+  for (const key of ["windowDurationMins", "resetsAt"] as const) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (value[key] === null) output[key] = null;
+    else {
+      assignDefined(
+        output,
+        key,
+        projectedNonNegativeInteger(value[key]) ?? undefined,
+      );
+    }
+  }
+
+  return Object.keys(output).length > 0 ? output : null;
+}
+
+function projectCredits(value: unknown): Record<string, unknown> | null {
+  if (
+    !isRecord(value) ||
+    typeof value.hasCredits !== "boolean" ||
+    typeof value.unlimited !== "boolean"
+  ) {
+    return null;
+  }
+  const balance = value.balance === null ? null : projectedDecimalString(value.balance);
+  if (balance === null && value.balance !== null) return null;
+  return {
+    hasCredits: value.hasCredits,
+    unlimited: value.unlimited,
+    balance,
+  };
+}
+
+function projectSpendControl(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const limit = projectedDecimalString(value.limit);
+  const used = projectedDecimalString(value.used);
+  const remainingPercent = projectedPercentage(value.remainingPercent);
+  const resetsAt = projectedNonNegativeInteger(value.resetsAt);
+  if (!limit || !used || remainingPercent === null || resetsAt === null) return null;
+  return { limit, used, remainingPercent, resetsAt };
+}
+
+function projectedNullableEnum(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+): string | null {
+  return typeof value === "string" && allowed.has(value) ? value : null;
+}
+
+function projectRateLimitSnapshot(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return {
+    limitId: value.limitId === null ? null : projectedRateLimitId(value.limitId),
+    limitName: value.limitName === null
+      ? null
+      : projectedBoundedString(value.limitName, MAX_RATE_LIMIT_NAME_CHARACTERS),
+    primary: projectRateLimitWindow(value.primary),
+    secondary: projectRateLimitWindow(value.secondary),
+    credits: projectCredits(value.credits),
+    individualLimit: projectSpendControl(value.individualLimit),
+    spendControlReached: typeof value.spendControlReached === "boolean"
+      ? value.spendControlReached
+      : null,
+    planType: projectedNullableEnum(value.planType, PLAN_TYPES),
+    rateLimitReachedType: projectedNullableEnum(
+      value.rateLimitReachedType,
+      RATE_LIMIT_REACHED_TYPES,
+    ),
+  };
+}
+
+function projectAccountRateLimitsResult(result: unknown): Record<string, unknown> {
+  if (!isRecord(result)) {
+    return {
+      rateLimits: null,
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: null,
+    };
+  }
+
+  const rateLimitsByLimitId = result.rateLimitsByLimitId === null
+    ? null
+    : isRecord(result.rateLimitsByLimitId)
+      ? Object.fromEntries(
+          Object.entries(result.rateLimitsByLimitId)
+            .slice(0, MAX_RATE_LIMIT_BUCKETS)
+            .flatMap(([limitId, snapshot]) => {
+              const projectedId = projectedRateLimitId(limitId);
+              const projectedSnapshot = projectRateLimitSnapshot(snapshot);
+              return projectedId && projectedSnapshot
+                ? [[projectedId, projectedSnapshot]]
+                : [];
+            }),
+        )
+      : null;
+
+  const resetCredits = isRecord(result.rateLimitResetCredits)
+    ? projectedNonNegativeInteger(result.rateLimitResetCredits.availableCount)
+    : null;
+  return {
+    rateLimits: projectRateLimitSnapshot(result.rateLimits),
+    rateLimitsByLimitId,
+    rateLimitResetCredits: resetCredits === null
+      ? null
+      : { availableCount: resetCredits },
+  };
+}
+
+function projectSparseRateLimitSnapshot(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const output: Record<string, unknown> = {};
+
+  if (Object.hasOwn(value, "limitId")) {
+    if (value.limitId === null) output.limitId = null;
+    else assignDefined(output, "limitId", projectedRateLimitId(value.limitId) ?? undefined);
+  }
+  if (Object.hasOwn(value, "limitName")) {
+    if (value.limitName === null) output.limitName = null;
+    else {
+      assignDefined(
+        output,
+        "limitName",
+        projectedBoundedString(value.limitName, MAX_RATE_LIMIT_NAME_CHARACTERS) ?? undefined,
+      );
+    }
+  }
+
+  for (const [key, projector] of [
+    ["primary", projectSparseRateLimitWindow],
+    ["secondary", projectSparseRateLimitWindow],
+    ["credits", projectCredits],
+    ["individualLimit", projectSpendControl],
+  ] as const) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (value[key] === null) output[key] = null;
+    else assignDefined(output, key, projector(value[key]) ?? undefined);
+  }
+
+  if (Object.hasOwn(value, "spendControlReached")) {
+    if (value.spendControlReached === null) output.spendControlReached = null;
+    else if (typeof value.spendControlReached === "boolean") {
+      output.spendControlReached = value.spendControlReached;
+    }
+  }
+  for (const [key, allowed] of [
+    ["planType", PLAN_TYPES],
+    ["rateLimitReachedType", RATE_LIMIT_REACHED_TYPES],
+  ] as const) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (value[key] === null) output[key] = null;
+    else assignDefined(output, key, projectedNullableEnum(value[key], allowed) ?? undefined);
+  }
+
+  return output;
+}
+
+function projectAccountRateLimitsUpdatedNotification(params: unknown): Record<string, unknown> {
+  if (!isRecord(params)) return {};
+  const rateLimits = projectSparseRateLimitSnapshot(params.rateLimits);
+  return rateLimits && Object.keys(rateLimits).length > 0 ? { rateLimits } : {};
+}
+
+export function sanitizeBrowserNotificationParams(method: string, params: unknown): unknown {
+  return method === "account/rateLimits/updated"
+    ? projectAccountRateLimitsUpdatedNotification(params)
+    : sanitizeBrowserVisibleValue(params);
+}
+
 export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
   switch (method) {
     case "config/read": {
@@ -765,6 +1101,12 @@ export function sanitizeBrowserRpcResult(method: string, result: unknown): unkno
       return projectThreadMetadataUpdateResult(result);
     case "skills/list":
       return projectSkillsListResult(result);
+    case "account/read":
+      return projectAccountReadResult(result);
+    case "account/usage/read":
+      return projectAccountUsageResult(result);
+    case "account/rateLimits/read":
+      return projectAccountRateLimitsResult(result);
     default:
       return sanitizeBrowserVisibleValue(result);
   }

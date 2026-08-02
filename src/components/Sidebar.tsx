@@ -19,8 +19,17 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import type { CodexThread, ConnectionState, SkillInfo, SkillsDirectoryEntry } from "../types/protocol";
+import type {
+  CodexThread,
+  ConnectionState,
+  PendingRequest,
+  SkillInfo,
+  SkillsDirectoryEntry,
+  ThreadActivityEvent,
+} from "../types/protocol";
 import { formatTimestamp, threadRecencyTimestamp } from "../utils/protocol";
+import { ActivityDirectory } from "./ActivityDirectory";
+import { monitoredActivityCount } from "./activityDirectoryModel";
 
 export interface SidebarProps {
   threads: CodexThread[];
@@ -30,6 +39,8 @@ export interface SidebarProps {
   open: boolean;
   loading: boolean;
   connection: ConnectionState;
+  recentActivities: ThreadActivityEvent[];
+  pendingRequests: PendingRequest[];
   skills: SkillsDirectoryEntry[];
   skillsLoading: boolean;
   skillsLoaded: boolean;
@@ -50,11 +61,11 @@ export interface SidebarProps {
   onSkillsView: () => void;
 }
 
-export type SidebarView = "active" | "archived" | "skills";
+export type SidebarView = "active" | "archived" | "activity" | "skills";
 
 interface ThreadActionMenuState {
   thread: CodexThread;
-  view: Exclude<SidebarView, "skills">;
+  view: Exclude<SidebarView, "activity" | "skills">;
   left: number;
   top: number;
   trigger: HTMLButtonElement | null;
@@ -62,13 +73,13 @@ interface ThreadActionMenuState {
 
 interface DeleteThreadState {
   thread: CodexThread;
-  view: Exclude<SidebarView, "skills">;
+  view: Exclude<SidebarView, "activity" | "skills">;
   returnFocus: HTMLButtonElement | null;
 }
 
 interface RenameThreadState {
   thread: CodexThread;
-  view: Exclude<SidebarView, "skills">;
+  view: Exclude<SidebarView, "activity" | "skills">;
   returnFocus: HTMLButtonElement | null;
   name: string;
 }
@@ -174,6 +185,7 @@ export function Sidebar(props: SidebarProps) {
   const [renameThread, setRenameThread] = useState<RenameThreadState | null>(null);
   const activeTabRef = useRef<HTMLButtonElement>(null);
   const archivedTabRef = useRef<HTMLButtonElement>(null);
+  const activityTabRef = useRef<HTMLButtonElement>(null);
   const skillsTabRef = useRef<HTMLButtonElement>(null);
   const actionMenuRef = useRef<HTMLDivElement>(null);
   const deleteDialogRef = useRef<HTMLFormElement>(null);
@@ -185,9 +197,11 @@ export function Sidebar(props: SidebarProps) {
   const suppressionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTabId = useId();
   const archivedTabId = useId();
+  const activityTabId = useId();
   const skillsTabId = useId();
   const activePanelId = useId();
   const archivedPanelId = useId();
+  const activityPanelId = useId();
   const skillsPanelId = useId();
   const actionMenuId = useId();
   const activeActionReasonId = useId();
@@ -221,7 +235,7 @@ export function Sidebar(props: SidebarProps) {
 
   function openActionMenu(
     thread: CodexThread,
-    menuView: Exclude<SidebarView, "skills">,
+    menuView: Exclude<SidebarView, "activity" | "skills">,
     clientX: number,
     clientY: number,
     trigger: HTMLButtonElement | null,
@@ -346,13 +360,15 @@ export function Sidebar(props: SidebarProps) {
         ? activeTabRef.current
         : nextView === "archived"
           ? archivedTabRef.current
-          : skillsTabRef.current;
+          : nextView === "activity"
+            ? activityTabRef.current
+            : skillsTabRef.current;
       tab?.focus();
     }
   }
 
   function handleTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
-    const views: SidebarView[] = ["active", "archived", "skills"];
+    const views: SidebarView[] = ["active", "archived", "activity", "skills"];
     const currentIndex = views.indexOf(view);
     let nextView: SidebarView | null = null;
     if (event.key === "Home") nextView = views[0];
@@ -367,7 +383,7 @@ export function Sidebar(props: SidebarProps) {
   function handleContextMenu(
     event: React.MouseEvent<HTMLDivElement>,
     thread: CodexThread,
-    menuView: Exclude<SidebarView, "skills">,
+    menuView: Exclude<SidebarView, "activity" | "skills">,
   ) {
     event.preventDefault();
     const pendingPress = longPressRef.current;
@@ -389,7 +405,7 @@ export function Sidebar(props: SidebarProps) {
   function handleLongPressStart(
     event: ReactPointerEvent<HTMLButtonElement>,
     thread: CodexThread,
-    menuView: Exclude<SidebarView, "skills">,
+    menuView: Exclude<SidebarView, "activity" | "skills">,
   ) {
     if (event.pointerType === "mouse" || event.button !== 0) return;
     clearLongPress();
@@ -448,7 +464,7 @@ export function Sidebar(props: SidebarProps) {
   function handleThreadSelect(
     event: React.MouseEvent<HTMLButtonElement>,
     thread: CodexThread,
-    rowView: Exclude<SidebarView, "skills">,
+    rowView: Exclude<SidebarView, "activity" | "skills">,
   ) {
     if (suppressedSelectionRef.current === thread.id) {
       suppressedSelectionRef.current = null;
@@ -516,11 +532,20 @@ export function Sidebar(props: SidebarProps) {
   const LifecycleIcon = actionMenu?.view === "archived" ? ArchiveRestore : Archive;
   const pinAction = actionMenu?.thread.isPinned === true ? "Unpin" : "Pin";
   const PinActionIcon = actionMenu?.thread.isPinned === true ? PinOff : Pin;
-  const panelId = view === "active" ? activePanelId : view === "archived" ? archivedPanelId : skillsPanelId;
-  const labelledBy = view === "active" ? activeTabId : view === "archived" ? archivedTabId : skillsTabId;
-  const threadView: Exclude<SidebarView, "skills"> = view === "archived" ? "archived" : "active";
+  const panelId = view === "active"
+    ? activePanelId
+    : view === "archived"
+      ? archivedPanelId
+      : view === "activity" ? activityPanelId : skillsPanelId;
+  const labelledBy = view === "active"
+    ? activeTabId
+    : view === "archived"
+      ? archivedTabId
+      : view === "activity" ? activityTabId : skillsTabId;
+  const threadView: Exclude<SidebarView, "activity" | "skills"> = view === "archived" ? "archived" : "active";
   const refreshLoading = view === "skills" ? props.skillsLoading : props.loading;
   const skillCount = props.skills.reduce((total, entry) => total + entry.skills.length, 0);
+  const activityCount = monitoredActivityCount(props.threads, props.pendingRequests);
 
   return (
     <>
@@ -543,15 +568,15 @@ export function Sidebar(props: SidebarProps) {
             <input
               value={props.search}
               onChange={(event) => props.onSearch(event.target.value)}
-              placeholder={view === "skills" ? "Search skills" : "Search threads"}
-              aria-label={view === "skills" ? "Search skills" : "Search threads"}
+              placeholder={view === "skills" ? "Search skills" : view === "activity" ? "Search activity" : "Search threads"}
+              aria-label={view === "skills" ? "Search skills" : view === "activity" ? "Search activity" : "Search threads"}
             />
           </label>
           <button
             className="icon-button icon-button--dark"
             type="button"
-            title={view === "skills" ? "Refresh skills" : "Refresh threads"}
-            aria-label={view === "skills" ? "Refresh skills" : "Refresh threads"}
+            title={view === "skills" ? "Refresh skills" : view === "activity" ? "Refresh activity" : "Refresh threads"}
+            aria-label={view === "skills" ? "Refresh skills" : view === "activity" ? "Refresh activity" : "Refresh threads"}
             onClick={() => props.onRefresh(view)}
             disabled={refreshLoading}
           >
@@ -590,6 +615,21 @@ export function Sidebar(props: SidebarProps) {
             <span aria-hidden="true">{props.archivedThreads.length}</span>
           </button>
           <button
+            ref={activityTabRef}
+            id={activityTabId}
+            className={`thread-tab ${view === "activity" ? "thread-tab--selected" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={view === "activity"}
+            aria-controls={activityPanelId}
+            tabIndex={view === "activity" ? 0 : -1}
+            onClick={() => switchView("activity")}
+            onKeyDown={handleTabKeyDown}
+          >
+            Activity
+            <span aria-hidden="true">{activityCount}</span>
+          </button>
+          <button
             ref={skillsTabRef}
             id={skillsTabId}
             className={`thread-tab ${view === "skills" ? "thread-tab--selected" : ""}`}
@@ -606,7 +646,18 @@ export function Sidebar(props: SidebarProps) {
           </button>
         </div>
         <span id={pinnedDescriptionId} className="sr-only">Pinned</span>
-        {view === "skills" ? (
+        {view === "activity" ? (
+          <div id={panelId} role="tabpanel" aria-labelledby={labelledBy} className="activity-panel">
+            <ActivityDirectory
+              threads={props.threads}
+              recentEvents={props.recentActivities}
+              pendingRequests={props.pendingRequests}
+              selectedThreadId={props.selectedThreadId}
+              search={props.search}
+              onSelect={props.onSelect}
+            />
+          </div>
+        ) : view === "skills" ? (
           <div
             id={panelId}
             className="skills-directory"

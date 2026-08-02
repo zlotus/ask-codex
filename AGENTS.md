@@ -55,6 +55,8 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
 - 将 `ASK_CODEX_WORKSPACE` 视为初始目录，而不是访问边界。
 - 不支持的细粒度权限授予和 MCP elicitation 必须默认拒绝。
 - 恢复会话时保留已有的 `externalSandbox`，不要覆盖它。
+- 自动连接恢复和只读跨线程视图不得调用 `thread/resume` 或改变审批 owner；只能自动重试
+  有界的只读请求，绝不重放未确认的写请求。
 
 ## 协议变更
 

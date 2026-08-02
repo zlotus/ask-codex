@@ -5,6 +5,7 @@ import {
   ALLOWED_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
   materializeTurnStartAttachments,
+  sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
   sanitizeBrowserVisibleValue,
@@ -257,6 +258,349 @@ describe("browser RPC policy", () => {
         model_reasoning_effort: false,
       },
     })).toEqual({ model: null, effort: null });
+  });
+
+  it.each(["account/rateLimits/read", "account/usage/read"])(
+    "allows only empty browser params for %s and rebuilds them as no params",
+    (method) => {
+      expect(ALLOWED_BROWSER_RPC_METHODS.has(method)).toBe(true);
+      expect(sanitizeBrowserRpcParams(method, {})).toBeUndefined();
+      expect(() => sanitizeBrowserRpcParams(method, null))
+        .toThrow(`${method} params must be an object`);
+      expect(() => sanitizeBrowserRpcParams(method, { refreshToken: true }))
+        .toThrow(`${method} does not allow param: refreshToken`);
+      expect(() => sanitizeBrowserRpcParams(method, { accountId: "private" }))
+        .toThrow(`${method} does not allow param: accountId`);
+    },
+  );
+
+  it("projects account/read without exposing account identity", () => {
+    const result = sanitizeBrowserRpcResult("account/read", {
+      account: {
+        type: "chatgpt",
+        email: "private@example.com",
+        planType: "plus",
+        accountId: "private-account-id",
+      },
+      requiresOpenaiAuth: true,
+      token: "secret",
+    });
+
+    expect(result).toEqual({
+      account: { type: "chatgpt", planType: "plus" },
+      requiresOpenaiAuth: true,
+    });
+    expect(JSON.stringify(result)).not.toMatch(/private|secret|email|accountId/i);
+    expect(sanitizeBrowserRpcResult("account/read", {
+      account: { type: "chatgpt", email: "private@example.com", planType: "invalid" },
+      requiresOpenaiAuth: "true",
+    })).toEqual({ account: null, requiresOpenaiAuth: false });
+  });
+
+  it("projects account usage to JSON-safe summary values and bounded daily buckets", () => {
+    const result = sanitizeBrowserRpcResult("account/usage/read", {
+      summary: {
+        lifetimeTokens: 1_234_567n,
+        peakDailyTokens: 56_789,
+        longestRunningTurnSec: -1,
+        currentStreakDays: 3.5,
+        longestStreakDays: Number.MAX_SAFE_INTEGER,
+        email: "private@example.com",
+      },
+      dailyUsageBuckets: [
+        { startDate: "2026-08-01", tokens: 42n, accountId: "private-account" },
+        { startDate: "2026-08-02", tokens: 0 },
+        { startDate: "2026-02-29", tokens: 12 },
+        { startDate: "2026-08-03", tokens: Number.MAX_SAFE_INTEGER + 1 },
+        { startDate: "secret", tokens: 7 },
+      ],
+      account: { email: "private@example.com" },
+      token: "secret",
+    });
+
+    expect(result).toEqual({
+      summary: {
+        lifetimeTokens: 1_234_567,
+        peakDailyTokens: 56_789,
+        longestRunningTurnSec: null,
+        currentStreakDays: null,
+        longestStreakDays: Number.MAX_SAFE_INTEGER,
+      },
+      dailyUsageBuckets: [
+        { startDate: "2026-08-01", tokens: 42 },
+        { startDate: "2026-08-02", tokens: 0 },
+      ],
+    });
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(JSON.stringify(result)).not.toMatch(/private|secret|email/i);
+  });
+
+  it("bounds account usage collections and fails closed for malformed big integers", () => {
+    const result = sanitizeBrowserRpcResult("account/usage/read", {
+      summary: {
+        lifetimeTokens: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+        peakDailyTokens: Infinity,
+      },
+      dailyUsageBuckets: Array.from({ length: 405 }, (_, index) => ({
+        startDate: "2026-08-01",
+        tokens: BigInt(index),
+      })),
+    }) as { dailyUsageBuckets: unknown[] };
+
+    expect(result).toMatchObject({
+      summary: {
+        lifetimeTokens: null,
+        peakDailyTokens: null,
+        longestRunningTurnSec: null,
+        currentStreakDays: null,
+        longestStreakDays: null,
+      },
+    });
+    expect(result.dailyUsageBuckets).toHaveLength(366);
+    expect(result.dailyUsageBuckets.at(0)).toEqual({ startDate: "2026-08-01", tokens: 39 });
+    expect(result.dailyUsageBuckets.at(-1)).toEqual({ startDate: "2026-08-01", tokens: 404 });
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(sanitizeBrowserRpcResult("account/usage/read", null)).toEqual({
+      summary: {
+        lifetimeTokens: null,
+        peakDailyTokens: null,
+        longestRunningTurnSec: null,
+        currentStreakDays: null,
+        longestStreakDays: null,
+      },
+      dailyUsageBuckets: null,
+    });
+  });
+
+  it("projects account rate limits without identity or reset-credit details", () => {
+    const snapshot = {
+      limitId: "codex",
+      limitName: "Codex",
+      primary: {
+        usedPercent: 72.5,
+        windowDurationMins: 300,
+        resetsAt: 1_800_000_000,
+        extra: "secret",
+      },
+      secondary: null,
+      credits: {
+        hasCredits: true,
+        unlimited: false,
+        balance: "12.50",
+        email: "private@example.com",
+      },
+      individualLimit: {
+        limit: "100.00",
+        used: "25.50",
+        remainingPercent: 74.5,
+        resetsAt: 1_800_000_001,
+        description: "private workspace",
+      },
+      spendControlReached: false,
+      planType: "plus",
+      rateLimitReachedType: "rate_limit_reached",
+      account: { email: "private@example.com" },
+    };
+    const expectedSnapshot = {
+      limitId: "codex",
+      limitName: "Codex",
+      primary: {
+        usedPercent: 72.5,
+        windowDurationMins: 300,
+        resetsAt: 1_800_000_000,
+      },
+      secondary: null,
+      credits: {
+        hasCredits: true,
+        unlimited: false,
+        balance: "12.50",
+      },
+      individualLimit: {
+        limit: "100.00",
+        used: "25.50",
+        remainingPercent: 74.5,
+        resetsAt: 1_800_000_001,
+      },
+      spendControlReached: false,
+      planType: "plus",
+      rateLimitReachedType: "rate_limit_reached",
+    };
+
+    const result = sanitizeBrowserRpcResult("account/rateLimits/read", {
+      rateLimits: snapshot,
+      rateLimitsByLimitId: { codex: snapshot },
+      rateLimitResetCredits: {
+        availableCount: 2n,
+        credits: [{
+          id: "opaque-private-id",
+          title: "Private title",
+          description: "Private description",
+        }],
+      },
+      account: { id: "private", email: "private@example.com" },
+      token: "secret",
+    });
+
+    expect(result).toEqual({
+      rateLimits: expectedSnapshot,
+      rateLimitsByLimitId: { codex: expectedSnapshot },
+      rateLimitResetCredits: { availableCount: 2 },
+    });
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(JSON.stringify(result)).not.toMatch(/private|secret|opaque|email|description/i);
+  });
+
+  it("bounds rate-limit buckets and drops malformed or unsafe values", () => {
+    const rateLimitsByLimitId = Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => [`bucket-${index}`, {}]),
+    );
+    Object.assign(rateLimitsByLimitId, {
+      "private@example.com": { limitId: "private@example.com" },
+    });
+    const result = sanitizeBrowserRpcResult("account/rateLimits/read", {
+      rateLimits: {
+        limitId: "private@example.com",
+        limitName: "x".repeat(257),
+        primary: {
+          usedPercent: 101,
+          windowDurationMins: 300,
+          resetsAt: 1_800_000_000,
+        },
+        secondary: {
+          usedPercent: 50,
+          resetsAt: null,
+        },
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: "10 USD",
+        },
+        individualLimit: {
+          limit: "9007199254740992",
+          used: "1",
+          remainingPercent: -1,
+          resetsAt: 1,
+        },
+        spendControlReached: "false",
+        planType: "private-plan",
+        rateLimitReachedType: "private-reason",
+      },
+      rateLimitsByLimitId,
+      rateLimitResetCredits: {
+        availableCount: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+        credits: [{ id: "opaque-private-id" }],
+      },
+    }) as { rateLimitsByLimitId: Record<string, unknown> };
+
+    expect(result).toMatchObject({
+      rateLimits: {
+        limitId: null,
+        limitName: null,
+        primary: null,
+        secondary: null,
+        credits: null,
+        individualLimit: null,
+        spendControlReached: null,
+        planType: null,
+        rateLimitReachedType: null,
+      },
+      rateLimitResetCredits: null,
+    });
+    expect(Object.keys(result.rateLimitsByLimitId)).toHaveLength(32);
+    expect(result.rateLimitsByLimitId).not.toHaveProperty("private@example.com");
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(sanitizeBrowserRpcResult("account/rateLimits/read", null)).toEqual({
+      rateLimits: null,
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: null,
+    });
+  });
+
+  it("strictly projects sparse rate-limit updates without inventing absent fields", () => {
+    const result = sanitizeBrowserNotificationParams("account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 73,
+          windowDurationMins: 300,
+          resetsAt: 1_800_000_000,
+          description: "private window",
+        },
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: "8.50",
+          email: "private@example.com",
+        },
+        planType: null,
+        rateLimitReachedType: "rate_limit_reached",
+        email: "private@example.com",
+        accountId: "private-account-id",
+        resetCredit: {
+          id: "opaque-private-id",
+          description: "secret reset credit",
+        },
+      },
+      email: "private@example.com",
+      description: "secret account metadata",
+    });
+
+    expect(result).toEqual({
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 73,
+          windowDurationMins: 300,
+          resetsAt: 1_800_000_000,
+        },
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: "8.50",
+        },
+        planType: null,
+        rateLimitReachedType: "rate_limit_reached",
+      },
+    });
+    expect(result).not.toHaveProperty("rateLimits.limitName");
+    expect(result).not.toHaveProperty("rateLimits.secondary");
+    expect(result).not.toHaveProperty("rateLimits.individualLimit");
+    expect(result).not.toHaveProperty("rateLimits.spendControlReached");
+    expect(JSON.stringify(result)).not.toMatch(/private|secret|opaque|email|description/i);
+  });
+
+  it("preserves valid fields inside sparse rate-limit windows", () => {
+    expect(sanitizeBrowserNotificationParams("account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 75,
+          description: "private window",
+        },
+        secondary: {
+          resetsAt: null,
+          accountId: "private-account-id",
+        },
+      },
+    })).toEqual({
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 75 },
+        secondary: { resetsAt: null },
+      },
+    });
+  });
+
+  it("drops malformed rate-limit update fields instead of synthesizing a snapshot", () => {
+    expect(sanitizeBrowserNotificationParams("account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "private@example.com",
+        primary: { usedPercent: 101 },
+        planType: "private-plan",
+        unknown: "secret",
+      },
+    })).toEqual({});
+    expect(sanitizeBrowserNotificationParams("account/rateLimits/updated", null)).toEqual({});
   });
 
   it("removes local image paths at any nesting depth without stripping ordinary paths", () => {

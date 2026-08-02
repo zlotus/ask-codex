@@ -25,6 +25,8 @@ interface UseCodexSocketOptions {
 interface CodexSocketClient {
   connection: ConnectionState;
   connectionDetail: string;
+  retryAttempt: number;
+  readySequence: number;
   rpc: (method: string, params?: unknown) => Promise<unknown>;
   respond: (id: string | number, result?: unknown, error?: unknown) => void;
   reconnect: () => void;
@@ -45,6 +47,8 @@ function makeId(): string {
 export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClient {
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [connectionDetail, setConnectionDetail] = useState("Not connected");
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [readySequence, setReadySequence] = useState(0);
   const [retrySignal, setRetrySignal] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
   const retryTimerRef = useRef<number | null>(null);
@@ -52,6 +56,9 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
   const pendingRef = useRef(new Map<string, PendingRpc>());
   const callbacksRef = useRef(options);
   const generationRef = useRef(0);
+  const readyRef = useRef(false);
+  const hasBeenReadyRef = useRef(false);
+  const connectionKeyRef = useRef("");
 
   useEffect(() => {
     callbacksRef.current = options;
@@ -65,10 +72,13 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
   const connect = useCallback(() => {
     if (!callbacksRef.current.enabled) return;
     const generation = ++generationRef.current;
+    readyRef.current = false;
     if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
     socketRef.current?.close();
     setConnection("connecting");
-    setConnectionDetail(retryCountRef.current > 0 ? "Reconnecting" : "Connecting");
+    setConnectionDetail(retryCountRef.current > 0
+      ? `Reconnecting · attempt ${retryCountRef.current}`
+      : "Connecting");
 
     let socket: WebSocket;
     try {
@@ -85,12 +95,12 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
       if (callbacksRef.current.token) {
         socket.send(JSON.stringify({ type: "auth", token: callbacksRef.current.token }));
       }
-      retryCountRef.current = 0;
       setConnection("connecting");
       setConnectionDetail("Connected to server, starting Codex");
     };
 
     socket.onmessage = (event) => {
+      if (generation !== generationRef.current) return;
       let raw: unknown;
       try {
         raw = JSON.parse(String(event.data));
@@ -107,16 +117,25 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
         case "status": {
           callbacksRef.current.onStatus?.(message);
           if (message.status === "error") {
+            readyRef.current = false;
             const detail = message.error?.message ?? "Codex failed to start";
             setConnection("error");
             setConnectionDetail(detail);
             callbacksRef.current.onError?.(detail);
           } else if (message.status === "ready") {
+            retryCountRef.current = 0;
+            setRetryAttempt(0);
+            if (!readyRef.current) {
+              readyRef.current = true;
+              hasBeenReadyRef.current = true;
+              setReadySequence((current) => current + 1);
+            }
             setConnection("connected");
             setConnectionDetail("Ready");
           } else {
+            readyRef.current = false;
             setConnection("connecting");
-            setConnectionDetail("Starting Codex");
+            setConnectionDetail(hasBeenReadyRef.current ? "Restarting Codex" : "Starting Codex");
           }
           break;
         }
@@ -157,12 +176,14 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
     socket.onclose = () => {
       if (generation !== generationRef.current) return;
       socketRef.current = null;
+      readyRef.current = false;
       rejectPending("Connection closed before Codex replied");
       if (!callbacksRef.current.enabled) return;
       setConnection("disconnected");
-      setConnectionDetail("Disconnected");
       const delay = Math.min(1_000 * 2 ** retryCountRef.current, 12_000);
       retryCountRef.current += 1;
+      setRetryAttempt(retryCountRef.current);
+      setConnectionDetail(`Disconnected · retrying in ${Math.ceil(delay / 1_000)}s`);
       retryTimerRef.current = window.setTimeout(() => {
         setRetrySignal((current) => current + 1);
       }, delay);
@@ -171,7 +192,12 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
 
   useEffect(() => {
     if (!options.enabled) return;
-    retryCountRef.current = 0;
+    const connectionKey = `${options.enabled}:${options.token}`;
+    if (connectionKeyRef.current !== connectionKey) {
+      connectionKeyRef.current = connectionKey;
+      retryCountRef.current = 0;
+      setRetryAttempt(0);
+    }
     const startTimer = window.setTimeout(connect, 0);
     return () => {
       window.clearTimeout(startTimer);
@@ -220,12 +246,15 @@ export function useCodexSocket(options: UseCodexSocketOptions): CodexSocketClien
 
   const reconnect = useCallback(() => {
     retryCountRef.current = 0;
+    setRetryAttempt(0);
     setRetrySignal((current) => current + 1);
   }, []);
 
   return {
     connection: options.enabled ? connection : "disconnected",
     connectionDetail: options.enabled ? connectionDetail : "Not connected",
+    retryAttempt: options.enabled ? retryAttempt : 0,
+    readySequence,
     rpc,
     respond,
     reconnect,
