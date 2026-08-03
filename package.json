@@ -20,6 +20,7 @@
     "express": "latest",
     "highlight.js": "^11.11.1",
     "lucide-react": "latest",
+    "mdast-util-from-markdown": "^2.0.3",
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "latest",

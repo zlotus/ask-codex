@@ -36,11 +36,11 @@ export function configuredTurnSettings(
 }
 
 export function newThreadSettings(
-  defaultCwd: string,
+  initialCwd: string,
   current: ThreadSettings,
 ): ThreadSettings {
   return {
-    cwd: defaultCwd || current.cwd,
+    cwd: initialCwd,
     model: current.model,
     effort: current.effort,
     sandbox: "workspace-write",

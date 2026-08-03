@@ -68,6 +68,13 @@ export type ItemStatus = "inProgress" | "completed" | "failed" | "declined" | st
 export type ImageDetail = "auto" | "low" | "high" | "original";
 export type InputModality = "text" | "image" | "audio";
 
+export interface FileDownloadCapability {
+  href: string;
+  capabilityId: string;
+}
+
+export type FileDownloadHandler = (file: FileDownloadCapability) => Promise<void>;
+
 export interface TextUserInput {
   type: "text";
   text: string;
@@ -93,6 +100,7 @@ export interface CodexItem {
   type: string;
   status?: ItemStatus;
   approvalReasons?: string[];
+  askCodexFileDownloads?: FileDownloadCapability[];
   streamOmittedCharacters?: Record<string, number>;
   [key: string]: unknown;
 }

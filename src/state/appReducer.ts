@@ -1105,10 +1105,25 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, pendingRequests: [] };
     case "settings":
       return { ...state, settings: { ...state.settings, ...action.settings } };
-    case "threadSettings":
-      return action.threadId === state.selectedThreadId
-        ? { ...state, settings: { ...state.settings, ...action.settings } }
-        : state;
+    case "threadSettings": {
+      const updatedCwd = action.settings.cwd;
+      const updateThreadCwd = (thread: CodexThread): CodexThread => (
+        updatedCwd !== undefined && thread.id === action.threadId
+          ? { ...thread, cwd: updatedCwd }
+          : thread
+      );
+      return {
+        ...state,
+        threads: updatedCwd === undefined ? state.threads : state.threads.map(updateThreadCwd),
+        archivedThreads: updatedCwd === undefined
+          ? state.archivedThreads
+          : state.archivedThreads.map(updateThreadCwd),
+        currentThread: state.currentThread ? updateThreadCwd(state.currentThread) : null,
+        settings: action.threadId === state.selectedThreadId
+          ? { ...state.settings, ...action.settings }
+          : state.settings,
+      };
+    }
     case "toast":
       return { ...state, toasts: [...state.toasts, action.toast].slice(-4) };
     case "removeToast":

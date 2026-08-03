@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ItemRenderer } from "./ItemRenderer";
 import { TurnView } from "./TurnView";
+
+const FILE_CAPABILITY_ID = "a".repeat(32);
 
 function openDetails(label: string, index = 0) {
   const details = screen.getAllByText(label)[index]?.closest("details");
@@ -16,6 +18,25 @@ describe("ItemRenderer", () => {
 
     expect(screen.getByText("Codex")).toBeInTheDocument();
     expect(screen.getByText("fix").tagName).toBe("STRONG");
+  });
+
+  it("does not expose agent file capabilities in user message Markdown", () => {
+    const onDownloadFile = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(<ItemRenderer
+      item={{
+        id: "user-file-link",
+        type: "userMessage",
+        content: [{ type: "text", text: "[report](/tmp/report.txt)", text_elements: [] }],
+        askCodexFileDownloads: [{ href: "/tmp/report.txt", capabilityId: FILE_CAPABILITY_ID }],
+      }}
+      onDownloadFile={onDownloadFile}
+    />);
+
+    expect(screen.getByText("report")).toHaveClass("markdown-local-file-reference");
+    expect(screen.queryByRole("link", { name: "report" })).not.toBeInTheDocument();
+    expect(container.querySelector("[href='/tmp/report.txt']")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download report.txt" })).not.toBeInTheDocument();
+    expect(onDownloadFile).not.toHaveBeenCalled();
   });
 
   it("shows safe placeholders for user images without exposing host paths", () => {

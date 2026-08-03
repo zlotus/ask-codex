@@ -61,6 +61,19 @@ accepted decision. Record only verification that was actually run.
 - Treat `ASK_CODEX_PUBLIC_ORIGIN` as one exact trusted-proxy origin, require a
   token whenever it is configured, and preserve the public `Host` at the proxy.
 - Treat `ASK_CODEX_WORKSPACE` as an initial directory, not an access boundary.
+- File-download candidates may derive only from the authoritative `thread.cwd`
+  supplied by app-server and explicit absolute local file links in completed
+  Agent messages.
+- The browser must not submit `path`, `cwd`, or `threadId`. A download request
+  may submit only a short-lived, single-use opaque capability ID issued by the
+  gateway.
+- Snapshot the canonical root identity when issuing a download capability. At
+  consumption, verify that identity again, pin resolution to the matching root
+  directory fd, and check target `realpath` plus containment through the opened
+  file fd. Any mismatch must fail closed.
+- Allow downloads only for regular files, and retain explicit resource limits
+  on file size, capability count, concurrency, metadata, and lifecycle. Never
+  introduce global download roots, including `ASK_CODEX_DOWNLOAD_ROOTS`.
 - Unsupported granular permission grants and MCP elicitations must fail closed.
 - Preserve an existing `externalSandbox` instead of overriding it on resume.
 - Automatic connection recovery and read-only cross-thread views must not call

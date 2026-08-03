@@ -1,8 +1,9 @@
 // @vitest-environment node
 
 import { EventEmitter, once } from "node:events";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { PassThrough, Readable } from "node:stream";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +12,7 @@ import {
   type CodexGateway,
   type CodexStatusEvent,
 } from "./codex-app-server.js";
+import { FileDownloadStore } from "./file-downloads.js";
 import { AskCodexServer, loadConfig, type AskCodexConfig } from "./server.js";
 import type { CodexStatus, RpcId, ServerMessage } from "./types.js";
 
@@ -200,6 +202,7 @@ describe("AskCodexServer", () => {
       body: PNG,
     });
     expect(badOrigin.status).toBe(403);
+    expect(badOrigin.headers.get("connection")).toBe("close");
 
     const spoofed = await uploadAttachment(url, "test-token", Buffer.from("not a png"));
     expect(spoofed.status).toBe(415);
@@ -479,6 +482,421 @@ describe("AskCodexServer", () => {
     await expect(missing.json()).resolves.toEqual({
       error: { code: "attachmentNotFound", message: "Attachment was not found" },
     });
+  });
+
+  it("projects completed agent file links as authenticated one-shot downloads", async () => {
+    const gateway = new FakeGateway();
+    const href = `${process.cwd()}/package.json:1`;
+    gateway.request.mockResolvedValueOnce({
+      thread: {
+        id: "thread-download",
+        cwd: process.cwd(),
+        turns: [{
+          id: "turn-download",
+          status: "completed",
+          itemsView: "full",
+          items: [{
+            id: "agent-download",
+            type: "agentMessage",
+            text: `[package](${href})`,
+            askCodexFileDownloads: [{
+              href: "/private/spoofed",
+              capabilityId: "a".repeat(32),
+            }],
+          }],
+        }],
+      },
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "read-download",
+      method: "thread/read",
+      params: { threadId: "thread-download", includeTurns: true },
+    }));
+    const result = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "read-download",
+    );
+    const projected = result.type === "rpcResult" ? result.result as {
+      thread: {
+        turns: Array<{
+          items: Array<{
+            askCodexFileDownloads?: Array<{ href: string; capabilityId: string }>;
+          }>;
+        }>;
+      };
+    } : undefined;
+    const descriptor = projected?.thread.turns[0]?.items[0]?.askCodexFileDownloads?.[0];
+    expect(descriptor).toEqual({
+      href,
+      capabilityId: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+    });
+    expect(JSON.stringify(result)).not.toContain("/private/spoofed");
+    const capabilityId = descriptor?.capabilityId;
+    expect(capabilityId).toBeDefined();
+
+    const endpoint = `${url}/api/file-downloads/${capabilityId}`;
+    const unauthorized = await fetch(endpoint, {
+      method: "POST",
+      headers: { Origin: "http://localhost:5173" },
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("connection")).toBe("close");
+
+    const badOrigin = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "https://evil.example",
+      },
+    });
+    expect(badOrigin.status).toBe(403);
+    expect(badOrigin.headers.get("connection")).toBe("close");
+
+    const pathBody = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        "Content-Type": "application/json",
+        Origin: "http://localhost:5173",
+      },
+      body: JSON.stringify({ path: "/etc/passwd" }),
+    });
+    expect(pathBody.status).toBe(400);
+    expect(pathBody.headers.get("connection")).toBe("close");
+    expect(await pathBody.json()).toEqual({
+      error: {
+        code: "invalidFileDownloadRequest",
+        message: "File download request is invalid",
+      },
+    });
+
+    const download = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    expect(download.status).toBe(200);
+    expect(download.headers.get("cache-control")).toBe("no-store");
+    expect(download.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(download.headers.get("content-type")).toBe("application/octet-stream");
+    expect(download.headers.get("content-disposition"))
+      .toBe("attachment; filename=\"package.json\"; filename*=UTF-8''package.json");
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(await readFile("package.json"));
+
+    const reused = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    expect(reused.status).toBe(404);
+    expect(await reused.json()).toEqual({
+      error: {
+        code: "fileDownloadNotFound",
+        message: "File download is unavailable",
+      },
+    });
+  });
+
+  it("terminates stalled file downloads and releases their lease at the transfer deadline", async () => {
+    const gateway = new FakeGateway();
+    const fileDownloads = new FileDownloadStore();
+    const source = new PassThrough();
+    source.write("a");
+    const release = vi.fn(async (): Promise<void> => undefined);
+    vi.spyOn(fileDownloads, "consume").mockResolvedValue({
+      name: "stalled.bin",
+      size: 2,
+      createReadStream: () => source,
+      release,
+    });
+    const timeoutController = new AbortController();
+    const clearTimeout = vi.fn();
+    const timeoutFactory = vi.fn(() => ({
+      signal: timeoutController.signal,
+      clear: clearTimeout,
+    }));
+    const service = new AskCodexServer(
+      config("test-token"),
+      gateway,
+      undefined,
+      fileDownloads,
+      timeoutFactory,
+    );
+    services.push(service);
+    const { url } = await service.start();
+
+    let responseStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      responseStarted = resolve;
+    });
+    const terminated = new Promise<void>((resolve, reject) => {
+      const request = httpRequest(`${url}/api/file-downloads/${"a".repeat(32)}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer test-token",
+          Origin: "http://localhost:5173",
+        },
+      }, (response) => {
+        responseStarted?.();
+        response.resume();
+        response.once("aborted", resolve);
+        response.once("error", resolve);
+        response.once("end", () => reject(new Error("Stalled download completed unexpectedly")));
+      });
+      request.once("error", reject);
+      request.end();
+    });
+
+    await started;
+    expect(timeoutFactory).toHaveBeenCalledWith(2 * 60 * 1000);
+    expect(source.destroyed).toBe(false);
+
+    timeoutController.abort();
+
+    await terminated;
+    await vi.waitFor(() => {
+      expect(source.destroyed).toBe(true);
+      expect(clearTimeout).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("returns JSON without attachment headers when a download fails before its first byte", async () => {
+    const gateway = new FakeGateway();
+    const fileDownloads = new FileDownloadStore();
+    const release = vi.fn(async (): Promise<void> => undefined);
+    vi.spyOn(fileDownloads, "consume").mockResolvedValue({
+      name: "unreadable.bin",
+      size: 999_999,
+      createReadStream: () => new Readable({
+        read() {
+          this.destroy(new Error("first read failed"));
+        },
+      }),
+      release,
+    });
+    const clearTimeout = vi.fn();
+    const service = new AskCodexServer(
+      config("test-token"),
+      gateway,
+      undefined,
+      fileDownloads,
+      () => ({ signal: new AbortController().signal, clear: clearTimeout }),
+    );
+    services.push(service);
+    const { url } = await service.start();
+
+    const response = await fetch(`${url}/api/file-downloads/${"a".repeat(32)}`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(response.headers.get("content-disposition")).toBeNull();
+    expect(response.headers.get("content-length")).not.toBe("999999");
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "fileDownloadsUnavailable",
+        message: "File downloads are unavailable",
+      },
+    });
+    expect(clearTimeout).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out a download that stalls before its first byte", async () => {
+    const gateway = new FakeGateway();
+    const fileDownloads = new FileDownloadStore();
+    const source = new PassThrough();
+    const release = vi.fn(async (): Promise<void> => undefined);
+    vi.spyOn(fileDownloads, "consume").mockResolvedValue({
+      name: "never-readable.bin",
+      size: 1,
+      createReadStream: () => source,
+      release,
+    });
+    const timeoutController = new AbortController();
+    const clearTimeout = vi.fn();
+    const timeoutFactory = vi.fn(() => ({
+      signal: timeoutController.signal,
+      clear: clearTimeout,
+    }));
+    const service = new AskCodexServer(
+      config("test-token"),
+      gateway,
+      undefined,
+      fileDownloads,
+      timeoutFactory,
+    );
+    services.push(service);
+    const { url } = await service.start();
+
+    const responsePromise = fetch(`${url}/api/file-downloads/${"a".repeat(32)}`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    await vi.waitFor(() => expect(timeoutFactory).toHaveBeenCalledWith(2 * 60 * 1000));
+    timeoutController.abort();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(response.headers.get("content-disposition")).toBeNull();
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "fileDownloadsUnavailable",
+        message: "File downloads are unavailable",
+      },
+    });
+    expect(source.destroyed).toBe(true);
+    expect(clearTimeout).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses notification-derived cwd only for completed agent items", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+    const text = `[package](${process.cwd()}/package.json)`;
+
+    gateway.emit("notification", "thread/started", {
+      thread: { id: "thread-notification-download", cwd: process.cwd() },
+    });
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" && message.method === "thread/started",
+    );
+    gateway.emit("notification", "item/started", {
+      threadId: "thread-notification-download",
+      turnId: "turn-notification-download",
+      item: { id: "agent-notification-download", type: "agentMessage", text },
+    });
+    const started = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" && message.method === "item/started",
+    );
+    expect(JSON.stringify(started)).not.toContain("askCodexFileDownloads");
+
+    gateway.emit("notification", "item/completed", {
+      threadId: "thread-notification-download",
+      turnId: "turn-notification-download",
+      item: { id: "agent-notification-download", type: "agentMessage", text },
+    });
+    const completed = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" && message.method === "item/completed",
+    );
+    expect(completed).toMatchObject({
+      type: "notification",
+      method: "item/completed",
+      params: {
+        item: {
+          askCodexFileDownloads: [{
+            href: `${process.cwd()}/package.json`,
+            capabilityId: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+          }],
+        },
+      },
+    });
+  });
+
+  it("does not restore or decorate file authority from an RPC older than a cwd update", async () => {
+    const gateway = new FakeGateway();
+    let resolveRead: ((value: unknown) => void) | undefined;
+    const pendingRead = new Promise<unknown>((resolve) => {
+      resolveRead = resolve;
+    });
+    gateway.request.mockImplementation(async (method) => (
+      method === "thread/read" ? pendingRead : { ok: true }
+    ));
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "stale-authority-read",
+      method: "thread/read",
+      params: { threadId: "thread-stale-authority", includeTurns: true },
+    }));
+    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledWith(
+      "thread/read",
+      expect.objectContaining({ threadId: "thread-stale-authority" }),
+    ));
+    gateway.emit("notification", "thread/settings/updated", {
+      threadId: "thread-stale-authority",
+      threadSettings: { cwd: `${process.cwd()}/src` },
+    });
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "thread/settings/updated",
+    );
+    resolveRead?.({
+      thread: {
+        id: "thread-stale-authority",
+        cwd: process.cwd(),
+        turns: [{
+          id: "turn-stale-authority",
+          status: "completed",
+          itemsView: "full",
+          items: [{
+            id: "agent-stale-authority",
+            type: "agentMessage",
+            text: `[source](${process.cwd()}/src/App.tsx)`,
+          }],
+        }],
+      },
+    });
+
+    const staleResult = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "stale-authority-read",
+    );
+    expect(JSON.stringify(staleResult)).not.toContain("askCodexFileDownloads");
+
+    gateway.emit("notification", "item/completed", {
+      threadId: "thread-stale-authority",
+      turnId: "turn-after-stale-authority",
+      item: {
+        id: "agent-after-stale-authority",
+        type: "agentMessage",
+        text: `[outside-new-cwd](${process.cwd()}/package.json)`,
+      },
+    });
+    const completed = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "item/completed" &&
+        JSON.stringify(message).includes("outside-new-cwd"),
+    );
+    expect(JSON.stringify(completed)).not.toContain("askCodexFileDownloads");
   });
 
   it("accepts authenticated HTTP requests from the configured public origin", async () => {

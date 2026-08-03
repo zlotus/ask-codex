@@ -1,6 +1,6 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import type { CodexItem, CodexTurn } from "../types/protocol";
+import type { CodexItem, CodexTurn, FileDownloadHandler } from "../types/protocol";
 import { errorMessage, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
@@ -14,6 +14,7 @@ interface TurnViewProps {
   activeReasoningItemIds?: readonly string[];
   imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
+  onDownloadFile?: FileDownloadHandler;
   onLoadFullDetail?: (turnId: string) => void;
 }
 
@@ -29,6 +30,7 @@ function renderItems(
   items: CodexItem[],
   disclosure: ActivityDisclosureState,
   imagePreviewUrls: readonly string[],
+  onDownloadFile?: FileDownloadHandler,
 ) {
   const rendered: ReactNode[] = [];
   let activityRun: ReactNode[] = [];
@@ -75,7 +77,14 @@ function renderItems(
         : 0;
       const itemPreviewUrls = imagePreviewUrls.slice(previewOffset, previewOffset + localImageCount);
       previewOffset += localImageCount;
-      rendered.push(<ItemRenderer key={item.id} item={item} imagePreviewUrls={itemPreviewUrls} />);
+      rendered.push((
+        <ItemRenderer
+          key={item.id}
+          item={item}
+          imagePreviewUrls={itemPreviewUrls}
+          onDownloadFile={onDownloadFile}
+        />
+      ));
       index += 1;
       continue;
     }
@@ -121,6 +130,7 @@ export function TurnView({
   activeReasoningItemIds = [],
   imagePreviewUrls = [],
   turn,
+  onDownloadFile,
   onLoadFullDetail,
 }: TurnViewProps) {
   const [groupOpenIds, setGroupOpenIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -197,7 +207,7 @@ export function TurnView({
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {renderItems(turn.items, disclosure, imagePreviewUrls)}
+      {renderItems(turn.items, disclosure, imagePreviewUrls, onDownloadFile)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />

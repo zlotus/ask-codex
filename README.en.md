@@ -13,7 +13,8 @@ Browser UI  <->  Ask Codex gateway  <->  codex app-server  <->  your workspace
 
 The gateway keeps the Codex process and local credentials on the host. The
 browser receives streamed thread, turn, tool, command, diff, and approval
-events, but it does not get a general-purpose file-serving endpoint.
+events, but it does not provide a general-purpose file-serving endpoint that
+accepts arbitrary paths.
 
 ## Features
 
@@ -56,8 +57,10 @@ events, but it does not get a general-purpose file-serving endpoint.
 - Answer structured questions from `request_user_input`.
 - Choose the absolute working directory and sandbox when starting a thread,
   then select the next-turn model and reasoning effort beside the composer.
-  Initial selections come from Codex's effective configuration; alternatives
-  come from `model/list`.
+  The working directory defaults to the currently selected thread's `cwd`, or
+  to `ASK_CODEX_WORKSPACE` when no thread is selected. A new thread's initial
+  sandbox is always `workspace-write`. Initial model and reasoning selections
+  come from Codex's effective configuration; alternatives come from `model/list`.
 - Open a read-only Usage panel from the toolbar for current-thread tokens,
   latest-context use, account activity, and rate-limit windows. Account data
   comes from narrowly allowed and projected `account/usage/read` and
@@ -86,6 +89,13 @@ events, but it does not get a general-purpose file-serving endpoint.
   or Origin causes historical images to fall back to a safe placeholder that
   exposes no path. Temporary server uploads retain their gateway-enforced count,
   size, and lifecycle limits, and image bytes do not enter WebSocket JSON.
+- Explicit absolute local file links in completed Agent messages can be
+  downloaded after an inline confirmation when they refer to regular files
+  within the authoritative app-server `thread.cwd`. The gateway issues only
+  short-lived, single-use opaque capabilities and does not accept paths from
+  the browser. There is no `ASK_CODEX_DOWNLOAD_ROOTS` and no global download
+  root. This capability cannot list directories, read arbitrary paths, or
+  preview files; it is not a general-purpose file service.
 - Interrupt an active turn.
 - Responsive desktop and mobile layouts.
 - Optional web access token, Origin checks, and loopback-only defaults.
@@ -154,6 +164,11 @@ runs Ask Codex. `ASK_CODEX_WORKSPACE` selects the initial directory; it is not
 an access boundary. An authenticated browser can select another absolute
 directory when starting a thread and can choose full-access sandbox mode,
 subject to Codex approvals.
+Setting `thread.cwd=/` creates a very broad candidate scope for restricted file
+downloads. After Origin, Host, and token authentication, an individual download
+depends only on a short-lived, single-use opaque capability issued by the server.
+Protect a capability as a temporary credential; do not treat it as persistent
+authority.
 
 For access from another device:
 

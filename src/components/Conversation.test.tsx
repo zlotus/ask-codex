@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Conversation } from "./Conversation";
+
+const FILE_CAPABILITY_ID = "a".repeat(32);
 
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "scrollTo", {
@@ -9,7 +11,49 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("Conversation history recovery", () => {
+  it("passes an agent file capability to the download handler", async () => {
+    const onDownloadFile = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Conversation
+        thread={{
+          id: "thread-1",
+          turns: [{
+            id: "turn-1",
+            status: "completed",
+            items: [{
+              id: "agent-file",
+              type: "agentMessage",
+              text: "[report](/tmp/report.txt)",
+              askCodexFileDownloads: [{ href: "/tmp/report.txt", capabilityId: FILE_CAPABILITY_ID }],
+            }],
+          }],
+        }}
+        loading={false}
+        loadError={null}
+        historyLoading={false}
+        hasMore={false}
+        historyError={null}
+        onDownloadFile={onDownloadFile}
+        onLoadEarlier={vi.fn()}
+        onLoadTurnDetail={vi.fn()}
+        onRetryThread={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm download report.txt" }));
+
+    expect(onDownloadFile).toHaveBeenCalledWith({
+      href: "/tmp/report.txt",
+      capabilityId: FILE_CAPABILITY_ID,
+    });
+  });
+
   it("keeps a newly updated turn diff in view when the reader is near the bottom", () => {
     const item = { id: "agent", type: "agentMessage", text: "Finished" };
     const baseProps = {

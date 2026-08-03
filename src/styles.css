@@ -1252,6 +1252,130 @@ pre {
   text-underline-offset: 2px;
 }
 
+.markdown-file-download {
+  display: inline-grid;
+  grid-template-columns: minmax(0, max-content);
+  align-items: center;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.markdown-file-download__button,
+.markdown-file-download__confirm {
+  grid-area: 1 / 1;
+}
+
+.markdown-file-download__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 3px 7px;
+  color: #266b49;
+  font: inherit;
+  font-weight: 650;
+  line-height: 18px;
+  text-align: left;
+  background: #edf4ef;
+  border: 1px solid #bfd0c3;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.markdown-file-download__control--concealed {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.markdown-file-download__button:hover:not(:disabled):not([aria-disabled="true"]) {
+  color: #1f5d3e;
+  background: #e3efe7;
+  border-color: #95b39e;
+}
+
+.markdown-file-download__button[aria-disabled="true"] {
+  cursor: default;
+}
+
+.markdown-file-download__button[aria-busy="true"] {
+  opacity: 0.58;
+}
+
+.markdown-file-download__button--downloaded,
+.markdown-file-download__button--downloaded:hover {
+  color: #2c6847;
+  background: #e7f0e9;
+  border-color: #b4c8b9;
+}
+
+.markdown-file-download__button svg {
+  flex: 0 0 auto;
+}
+
+.markdown-file-download__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-file-download__confirm {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  min-height: 28px;
+  max-width: 100%;
+  color: #315c43;
+  background: #edf4ef;
+  border: 1px solid #95b39e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.markdown-file-download__prompt {
+  min-width: 0;
+  padding: 3px 7px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-file-download__confirm-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 27px;
+  padding: 0;
+  color: #636b64;
+  background: transparent;
+  border-left: 1px solid #bfd0c3;
+  cursor: pointer;
+}
+
+.markdown-file-download__confirm-button:hover {
+  color: #343b35;
+  background: #e0e9e2;
+}
+
+.markdown-file-download__confirm-button--accept {
+  color: #21643f;
+}
+
+.markdown-file-download__feedback {
+  grid-area: 2 / 1;
+  min-width: 0;
+  margin-top: 3px;
+  color: #687069;
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-file-download__feedback--error {
+  color: #98483e;
+}
+
 .markdown blockquote {
   padding: 2px 0 2px 12px;
   color: #666c66;
@@ -3644,6 +3768,20 @@ details[open] > summary .details-chevron {
 
   .markdown {
     font-size: 13px;
+  }
+
+  .markdown-file-download__button,
+  .markdown-file-download__confirm {
+    min-height: 34px;
+  }
+
+  .markdown-file-download__confirm {
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
+  }
+
+  .markdown-file-download__confirm-button {
+    width: 34px;
+    height: 33px;
   }
 
   .code-block-content {

@@ -2,19 +2,17 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-02
+Last reviewed: 2026-08-04
 
 ## Current Milestone
 
-Cross-thread runtime monitoring is implemented. A third Activity tab provides
-a read-only directory of attention, running, and recent thread states; the
-toolbar distinguishes connection, automatic retry, and read-only
-resynchronization; and a Usage panel presents current-thread tokens, account
-activity, and rate-limit windows. Every account method remains explicitly
-allowlisted and narrowly projected. Reconnection neither replays writes nor
-claims a thread through background `thread/resume`, so the trust model for
-manual approval, remote access, and host capabilities is unchanged. The next
-near-term item has not been selected.
+Working-directory continuity and file handoff are implemented. A new thread
+defaults to the exact cwd of the currently selected thread, uses the bootstrap
+initial directory only when nothing is selected, and always starts from a
+`workspace-write` sandbox. Regular files explicitly linked by completed Agent
+messages can be downloaded after confirmation. The browser redeems only
+short-lived, one-use capabilities, cannot submit a host path, and the gateway
+uses no global download-root list. The next near-term item has not been selected.
 
 ## Current Baseline
 
@@ -115,15 +113,28 @@ The implementation currently provides:
   separated only by single rules, including commands, file changes, MCP calls,
   searches, dynamic tools, subagent/collaboration activity, image views, and
   image generation, while assistant messages remain prominent.
+- Explicit absolute local CommonMark links in completed Agent messages render
+  as download controls with confirmation, pending, failure, and download-started
+  states. An absolute local link without a valid capability becomes
+  inert text; external web links retain their existing behavior. The gateway
+  issues short-lived opaque IDs only from authoritative app-server `thread.cwd`
+  plus completion evidence. It accepts no browser path, cwd, thread id, request
+  body, or query, and uses no `ASK_CODEX_DOWNLOAD_ROOTS`. Consumption resolves
+  through a pinned canonical root-directory fd and rechecks root `dev`/`ino`,
+  target `realpath`, the opened file fd, regular-file type, the 25-MiB limit,
+  the two-download concurrency bound, and a two-minute active-transfer deadline.
 - Browser handling for command and file-change approvals and structured
   `request_user_input` requests. Captured command approval reasons remain
   attached to the exact command item for the current browser session.
 - New-thread working-directory and sandbox settings, explicit idle-thread
   sandbox overrides, next-turn model and reasoning controls beside the
-  composer, and active-turn interruption. Initial model and effort selections
-  come from a strictly filtered effective Codex config read; alternatives come
-  from `model/list`. Existing thread cwd is read-only and routine resume no
-  longer resends flattened sandbox state.
+  composer, and active-turn interruption. With a current selection, new-thread
+  cwd comes from the exact current thread or matching Active or Archived
+  summary; without one it comes from the bootstrap default. The new-thread
+  sandbox always resets to `workspace-write`. Initial model and effort
+  selections come from a strictly filtered effective Codex config read;
+  alternatives come from `model/list`. Existing thread cwd is read-only and
+  routine resume no longer resends flattened sandbox state.
 - An Express/WebSocket gateway that starts `codex app-server` over JSONL stdio,
   rebuilds parameters for an explicit RPC allowlist, and routes app-server
   requests to the owning browser. `thread/name/set`, `thread/metadata/update`,
@@ -199,6 +210,11 @@ as executed.
   the same browser profile and Origin and may become placeholders because of
   the 30-day TTL, eight-image/40-MiB limit, site-data clearing, or browser
   reclamation. General file and audio input are also not exposed.
+- File downloads cannot list directories, accept a browser-selected path,
+  preview arbitrary formats, or export a file absent from qualifying completed
+  Agent content. A capability is short-lived, one-use, and local to the current
+  server process; after restart, expiry, or first consumption, qualifying
+  history must be read again to obtain a new one.
 - Turn steering, persistent cross-device message queues, fixed host actions,
   and an embedded PTY are not implemented.
 
@@ -218,6 +234,13 @@ not a delivery commitment.
   pagination plus fork, rollback, and detached review support.
 - Rich rendering must treat all agent, command, diff, and ANSI content as
   untrusted text and must bound memory and DOM growth.
+- File-download scope must continue to derive jointly from authoritative
+  app-server `thread.cwd` and explicit absolute links in completed Agent
+  messages; the browser must never select a path. Issuance snapshots canonical
+  root identity, while consumption rechecks containment through a root-directory
+  fd, target `realpath`, and file fd, with one-use, TTL, size, concurrency, and
+  collection bounds. A `thread.cwd` of `/` is broad, so `ASK_CODEX_TOKEN` must be
+  protected like the host-account password.
 - Modern approval rationale must remain keyed by thread, turn, and item id;
   legacy call ids are attached only when they identify one command uniquely.
 - `config/read` results must remain projected at the gateway to model and
@@ -246,22 +269,23 @@ not a delivery commitment.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-02 with Node.js
+Verification for this round was completed on 2026-08-04 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - Current experimental TypeScript bindings were generated from the installed
-  CLI and compared for `thread/status/changed`, `thread/tokenUsage/updated`,
-  `account/rateLimits/read`, `account/rateLimits/updated`,
-  `account/usage/read`, thread `activeFlags`, and the related unions.
+  CLI and compared for `Thread.cwd`, `ThreadStartedNotification`,
+  `ItemCompletedNotification`, `TurnCompletedNotification`, turn status, and
+  the related `thread/items/list` shapes. No real turn was created.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 32 test files and 435 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 34 test files and 484 tests. Server tests ran
   in an environment that permits loopback socket binding.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-runtime-monitoring-final-2 npm run
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-download-visual-final-3 npm run
   check:visual` passed against the current production build. Desktop and
-  390x844 mobile fixtures verified the four-tab sidebar, all three Activity
-  sections, all three Usage sections, and contained header actions while
-  retaining coverage for project navigation, Skills, rich content, the fixed
-  reasoning slot, images, and the composer. There was no horizontal overflow,
-  clipping, content overlap, console error, or page error. Deterministic browser
-  fixtures intercepted every RPC and created no real Codex turn.
+  390x844 mobile fixtures verified stable download-confirmation width,
+  contained controls, focus, the suggested filename, and download-started state while
+  retaining coverage for project navigation, Activity, Skills, Usage, rich
+  content, the fixed reasoning slot, images, and the composer. There was no
+  horizontal overflow, clipping, content overlap, console error, or page error.
+  Deterministic browser fixtures intercepted every RPC and download and created
+  no real Codex turn.

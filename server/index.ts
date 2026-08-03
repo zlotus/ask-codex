@@ -5,6 +5,7 @@ import { AskCodexServer, loadConfig } from "./server.js";
 
 export { CodexAppServer, CodexRpcError } from "./codex-app-server.js";
 export { AskCodexServer, loadConfig } from "./server.js";
+export * from "./file-downloads.js";
 export * from "./rpc-policy.js";
 export * from "./server-request-policy.js";
 export * from "./security.js";

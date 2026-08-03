@@ -122,7 +122,13 @@ function installRpcFixture() {
       };
     }
     if (method === "thread/start") {
-      return { thread: newThread };
+      const requestedCwd = (params as { cwd?: unknown } | undefined)?.cwd;
+      return {
+        thread: {
+          ...newThread,
+          ...(typeof requestedCwd === "string" ? { cwd: requestedCwd } : {}),
+        },
+      };
     }
     if (method === "thread/resume") {
       const request = params as { initialTurnsPage?: unknown };
@@ -256,6 +262,575 @@ describe("App thread settings lifecycle", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("starts a new thread in the bootstrap working directory when no thread is selected", async () => {
+    const fetchMock = installBootstrapFixture();
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/default-one");
+    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+  });
+
+  it("inherits the selected thread working directory and returns to the default after archiving it", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/existing");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/archive", {
+      threadId: existingThread.id,
+    }));
+    await waitFor(() => expect(
+      screen.queryByRole("button", { name: "Existing thread" }),
+    ).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/default-one");
+    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+  });
+
+  it("uses the selected active summary cwd when loading that thread fails", async () => {
+    const otherThread = {
+      ...existingThread,
+      id: "thread-other",
+      name: "Other thread",
+      cwd: "/workspace/other",
+    };
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        return Promise.resolve({ data: [existingThread, otherThread], nextCursor: null });
+      }
+      if (
+        method === "thread/resume" &&
+        (params as { threadId?: string } | undefined)?.threadId === otherThread.id
+      ) {
+        return Promise.reject(new Error("Could not load other thread"));
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    fireEvent.click(screen.getByRole("button", { name: "Other thread" }));
+    await screen.findByRole("button", { name: "Retry thread" });
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/other");
+  });
+
+  it("uses the selected archived summary cwd when loading that thread fails", async () => {
+    const movedThread = {
+      ...existingThread,
+      id: "thread-moved-to-archive",
+      name: "Moved thread",
+      cwd: "/workspace/moved",
+    };
+    let movedToArchive = false;
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list") {
+        const archived = (params as { archived?: boolean } | undefined)?.archived;
+        return Promise.resolve({
+          data: archived
+            ? (movedToArchive ? [movedThread] : [])
+            : (movedToArchive ? [existingThread] : [existingThread, movedThread]),
+          nextCursor: null,
+        });
+      }
+      if (
+        method === "thread/resume" &&
+        (params as { threadId?: string } | undefined)?.threadId === movedThread.id
+      ) {
+        return Promise.reject(new Error("Could not load moved thread"));
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(await screen.findByRole("button", { name: "Moved thread" }));
+    await screen.findByRole("button", { name: "Retry thread" });
+    movedToArchive = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh threads" }));
+    await waitFor(() => expect(
+      screen.queryByRole("button", { name: "Moved thread" }),
+    ).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/moved");
+  });
+
+  it("uses an authoritative cwd update when starting from the selected thread", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { cwd: "/workspace/updated" },
+      },
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/updated");
+    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    await sendMessage();
+
+    expect(socket.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({
+      cwd: "/workspace/updated",
+      sandbox: "workspace-write",
+    }));
+    expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      cwd: "/workspace/updated",
+    }));
+  });
+
+  it("does not let a late resume result overwrite a cwd update", async () => {
+    let resolveResume: ((value: unknown) => void) | undefined;
+    const pendingResume = new Promise<unknown>((resolve) => {
+      resolveResume = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "thread/resume" &&
+      (params as { threadId?: string } | undefined)?.threadId === existingThread.id
+        ? pendingResume
+        : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "thread/resume",
+      expect.objectContaining({ threadId: existingThread.id }),
+    ));
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { cwd: "/workspace/updated-during-resume" },
+      },
+    }));
+    await act(async () => {
+      resolveResume?.({
+        thread: existingThread,
+        cwd: existingThread.cwd,
+        model: existingThread.model,
+        sandbox: { type: "workspaceWrite" },
+        initialTurnsPage: { data: [], nextCursor: null, backwardsCursor: null },
+      });
+      await pendingResume;
+    });
+    await screen.findByTitle("Existing thread");
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory"))
+      .toHaveValue("/workspace/updated-during-resume");
+  });
+
+  it("does not let a late thread list overwrite a cwd update", async () => {
+    let deferActiveList = false;
+    let resolveActiveList: ((value: unknown) => void) | undefined;
+    let markActiveListRequested: (() => void) | undefined;
+    const pendingActiveList = new Promise<unknown>((resolve) => {
+      resolveActiveList = resolve;
+    });
+    const activeListRequested = new Promise<void>((resolve) => {
+      markActiveListRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (
+        deferActiveList &&
+        method === "thread/list" &&
+        !(params as { archived?: boolean } | undefined)?.archived
+      ) {
+        deferActiveList = false;
+        markActiveListRequested?.();
+        return pendingActiveList;
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    deferActiveList = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh threads" }));
+    await activeListRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { cwd: "/workspace/updated-during-list" },
+      },
+    }));
+    await act(async () => {
+      resolveActiveList?.({ data: [existingThread], nextCursor: null });
+      await pendingActiveList;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory"))
+      .toHaveValue("/workspace/updated-during-list");
+  });
+
+  it("synchronizes a newer thread list cwd before the next send", async () => {
+    const listedCwd = "/workspace/from-newer-list";
+    let useUpdatedList = false;
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      const request = params as { archived?: boolean; initialTurnsPage?: unknown } | undefined;
+      if (useUpdatedList && method === "thread/list" && !request?.archived) {
+        return Promise.resolve({
+          data: [{ ...existingThread, cwd: listedCwd }],
+          nextCursor: null,
+        });
+      }
+      if (useUpdatedList && method === "thread/resume" && !request?.initialTurnsPage) {
+        return Promise.resolve({
+          thread: { ...existingThread, cwd: listedCwd },
+          cwd: listedCwd,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    const activeListCallsBefore = socket.rpc.mock.calls.filter(([method, params]) => (
+      method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived
+    )).length;
+
+    useUpdatedList = true;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh threads" }));
+    await waitFor(() => expect(socket.rpc.mock.calls.filter(([method, params]) => (
+      method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived
+    )).length).toBeGreaterThan(activeListCallsBefore));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory")).toHaveValue(listedCwd);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "send from the listed cwd" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "turn/start",
+      expect.objectContaining({ threadId: existingThread.id, cwd: listedCwd }),
+    ));
+    expect(screen.queryByText(/Working directory changed while preparing/))
+      .not.toBeInTheDocument();
+  });
+
+  it("does not start a turn when cwd changes while a message is being prepared", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    const turnStartsBeforeSend = socket.rpc.mock.calls.filter(([method]) => (
+      method === "turn/start"
+    )).length;
+    let resolveResume: ((value: unknown) => void) | undefined;
+    let markResumeRequested: (() => void) | undefined;
+    const pendingResume = new Promise<unknown>((resolve) => {
+      resolveResume = resolve;
+    });
+    const resumeRequested = new Promise<void>((resolve) => {
+      markResumeRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    let deferResume = true;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (
+        deferResume &&
+        method === "thread/resume" &&
+        (params as { threadId?: string } | undefined)?.threadId === existingThread.id
+      ) {
+        deferResume = false;
+        markResumeRequested?.();
+        return pendingResume;
+      }
+      return baseRpc?.(method, params);
+    });
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "keep this draft" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await resumeRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { cwd: "/workspace/changed-before-turn" },
+      },
+    }));
+    await act(async () => {
+      resolveResume?.({
+        thread: existingThread,
+        cwd: existingThread.cwd,
+        sandbox: { type: "workspaceWrite" },
+      });
+      await pendingResume;
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Working directory changed while preparing the message; nothing was sent",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("keep this draft");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(turnStartsBeforeSend);
+  });
+
+  it("adopts a cwd returned by resume before retrying an unconfirmed message", async () => {
+    const resumedCwd = "/workspace/from-send-resume";
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      const request = params as { initialTurnsPage?: unknown; threadId?: string } | undefined;
+      if (
+        method === "thread/resume" &&
+        request?.threadId === existingThread.id &&
+        !request.initialTurnsPage
+      ) {
+        return Promise.resolve({
+          thread: { ...existingThread, cwd: resumedCwd },
+          cwd: resumedCwd,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    const turnStartsBeforeSend = socket.rpc.mock.calls.filter(([method]) => (
+      method === "turn/start"
+    )).length;
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "retry after cwd refresh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    const failedSubmission = await screen.findByRole("alert");
+    expect(failedSubmission).toHaveTextContent(
+      "Working directory changed while preparing the message; nothing was sent",
+    );
+    expect(failedSubmission).toHaveTextContent("retry after cwd refresh");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(turnStartsBeforeSend);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed message" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "turn/start",
+      expect.objectContaining({ threadId: existingThread.id, cwd: resumedCwd }),
+    ));
+    await waitFor(() => expect(screen.queryByText("Message not confirmed")).not.toBeInTheDocument());
+  });
+
+  it("keeps a same-cwd notification authoritative over an older resume result", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    let resolveResume: ((value: unknown) => void) | undefined;
+    let markResumeRequested: (() => void) | undefined;
+    const pendingResume = new Promise<unknown>((resolve) => {
+      resolveResume = resolve;
+    });
+    const resumeRequested = new Promise<void>((resolve) => {
+      markResumeRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    let deferResume = true;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (
+        deferResume &&
+        method === "thread/resume" &&
+        (params as { threadId?: string } | undefined)?.threadId === existingThread.id
+      ) {
+        deferResume = false;
+        markResumeRequested?.();
+        return pendingResume;
+      }
+      return baseRpc?.(method, params);
+    });
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "continue in this directory" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await resumeRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { cwd: existingThread.cwd },
+      },
+    }));
+    await act(async () => {
+      resolveResume?.({
+        thread: { ...existingThread, cwd: "/workspace/stale-resume" },
+        cwd: "/workspace/stale-resume",
+        sandbox: { type: "workspaceWrite" },
+      });
+      await pendingResume;
+    });
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "turn/start",
+      expect.objectContaining({
+        threadId: existingThread.id,
+        cwd: existingThread.cwd,
+      }),
+    ));
+    expect(screen.queryByText(/Working directory changed while preparing/))
+      .not.toBeInTheDocument();
+  });
+
+  it("does not start the first turn when a new thread cwd changes during creation", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    let resolveThreadStart: ((value: unknown) => void) | undefined;
+    let markThreadStartRequested: (() => void) | undefined;
+    const pendingThreadStart = new Promise<unknown>((resolve) => {
+      resolveThreadStart = resolve;
+    });
+    const threadStartRequested = new Promise<void>((resolve) => {
+      markThreadStartRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    let deferThreadStart = true;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (deferThreadStart && method === "thread/start") {
+        deferThreadStart = false;
+        markThreadStartRequested?.();
+        return pendingThreadStart;
+      }
+      return baseRpc?.(method, params);
+    });
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "first message" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await threadStartRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: newThread.id,
+        threadSettings: { cwd: "/workspace/changed-during-create" },
+      },
+    }));
+    await act(async () => {
+      resolveThreadStart?.({
+        thread: { ...newThread, cwd: "/workspace/default-one" },
+      });
+      await pendingThreadStart;
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Working directory changed while preparing the message; nothing was sent",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("first message");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory"))
+      .toHaveValue("/workspace/changed-during-create");
+  });
+
+  it("does not start a first turn from a result older than thread started cwd", async () => {
+    const startedCwd = "/workspace/from-thread-started";
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    let resolveThreadStart: ((value: unknown) => void) | undefined;
+    let markThreadStartRequested: (() => void) | undefined;
+    const pendingThreadStart = new Promise<unknown>((resolve) => {
+      resolveThreadStart = resolve;
+    });
+    const threadStartRequested = new Promise<void>((resolve) => {
+      markThreadStartRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    let deferThreadStart = true;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (deferThreadStart && method === "thread/start") {
+        deferThreadStart = false;
+        markThreadStartRequested?.();
+        return pendingThreadStart;
+      }
+      return baseRpc?.(method, params);
+    });
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "first message after thread started" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await threadStartRequested;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/started",
+      params: { thread: { ...newThread, cwd: startedCwd } },
+    }));
+    await act(async () => {
+      resolveThreadStart?.({
+        thread: { ...newThread, cwd: "/workspace/default-one" },
+      });
+      await pendingThreadStart;
+    });
+
+    const failedSubmission = await screen.findByRole("alert");
+    expect(failedSubmission).toHaveTextContent(
+      "Working directory changed while preparing the message; nothing was sent",
+    );
+    expect(failedSubmission).toHaveTextContent("first message after thread started");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory")).toHaveValue(startedCwd);
   });
 
   it("does not replace a selected thread cwd when a token refreshes bootstrap", async () => {
@@ -497,6 +1072,96 @@ describe("App thread settings lifecycle", () => {
     }));
     await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeEnabled());
     expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/read")).toHaveLength(1);
+  });
+
+  it("does not let an older thread list overwrite a newer reconnect snapshot cwd", async () => {
+    const snapshotCwd = "/workspace/from-reconnect-read";
+    let deferActiveList = false;
+    let useSnapshotCwd = false;
+    let resolveActiveList: ((value: unknown) => void) | undefined;
+    let markActiveListRequested: (() => void) | undefined;
+    const pendingActiveList = new Promise<unknown>((resolve) => {
+      resolveActiveList = resolve;
+    });
+    const activeListRequested = new Promise<void>((resolve) => {
+      markActiveListRequested = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      const request = params as {
+        archived?: boolean;
+        initialTurnsPage?: unknown;
+        threadId?: string;
+      } | undefined;
+      if (deferActiveList && method === "thread/list" && !request?.archived) {
+        deferActiveList = false;
+        markActiveListRequested?.();
+        return pendingActiveList;
+      }
+      if (useSnapshotCwd && method === "thread/list" && !request?.archived) {
+        return Promise.resolve({
+          data: [{ ...existingThread, cwd: snapshotCwd }],
+          nextCursor: null,
+        });
+      }
+      if (useSnapshotCwd && method === "thread/read") {
+        return Promise.resolve({ thread: { ...existingThread, cwd: snapshotCwd } });
+      }
+      if (
+        useSnapshotCwd &&
+        method === "thread/resume" &&
+        request?.threadId === existingThread.id &&
+        !request.initialTurnsPage
+      ) {
+        return Promise.resolve({
+          thread: { ...existingThread, cwd: snapshotCwd },
+          cwd: snapshotCwd,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeDisabled());
+
+    useSnapshotCwd = true;
+    deferActiveList = true;
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+    await activeListRequested;
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/read", {
+      threadId: existingThread.id,
+      includeTurns: false,
+    }));
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeEnabled());
+
+    await act(async () => {
+      resolveActiveList?.({ data: [existingThread], nextCursor: null });
+      await pendingActiveList;
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh threads" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(screen.getByLabelText("Working directory")).toHaveValue(snapshotCwd);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "send after reconnect" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "turn/start",
+      expect.objectContaining({ threadId: existingThread.id, cwd: snapshotCwd }),
+    ));
   });
 
   it("blocks writes after a failed resync until a read-only retry succeeds", async () => {

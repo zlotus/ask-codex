@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 
+import { FILE_DOWNLOADS_ITEM_FIELD } from "./file-downloads.js";
 import { ClientInputError } from "./security.js";
 import { isRecord } from "./types.js";
 
@@ -1120,7 +1121,7 @@ export function sanitizeBrowserVisibleValue(value: unknown, depth = 0): unknown 
   if (!isRecord(value)) return value;
   const localImage = value.type === "localImage";
   return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => (
-    localImage && key === "path"
+    key === FILE_DOWNLOADS_ITEM_FIELD || (localImage && key === "path")
       ? []
       : [[key, sanitizeBrowserVisibleValue(entry, depth + 1)]]
   )));

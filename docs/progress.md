@@ -2,15 +2,14 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-02
+最后审阅：2026-08-04
 
 ## 当前里程碑
 
-跨线程运行监控已经实现：第三个 Activity 标签提供只读的待处理、运行中和近期线程目录；
-工具栏明确区分连接、自动重试和只读重同步；Usage 面板展示当前线程 token、账户活动与
-速率窗口。所有账户方法仍经过显式 allowlist 和严格投影，重连恢复不会重放写请求或通过
-后台 `thread/resume` 认领线程，因此人工审批、远程访问和宿主机能力的信任模型没有改变。
-下一项近期工作尚未选定。
+线程工作目录的连续性和文件交接已经实现。新线程默认继承当前所选线程的精确 cwd，没有
+选择时才使用 bootstrap 初始目录，并始终从 `workspace-write` 沙箱开始。已完成 Agent
+消息明确链接的 cwd 内普通文件可以通过二次确认下载；浏览器只兑换短期一次性 capability，
+不能提交宿主机路径，网关也不使用全局下载根列表。下一项近期工作尚未选定。
 
 ## 当前基线
 
@@ -73,12 +72,20 @@
   降级，以及有界的两级工具折叠区；连续且已正式支持的机器活动组成零间距、仅由单条横线
   分隔的活动栈，包括命令、文件变更、MCP 调用、搜索、动态工具、subagent/collab，以及
   图片查看和生成，同时突出显示助手消息。
+- 已完成 Agent 消息中的显式绝对本地 CommonMark 链接可显示为带二次确认、处理中、失败和
+  下载已启动状态的控件；没有有效 capability 的绝对本地链接降级为 inert 文本，外部
+  网页链接保持原行为。网关只根据 app-server 权威 `thread.cwd` 和完成态证据签发短期、
+  一次性 opaque ID，不接受浏览器路径、cwd、thread ID、请求体或查询参数，也不使用
+  `ASK_CODEX_DOWNLOAD_ROOTS`。消费时以固定的 canonical 根目录 fd 解析目标，并复核根
+  `dev`/`ino`、目标 `realpath`、已打开文件 fd、普通文件类型、25 MiB 大小、2 个并发下载
+  和 2 分钟活动传输时限。
 - 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。捕获到
   的命令审批理由会在当前浏览器会话中继续绑定到对应的确切命令条目。
 - 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
-  控件，以及中断活跃轮次。初始模型和推理强度取自经过严格过滤的 Codex 有效配置；
-  备选项来自 `model/list`。已有线程的 cwd 只读，常规恢复不再重新发送扁平化的沙箱
-  状态。
+  控件，以及中断活跃轮次。有当前选择时，新线程 cwd 依次取精确匹配的当前线程、Active
+  或 Archived 摘要；没有选择时取 bootstrap 默认 cwd。新线程沙箱始终重置为
+  `workspace-write`。初始模型和推理强度取自经过严格过滤的 Codex 有效配置；备选项来自
+  `model/list`。已有线程的 cwd 只读，常规恢复不再重新发送扁平化的沙箱状态。
 - Express/WebSocket 网关：通过 JSONL stdio 启动 `codex app-server`，根据显式 RPC
   allowlist 重建参数，并将 app-server 请求路由到所属浏览器。`thread/name/set`、
   `thread/metadata/update` 和 `skills/list` 只接受逐字段重建的有界参数；Skills 响应
@@ -128,6 +135,9 @@
   尚未设计。浏览器本地预览不是跨设备附件存储，只在同一浏览器配置文件和 Origin 中
   可用，并可能因 30 天 TTL、8 张/40 MiB 上限、站点数据清理或浏览器回收而变成占位符。
   通用文件和音频输入也未开放。
+- 文件下载不会列目录、接受浏览器指定路径、预览任意格式，或导出没有出现在合格完成态
+  Agent 消息中的文件。capability 只存在于当前服务进程且短期一次有效；服务重启、过期或
+  首次消费后，需要重新读取合格历史才能获得新 capability。
 - 轮次 steering、跨设备持久消息队列、固定宿主机操作和嵌入式 PTY 尚未实现。
 
 ## 后续步骤
@@ -144,6 +154,10 @@
   rollback 和 detached review 的支持情况。
 - 富文本渲染必须把所有智能体、命令、diff 和 ANSI 内容视为不可信文本，并限制内存
   和 DOM 增长。
+- 文件下载范围必须继续只由 app-server 权威 `thread.cwd` 和已完成 Agent 消息中的显式
+  绝对链接共同派生；浏览器不得选择路径。签发时固定 canonical 根身份，消费时通过根目录
+  fd、目标 `realpath` 和文件 fd 复核 containment，并保留一次性、TTL、大小、并发及集合
+  上限。`thread.cwd` 为 `/` 时范围很宽，因此 `ASK_CODEX_TOKEN` 必须按宿主机账户密码保护。
 - 现代审批理由必须继续以线程、轮次和条目 ID 为键；只有旧版 call ID 能唯一标识一个
   命令时才附加它。
 - 网关必须继续把 `config/read` 结果投影为仅包含模型和推理强度；绝不能转发完整的
@@ -164,18 +178,18 @@
 
 ## 验证
 
-本轮已于 2026-08-02 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+本轮已于 2026-08-04 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.146.0` 完成验证：
 
 - 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
-  `thread/status/changed`、`thread/tokenUsage/updated`、`account/rateLimits/read`、
-  `account/rateLimits/updated`、`account/usage/read`、线程 `activeFlags` 以及相关联合类型。
+  `Thread.cwd`、`ThreadStartedNotification`、`ItemCompletedNotification`、
+  `TurnCompletedNotification`、轮次状态以及 `thread/items/list` 的相关结构；没有创建真实轮次。
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：32 个测试文件、435 项测试；服务端测试在允许绑定回环
+- `NODE_ENV=test npm test` 通过：34 个测试文件、484 项测试；服务端测试在允许绑定回环
   套接字的环境中运行。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-visual-runtime-monitoring-final-2 npm run
-  check:visual` 针对当前生产构建通过。桌面端和 390x844 移动端夹具确认四标签侧栏、
-  Activity 三段目录、Usage 三个区块及标题栏操作均在边界内，并继续覆盖项目导航、Skills、
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-download-visual-final-3 npm run check:visual`
+  针对当前生产构建通过。桌面端和 390x844 移动端夹具确认下载二次确认的宽度稳定、控件
+  contained、焦点、建议文件名和下载已启动状态，并继续覆盖项目导航、Activity、Skills、Usage、
   富内容、推理状态槽、图片和输入区；未发现水平溢出、裁切、内容重叠、console error 或
-  page error。所有 RPC 均由确定性浏览器夹具拦截，没有创建真实 Codex 轮次。
+  page error。所有 RPC 和下载均由确定性浏览器夹具拦截，没有创建真实 Codex 轮次。

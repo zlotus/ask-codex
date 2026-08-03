@@ -31,6 +31,12 @@ describe("thread settings helpers", () => {
       effort: "high",
       sandbox: "workspace-write",
     });
+    expect(newThreadSettings("", current)).toEqual({
+      cwd: "",
+      model: "gpt-5",
+      effort: "high",
+      sandbox: "workspace-write",
+    });
   });
 
   it("only sends an explicitly selected sandbox when resuming an existing thread", () => {

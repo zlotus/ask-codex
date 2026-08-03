@@ -606,6 +606,10 @@ describe("browser RPC policy", () => {
   it("removes local image paths at any nesting depth without stripping ordinary paths", () => {
     expect(sanitizeBrowserVisibleValue({
       path: "/workspace/project",
+      askCodexFileDownloads: [{
+        href: "/private/spoofed.txt",
+        capabilityId: "a".repeat(32),
+      }],
       nested: {
         image: {
           type: "localImage",

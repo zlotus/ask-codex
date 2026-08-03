@@ -4,7 +4,9 @@ import { existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import type { RawData } from "ws";
 
@@ -21,6 +23,11 @@ import {
   type CodexGateway,
   type CodexStatusEvent,
 } from "./codex-app-server.js";
+import {
+  FileDownloadError,
+  FileDownloadStore,
+  type FileDownloadLease,
+} from "./file-downloads.js";
 import {
   assertSafeBind,
   ClientRpcError,
@@ -65,6 +72,7 @@ const MAX_IN_FLIGHT_ATTACHMENT_UPLOADS = 4;
 const MAX_COMPLETED_ATTACHMENT_TURNS = 256;
 const MAX_HTTP_CONNECTIONS = 64;
 const HTTP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const FILE_DOWNLOAD_TRANSFER_TIMEOUT_MS = HTTP_REQUEST_TIMEOUT_MS;
 const HTTP_HEADERS_TIMEOUT_MS = 10 * 1000;
 const MAX_BROWSER_MESSAGE_BYTES = 1024 * 1024;
 const MAX_SERVER_MESSAGE_BYTES = 1024 * 1024;
@@ -93,6 +101,85 @@ export interface StartedServer {
 interface PendingServerRequest {
   message: RequestMessage;
   recipients: Set<WebSocket>;
+}
+
+interface FileDownloadTransferTimeout {
+  signal: AbortSignal;
+  clear(): void;
+}
+
+type CreateFileDownloadTransferTimeout = (
+  timeoutMs: number,
+) => FileDownloadTransferTimeout;
+
+function createFileDownloadTransferTimeout(
+  timeoutMs: number,
+): FileDownloadTransferTimeout {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref();
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timeout),
+  };
+}
+
+function waitForFirstFileDownloadChunk(
+  source: Readable,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolveChunk, rejectChunk) => {
+    let settled = false;
+
+    const cleanup = (): void => {
+      source.off("readable", onReadable);
+      source.off("end", onEnd);
+      source.off("close", onClose);
+      source.off("error", onError);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const settle = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error === undefined) {
+        resolveChunk();
+      } else {
+        rejectChunk(error);
+      }
+    };
+    const onReadable = (): void => {
+      try {
+        const chunk = source.read();
+        if (chunk === null) return;
+        source.unshift(chunk);
+        settle();
+      } catch (error) {
+        settle(error);
+      }
+    };
+    const onEnd = (): void => settle(new Error("File download ended before its first byte"));
+    const onClose = (): void => settle(new Error("File download closed before its first byte"));
+    const onError = (error: Error): void => settle(error);
+    const onAbort = (): void => {
+      const reason = signal.reason instanceof Error
+        ? signal.reason
+        : new Error("File download transfer timed out");
+      settle(reason);
+      source.destroy();
+    };
+
+    source.on("readable", onReadable);
+    source.once("end", onEnd);
+    source.once("close", onClose);
+    source.once("error", onError);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      onReadable();
+    }
+  });
 }
 
 function turnIdFromStartResult(result: unknown): string | undefined {
@@ -170,6 +257,39 @@ function closeRejectedAttachmentRequest(
 ): void {
   response.setHeader("Connection", "close");
   response.once("finish", () => request.socket.destroy());
+}
+
+function fileDownloadHttpError(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} {
+  if (error instanceof FileDownloadError) {
+    return { status: error.statusCode, code: error.code, message: error.message };
+  }
+  return {
+    status: 500,
+    code: "fileDownloadsUnavailable",
+    message: "File downloads are unavailable",
+  };
+}
+
+function encodedHeaderValue(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function contentDispositionAttachment(fileName: string): string {
+  const fallback = [...fileName]
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint >= 0x20 && codePoint <= 0x7e && character !== '"' && character !== "\\"
+        ? character
+        : "_";
+    })
+    .join("")
+    .slice(0, 200) || "download";
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodedHeaderValue(fileName)}`;
 }
 
 function parsePort(value: string | undefined): number {
@@ -303,6 +423,8 @@ export class AskCodexServer {
   private readonly completedAttachmentTurns = new Set<string>();
   private readonly pendingAttachmentStarts = new Map<string, number>();
   private readonly attachments: AttachmentStore;
+  private readonly fileDownloads: FileDownloadStore;
+  private readonly createFileDownloadTransferTimeout: CreateFileDownloadTransferTimeout;
   private readonly pendingServerRequests = new Map<string, PendingServerRequest>();
   private readonly inFlightRpc = new Map<WebSocket, number>();
   private totalInFlightRpc = 0;
@@ -315,10 +437,14 @@ export class AskCodexServer {
       command: process.env.CODEX_BIN || "codex",
     }),
     attachments?: AttachmentStore,
+    fileDownloads?: FileDownloadStore,
+    downloadTimeoutFactory: CreateFileDownloadTransferTimeout = createFileDownloadTransferTimeout,
   ) {
     assertSafeBind(config.host, config.token, config.publicOrigin);
     assertDirectory(config.defaultCwd, "defaultCwd");
     this.attachments = attachments ?? new AttachmentStore();
+    this.fileDownloads = fileDownloads ?? new FileDownloadStore();
+    this.createFileDownloadTransferTimeout = downloadTimeoutFactory;
     this.httpServer.maxConnections = MAX_HTTP_CONNECTIONS;
     this.httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
     this.httpServer.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
@@ -368,6 +494,7 @@ export class AskCodexServer {
     this.activeAttachmentLeases.clear();
     this.completedAttachmentTurns.clear();
     this.pendingAttachmentStarts.clear();
+    const fileDownloadsClose = this.fileDownloads.close();
 
     const webSocketClose = new Promise<void>((resolveClose) => {
       this.webSocketServer.close(() => resolveClose());
@@ -387,8 +514,13 @@ export class AskCodexServer {
     for (const result of networkResults) {
       if (result.status === "rejected") failures.push(result.reason);
     }
-    const attachmentResult = await Promise.allSettled([this.attachments.close()]);
-    if (attachmentResult[0]?.status === "rejected") failures.push(attachmentResult[0].reason);
+    const storageResults = await Promise.allSettled([
+      this.attachments.close(),
+      fileDownloadsClose,
+    ]);
+    for (const result of storageResults) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
     this.started = false;
     if (failures.length > 0) {
       throw new AggregateError(failures, "Ask Codex server did not close cleanly");
@@ -414,7 +546,10 @@ export class AskCodexServer {
         this.config.production,
         this.config.publicOrigin,
       )) {
-        if (request.path.startsWith("/api/attachments")) {
+        if (
+          request.path.startsWith("/api/attachments") ||
+          request.path.startsWith("/api/file-downloads")
+        ) {
           closeRejectedAttachmentRequest(request, response);
         }
         response.status(403).json({ error: "Origin not allowed" });
@@ -425,7 +560,10 @@ export class AskCodexServer {
     this.app.use("/api", (request, response, next) => {
       response.setHeader("Cache-Control", "no-store");
       if (!isHttpAuthorized(request, this.config.token)) {
-        if (request.path.startsWith("/attachments")) {
+        if (
+          request.path.startsWith("/attachments") ||
+          request.path.startsWith("/file-downloads")
+        ) {
           closeRejectedAttachmentRequest(request, response);
         }
         response.status(401).json({ error: "Unauthorized" });
@@ -536,6 +674,99 @@ export class AskCodexServer {
       const normalized = attachmentHttpError(error);
       response.status(normalized.status).json({
         error: { code: normalized.code, message: normalized.message },
+      });
+    });
+
+    const fileDownloadBody = express.raw({
+      inflate: false,
+      limit: 1,
+      type: () => true,
+    });
+    this.app.post(
+      "/api/file-downloads/:capabilityId",
+      fileDownloadBody,
+      async (request, response) => {
+        if (
+          (Buffer.isBuffer(request.body) && request.body.length > 0) ||
+          Object.keys(request.query).length > 0
+        ) {
+          response.status(400).json({
+            error: {
+              code: "invalidFileDownloadRequest",
+              message: "File download request is invalid",
+            },
+          });
+          return;
+        }
+
+        let lease: FileDownloadLease | undefined;
+        let transferTimeout: FileDownloadTransferTimeout | undefined;
+        try {
+          lease = await this.fileDownloads.consume(request.params.capabilityId);
+          transferTimeout = this.createFileDownloadTransferTimeout(
+            FILE_DOWNLOAD_TRANSFER_TIMEOUT_MS,
+          );
+          const source = lease.createReadStream();
+          if (lease.size > 0) {
+            await waitForFirstFileDownloadChunk(source, transferTimeout.signal);
+          }
+          response.status(200);
+          response.setHeader("Content-Type", "application/octet-stream");
+          response.setHeader("Content-Length", String(lease.size));
+          response.setHeader(
+            "Content-Disposition",
+            contentDispositionAttachment(lease.name),
+          );
+          await pipeline(source, response, {
+            signal: transferTimeout.signal,
+          });
+        } catch (error) {
+          if (!response.destroyed && !response.headersSent) {
+            const normalized = fileDownloadHttpError(error);
+            response.removeHeader("Content-Disposition");
+            response.removeHeader("Content-Length");
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.status(normalized.status).json({
+              error: { code: normalized.code, message: normalized.message },
+            });
+          } else if (!response.destroyed) {
+            response.destroy();
+          }
+        } finally {
+          transferTimeout?.clear();
+          await lease?.release();
+        }
+      },
+    );
+    this.app.use("/api/file-downloads", (
+      error: unknown,
+      request: express.Request,
+      response: express.Response,
+      next: express.NextFunction,
+    ) => {
+      if (response.headersSent) {
+        next(error);
+        return;
+      }
+      if (isRecord(error) && typeof error.type === "string") {
+        closeRejectedAttachmentRequest(request, response);
+      }
+      response.status(400).json({
+        error: {
+          code: "invalidFileDownloadRequest",
+          message: "File download request is invalid",
+        },
+      });
+    });
+    this.app.use("/api/file-downloads", (
+      _request: express.Request,
+      response: express.Response,
+    ) => {
+      response.status(404).json({
+        error: {
+          code: "fileDownloadNotFound",
+          message: "File download is unavailable",
+        },
       });
     });
 
@@ -656,6 +887,7 @@ export class AskCodexServer {
   private configureCodexEvents(): void {
     this.codex.on("status", (status) => this.handleCodexStatus(status));
     this.codex.on("notification", (method, params) => {
+      this.fileDownloads.observeNotification(method, params);
       if (method === "serverRequest/resolved" && isRecord(params) && isRpcId(params.requestId)) {
         this.pendingServerRequests.delete(rpcIdKey(params.requestId));
       }
@@ -664,10 +896,11 @@ export class AskCodexServer {
         const turnId = turnIdFromNotification(params);
         if (threadId && turnId) this.completeAttachmentTurn(threadId, turnId);
       }
+      const projectedParams = sanitizeBrowserNotificationParams(method, params);
       this.broadcast({
         type: "notification",
         method,
-        params: sanitizeBrowserNotificationParams(method, params),
+        params: this.fileDownloads.decorateNotification(method, projectedParams),
       });
     });
     this.codex.on("request", (id, method, params) => {
@@ -765,6 +998,7 @@ export class AskCodexServer {
         this.ownership.set(existingThreadId, client);
       }
 
+      const fileDownloadAuthorityRevision = this.fileDownloads.captureAuthorityRevision();
       const rawResult = await this.codex.request(message.method, codexParams);
       if (message.method === "turn/start" && attachmentLeases.length > 0) {
         const turnId = turnIdFromStartResult(rawResult);
@@ -779,7 +1013,21 @@ export class AskCodexServer {
           this.ownership.set(newThreadId, client);
         }
       }
-      const result = sanitizeBrowserRpcResult(message.method, rawResult);
+      const canDecorateFileDownloads = this.fileDownloads.observeRpcResult(
+        message.method,
+        sanitizedParams,
+        rawResult,
+        fileDownloadAuthorityRevision,
+      );
+      const projectedResult = sanitizeBrowserRpcResult(message.method, rawResult);
+      const result = canDecorateFileDownloads
+          ? this.fileDownloads.decorateRpcResult(
+            message.method,
+            sanitizedParams,
+            projectedResult,
+            fileDownloadAuthorityRevision,
+          )
+        : projectedResult;
       this.send(client, { type: "rpcResult", id: message.id, result });
     } catch (error) {
       this.send(client, {
@@ -932,6 +1180,7 @@ export class AskCodexServer {
 
   private handleCodexStatus(status: CodexStatusEvent): void {
     if (status.status === "error") {
+      this.fileDownloads.clearAuthority();
       this.pendingServerRequests.clear();
       const leases = [...this.activeAttachmentLeases.values()].flat();
       this.activeAttachmentLeases.clear();

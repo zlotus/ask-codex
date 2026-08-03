@@ -19,7 +19,12 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import type { CodexItem, PlanStep } from "../types/protocol";
+import type {
+  CodexItem,
+  FileDownloadCapability,
+  FileDownloadHandler,
+  PlanStep,
+} from "../types/protocol";
 import {
   commandText,
   isRecord,
@@ -40,12 +45,27 @@ import { displayToolStatus, hasVisibleReasoning, isFailedToolActivity } from "./
 const TOOL_OUTPUT_MAX_DISPLAY_CHARACTERS = 24_000;
 const FAILURE_PREVIEW_MAX_CHARACTERS = 360;
 const FAILURE_PREVIEW_MAX_LINES = 3;
+const FILE_DOWNLOAD_CAPABILITY_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 interface ItemRendererProps {
   disclosureOpen?: boolean;
   imagePreviewUrls?: readonly string[];
   item: CodexItem;
+  onDownloadFile?: FileDownloadHandler;
   onDisclosureOpenChange?: (open: boolean) => void;
+}
+
+function fileDownloadCapabilities(item: CodexItem): FileDownloadCapability[] {
+  const candidates: unknown = item.askCodexFileDownloads;
+  if (!Array.isArray(candidates)) return [];
+  return candidates.filter((candidate): candidate is FileDownloadCapability => (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof (candidate as Record<string, unknown>).href === "string" &&
+    typeof (candidate as Record<string, unknown>).capabilityId === "string" &&
+    Boolean((candidate as Record<string, unknown>).href) &&
+    FILE_DOWNLOAD_CAPABILITY_ID_PATTERN.test((candidate as Record<string, unknown>).capabilityId as string)
+  ));
 }
 
 function omittedCharacters(item: CodexItem, fields: readonly string[]): number {
@@ -257,13 +277,20 @@ function UserMessage({ imagePreviewUrls, item }: ItemRendererProps) {
   );
 }
 
-function AgentMessage({ item }: ItemRendererProps) {
+function AgentMessage({ item, onDownloadFile }: ItemRendererProps) {
   const text = itemText(item);
   const omitted = omittedCharacters(item, ["text"]);
   return (
     <article className="message message--agent">
       <div className="message-role"><Bot size={14} aria-hidden="true" />Codex</div>
-      {text ? <Markdown>{text}</Markdown> : <span className="streaming-placeholder">Thinking</span>}
+      {text ? (
+        <Markdown
+          fileDownloads={fileDownloadCapabilities(item)}
+          onDownloadFile={onDownloadFile}
+        >
+          {text}
+        </Markdown>
+      ) : <span className="streaming-placeholder">Thinking</span>}
       <StreamOmission count={omitted} />
     </article>
   );
@@ -754,7 +781,7 @@ export function ItemRenderer(props: ItemRendererProps) {
     case "userMessage":
       return <UserMessage {...props} />;
     case "agentMessage":
-      return <AgentMessage item={item} />;
+      return <AgentMessage {...props} />;
     case "reasoning":
       return <ReasoningGroup items={[item]} />;
     case "commandExecution":

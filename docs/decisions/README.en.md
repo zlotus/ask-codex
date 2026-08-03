@@ -17,6 +17,7 @@ the records relevant to the current task.
 | [0010](0010-app-server-default-thread-history.en.md) | Accepted | Use the app-server default history contract for new threads while retaining read recovery for paginated threads. |
 | [0011](0011-browser-local-image-previews.en.md) | Accepted | Retain bounded sent-image previews in IndexedDB for the same browser profile and Origin. |
 | [0012](0012-read-only-connection-recovery.en.md) | Accepted | Recover connections from read-only snapshots without claiming threads or replaying unconfirmed writes. |
+| [0013](0013-thread-working-directory-defaults-and-file-download-scope.en.md) | Accepted | Use the selected thread's Working directory as new-thread context and a constrained file-download scope. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

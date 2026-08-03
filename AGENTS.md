@@ -53,6 +53,15 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
 - 将 `ASK_CODEX_PUBLIC_ORIGIN` 视为唯一且精确的可信代理 Origin；只要配置了它，
   就必须要求令牌，并在代理中保留公网 `Host`。
 - 将 `ASK_CODEX_WORKSPACE` 视为初始目录，而不是访问边界。
+- 文件下载候选只能从 app-server 提供的权威 `thread.cwd`，以及已完成 Agent 消息中的
+  显式绝对本地文件链接派生。
+- 浏览器不得提交 `path`、`cwd` 或 `threadId`；下载请求只能提交网关签发的短期、一次性
+  opaque capability ID。
+- 签发下载 capability 时必须固定 canonical root identity；消费时必须重新验证该身份，以匹配的
+  根目录 fd 固定解析范围，并验证目标 `realpath` 与已打开文件 fd 的 containment。任何不一致
+  都必须失败关闭。
+- 下载只允许普通文件，并必须保留对文件大小、capability 数量、并发、元数据和生命周期的明确
+  资源上限。不得引入全局下载根目录，包括 `ASK_CODEX_DOWNLOAD_ROOTS`。
 - 不支持的细粒度权限授予和 MCP elicitation 必须默认拒绝。
 - 恢复会话时保留已有的 `externalSandbox`，不要覆盖它。
 - 自动连接恢复和只读跨线程视图不得调用 `thread/resume` 或改变审批 owner；只能自动重试

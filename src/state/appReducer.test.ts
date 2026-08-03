@@ -1464,6 +1464,32 @@ describe("appReducer", () => {
     expect(applied.settings).toEqual(expect.objectContaining({ effort: "low", sandbox: "external" }));
   });
 
+  it("projects authoritative cwd updates into matching thread records", () => {
+    const selected = {
+      ...initialState,
+      selectedThreadId: "thread-1",
+      currentThread: { id: "thread-1", cwd: "/workspace/old", turns: [] },
+      threads: [{ id: "thread-1", cwd: "/workspace/old" }],
+      archivedThreads: [{ id: "thread-2", cwd: "/workspace/archive-old" }],
+    };
+    const currentUpdated = appReducer(selected, {
+      type: "threadSettings",
+      threadId: "thread-1",
+      settings: { cwd: "/workspace/new" },
+    });
+    const archivedUpdated = appReducer(currentUpdated, {
+      type: "threadSettings",
+      threadId: "thread-2",
+      settings: { cwd: "/workspace/archive-new" },
+    });
+
+    expect(currentUpdated.currentThread?.cwd).toBe("/workspace/new");
+    expect(currentUpdated.threads[0]?.cwd).toBe("/workspace/new");
+    expect(currentUpdated.settings.cwd).toBe("/workspace/new");
+    expect(archivedUpdated.archivedThreads[0]?.cwd).toBe("/workspace/archive-new");
+    expect(archivedUpdated.settings.cwd).toBe("/workspace/new");
+  });
+
   it("stores plan and diff updates on the matching turn", () => {
     const planned = appReducer(stateWithTurn(), {
       type: "setTurnPlan",

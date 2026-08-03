@@ -9,6 +9,8 @@ const fixtureImage = Buffer.from(
   "base64",
 );
 const fixtureAttachmentId = "visualfixtureattachmentid0000001";
+const fixtureDownloadCapabilityId = "d".repeat(32);
+const fixtureDownloadHref = "/workspace/ask-codex/docs/progress.md:112";
 
 await mkdir(outputDirectory, { recursive: true });
 
@@ -144,7 +146,15 @@ const fixtureTurns = [
         id: "agent-finish",
         type: "agentMessage",
         status: "completed",
-        text: "The bounded renderer is in place. Manual approval remains enforced at the gateway.",
+        text: [
+          "The bounded renderer is in place. Manual approval remains enforced at the gateway.",
+          "",
+          `[progress.md](${fixtureDownloadHref}) is available for download.`,
+        ].join("\n"),
+        askCodexFileDownloads: [{
+          href: fixtureDownloadHref,
+          capabilityId: fixtureDownloadCapabilityId,
+        }],
       },
     ],
     diff: `diff --git a/src/client.ts b/src/client.ts\n--- a/src/client.ts\n+++ b/src/client.ts\n${filePatch}`,
@@ -224,6 +234,15 @@ async function installFixture(page) {
         expiresAt: Date.now() + 60_000,
       },
     }),
+  }));
+  await page.route(`**/api/file-downloads/${fixtureDownloadCapabilityId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/octet-stream",
+    headers: {
+      "Content-Disposition": "attachment; filename=progress.md; filename*=UTF-8''progress.md",
+      "Content-Length": "24",
+    },
+    body: "visual download fixture\n",
   }));
 
   await page.routeWebSocket("**/ws", (socket) => {
@@ -435,6 +454,59 @@ async function openRichDetails(page) {
     }
     await page.waitForTimeout(50);
   }
+}
+
+async function inspectFileDownload(page, screenshotPath) {
+  const trigger = page.getByRole("button", { name: "Download progress.md", exact: true });
+  await trigger.scrollIntoViewIfNeeded();
+  const initialBox = await trigger.boundingBox();
+  await trigger.click();
+  const confirmation = page.getByRole("group", { name: "Confirm download progress.md" });
+  await confirmation.waitFor();
+  const confirmationLayout = await confirmation.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const conversation = element.closest(".conversation-scroll")?.getBoundingClientRect();
+    const controls = [...element.querySelectorAll("button")].map((button) => {
+      const controlBox = button.getBoundingClientRect();
+      return {
+        width: controlBox.width,
+        height: controlBox.height,
+        contained: controlBox.left >= box.left && controlBox.right <= box.right &&
+          controlBox.top >= box.top && controlBox.bottom <= box.bottom,
+      };
+    });
+    return {
+      width: box.width,
+      height: box.height,
+      contained: Boolean(conversation && box.left >= conversation.left && box.right <= conversation.right),
+      controls,
+      confirmFocused: document.activeElement?.getAttribute("aria-label") === "Confirm download progress.md",
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  const confirm = page.getByRole("button", { name: "Confirm download progress.md", exact: true });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    confirm.click(),
+  ]);
+  const started = page.getByRole("button", { name: "Download started progress.md", exact: true });
+  await started.waitFor();
+  const completion = await started.evaluate((element) => ({
+    ariaDisabled: element.getAttribute("aria-disabled") === "true",
+    hasCheck: Boolean(element.querySelector(".lucide-check")),
+    focused: document.activeElement === element,
+    horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+  }));
+  await download.cancel().catch(() => undefined);
+  return {
+    initialVisible: Boolean(initialBox && initialBox.width > 0 && initialBox.height > 0),
+    stableConfirmationWidth: Boolean(initialBox && Math.abs(initialBox.width - confirmationLayout.width) <= 1),
+    suggestedFilename: download.suggestedFilename(),
+    confirmation: confirmationLayout,
+    completion,
+  };
 }
 
 async function inspectRichLayout(page) {
@@ -1103,6 +1175,10 @@ try {
   const desktopUsage = await inspectUsageDialog(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-usage.png`, fullPage: true });
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  const desktopFileDownload = await inspectFileDownload(
+    page,
+    `${outputDirectory}/desktop-file-download-confirm.png`,
+  );
 
   await addFixtureImage(page);
   const desktopComposerImage = await inspectComposerImage(page);
@@ -1218,6 +1294,10 @@ try {
   const mobileUsage = await inspectUsageDialog(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-usage.png`, fullPage: true });
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  const mobileFileDownload = await inspectFileDownload(
+    page,
+    `${outputDirectory}/mobile-file-download-confirm.png`,
+  );
   const mobileSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
   const mobileReloadedImage = await reloadAndInspectFixtureImage(page);
@@ -1262,6 +1342,7 @@ try {
       skills: desktopSkills,
       activity: desktopActivity,
       usage: desktopUsage,
+      fileDownload: desktopFileDownload,
       rich: desktopRich,
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
@@ -1279,6 +1360,7 @@ try {
       skills: mobileSkills,
       activity: mobileActivity,
       usage: mobileUsage,
+      fileDownload: mobileFileDownload,
       moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
@@ -1377,6 +1459,19 @@ try {
     !desktopUsage.actionsContained ||
     !desktopUsage.contentContained ||
     desktopUsage.horizontalOverflow ||
+    !desktopFileDownload.initialVisible ||
+    !desktopFileDownload.stableConfirmationWidth ||
+    desktopFileDownload.suggestedFilename !== "progress.md" ||
+    !desktopFileDownload.confirmation.contained ||
+    !desktopFileDownload.confirmation.confirmFocused ||
+    desktopFileDownload.confirmation.controls.some((control) => (
+      !control.contained || control.width < 27 || control.height < 27
+    )) ||
+    desktopFileDownload.confirmation.horizontalOverflow ||
+    !desktopFileDownload.completion.ariaDisabled ||
+    !desktopFileDownload.completion.hasCheck ||
+    !desktopFileDownload.completion.focused ||
+    desktopFileDownload.completion.horizontalOverflow ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
     !mobileBefore.toolbarVisible ||
@@ -1454,6 +1549,19 @@ try {
     !mobileUsage.actionsContained ||
     !mobileUsage.contentContained ||
     mobileUsage.horizontalOverflow ||
+    !mobileFileDownload.initialVisible ||
+    !mobileFileDownload.stableConfirmationWidth ||
+    mobileFileDownload.suggestedFilename !== "progress.md" ||
+    !mobileFileDownload.confirmation.contained ||
+    !mobileFileDownload.confirmation.confirmFocused ||
+    mobileFileDownload.confirmation.controls.some((control) => (
+      !control.contained || control.width < 27 || control.height < 27
+    )) ||
+    mobileFileDownload.confirmation.horizontalOverflow ||
+    !mobileFileDownload.completion.ariaDisabled ||
+    !mobileFileDownload.completion.hasCheck ||
+    !mobileFileDownload.completion.focused ||
+    mobileFileDownload.completion.horizontalOverflow ||
     !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||

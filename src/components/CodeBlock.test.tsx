@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
 
+const CAPABILITY_A = "a".repeat(32);
+const CAPABILITY_B = "b".repeat(32);
+const CAPABILITY_C = "c".repeat(32);
+const CAPABILITY_D = "d".repeat(32);
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -70,5 +75,204 @@ describe("CodeBlock", () => {
     expect(markdown.container.querySelector("img")).not.toBeInTheDocument();
     expect(markdown.container.querySelector("a")).not.toBeInTheDocument();
     expect(screen.getByText("unsafe")).toBeInTheDocument();
+  });
+
+  it("offers downloads only for exactly matched absolute local file capabilities", () => {
+    const onDownloadFile = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Markdown
+        fileDownloads={[
+          { href: "/tmp/report.txt", capabilityId: CAPABILITY_A },
+          { href: "/tmp/report%20final.txt:12:4", capabilityId: CAPABILITY_B },
+          { href: "/tmp/report final.txt:8", capabilityId: CAPABILITY_D },
+          { href: "/tmp/unsigned.txt", capabilityId: "not-a-valid-capability" },
+          { href: "https://example.com/archive.zip", capabilityId: CAPABILITY_C },
+        ]}
+        onDownloadFile={onDownloadFile}
+      >
+        {[
+          "[report](/tmp/report.txt)",
+          "[encoded report](/tmp/report%20final.txt:12:4)",
+          "[spaced report](</tmp/report final.txt:8>)",
+          "[other local file](/tmp/other.txt)",
+          "[unsigned local file](/tmp/unsigned.txt)",
+          "[external archive](https://example.com/archive.zip)",
+        ].join(" ")}
+      </Markdown>,
+    );
+
+    expect(screen.getByRole("button", { name: "Download report.txt" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download report final.txt" })).toHaveLength(2);
+    expect(screen.getByText("other local file")).toHaveClass("markdown-local-file-reference");
+    expect(screen.getByText("unsigned local file")).toHaveClass("markdown-local-file-reference");
+    expect(screen.queryByRole("link", { name: "other local file" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "unsigned local file" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "external archive" })).toHaveAttribute(
+      "href",
+      "https://example.com/archive.zip",
+    );
+    expect(screen.queryByRole("button", { name: "Download external archive" })).not.toBeInTheDocument();
+  });
+
+  it("uses the first CommonMark reference definition for download matching", () => {
+    const onDownloadFile = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Markdown
+        fileDownloads={[
+          { href: "/tmp/report.txt", capabilityId: CAPABILITY_A },
+          { href: "/tmp/not-selected.txt", capabilityId: CAPABILITY_B },
+        ]}
+        onDownloadFile={onDownloadFile}
+      >
+        {[
+          "[report][local] [website][external]",
+          "",
+          "[local]: /tmp/report.txt",
+          "[local]: https://example.com/ignored",
+          "[external]: https://example.com/",
+          "[external]: /tmp/not-selected.txt",
+        ].join("\n")}
+      </Markdown>,
+    );
+
+    expect(screen.getByRole("button", { name: "Download report.txt" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "website" })).toHaveAttribute(
+      "href",
+      "https://example.com/",
+    );
+    expect(screen.queryByRole("button", { name: "Download website" })).not.toBeInTheDocument();
+  });
+
+  it("confirms a file download and exposes its pending and started states", async () => {
+    let finishDownload: (() => void) | undefined;
+    const onDownloadFile = vi.fn(() => new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    }));
+    const { rerender } = render(
+      <Markdown
+        fileDownloads={[{ href: "/tmp/report.txt", capabilityId: CAPABILITY_A }]}
+        onDownloadFile={onDownloadFile}
+      >
+        {"[report](/tmp/report.txt)"}
+      </Markdown>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    expect(onDownloadFile).not.toHaveBeenCalled();
+    expect(screen.getByText("Download report.txt?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm download report.txt" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download report.txt" }));
+    expect(screen.getByRole("button", { name: "Download report.txt" })).toHaveFocus();
+    expect(onDownloadFile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm download report.txt" }));
+    expect(onDownloadFile).toHaveBeenCalledWith({ href: "/tmp/report.txt", capabilityId: CAPABILITY_A });
+    expect(screen.getByRole("button", { name: "Downloading report.txt" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Downloading report.txt" })).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("Downloading");
+
+    finishDownload?.();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Download started"));
+    const started = screen.getByRole("button", { name: "Download started report.txt" });
+    expect(started).toHaveAttribute("aria-disabled", "true");
+    expect(started).toHaveFocus();
+    expect(started).toHaveTextContent("Download started");
+    expect(started.querySelector(".lucide-check")).toBeInTheDocument();
+    fireEvent.click(started);
+    expect(onDownloadFile).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("group", { name: "Confirm download report.txt" })).not.toBeInTheDocument();
+
+    rerender(
+      <Markdown
+        fileDownloads={[{ href: "/tmp/report.txt", capabilityId: CAPABILITY_B }]}
+        onDownloadFile={onDownloadFile}
+      >
+        {"[report](/tmp/report.txt)"}
+      </Markdown>,
+    );
+    expect(screen.getByRole("button", { name: "Download report.txt" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("reports download failures accessibly and allows retrying", async () => {
+    const onDownloadFile = vi.fn().mockRejectedValue(new Error("Connection closed"));
+    render(
+      <Markdown
+        fileDownloads={[{ href: "/tmp/report.txt", capabilityId: CAPABILITY_A }]}
+        onDownloadFile={onDownloadFile}
+      >
+        {"[report](/tmp/report.txt)"}
+      </Markdown>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm download report.txt" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Download failed: Connection closed");
+    expect(screen.getByRole("button", { name: "Download report.txt" })).toBeEnabled();
+  });
+
+  it("shows the signed target name instead of trusting a misleading link label", () => {
+    render(
+      <Markdown
+        fileDownloads={[{ href: "/tmp/run.sh", capabilityId: CAPABILITY_A }]}
+        onDownloadFile={vi.fn().mockResolvedValue(undefined)}
+      >
+        {"[quarterly-report.pdf](/tmp/run.sh)"}
+      </Markdown>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download run.sh" }));
+    expect(screen.getByText("Download run.sh?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm download run.sh" })).toBeInTheDocument();
+  });
+
+  it("shares one-shot capability state across repeated links", async () => {
+    let finishDownload: (() => void) | undefined;
+    const onDownloadFile = vi.fn(() => new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    }));
+    render(
+      <Markdown
+        fileDownloads={[{ href: "/tmp/report.txt", capabilityId: CAPABILITY_A }]}
+        onDownloadFile={onDownloadFile}
+      >
+        {"[first](/tmp/report.txt) [second](/tmp/report.txt)"}
+      </Markdown>,
+    );
+
+    const downloads = screen.getAllByRole("button", { name: "Download report.txt" });
+    expect(downloads).toHaveLength(2);
+    fireEvent.click(downloads[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm download report.txt" }));
+    expect(onDownloadFile).toHaveBeenCalledOnce();
+    expect(screen.getAllByRole("button", { name: "Downloading report.txt" })).toHaveLength(2);
+
+    finishDownload?.();
+    await waitFor(() => expect(
+      screen.getAllByRole("button", { name: "Download started report.txt" }),
+    ).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole("button", { name: "Download started report.txt" })[1]);
+    expect(onDownloadFile).toHaveBeenCalledOnce();
+  });
+
+  it("bounds the target filename used by download controls", () => {
+    const longTarget = `${"r".repeat(180)}.txt`;
+    const boundedTarget = `${"r".repeat(117)}...`;
+    render(
+      <Markdown
+        fileDownloads={[{ href: `/tmp/${longTarget}`, capabilityId: CAPABILITY_A }]}
+        onDownloadFile={vi.fn().mockResolvedValue(undefined)}
+      >
+        {`[report](/tmp/${longTarget})`}
+      </Markdown>,
+    );
+
+    const download = screen.getByRole("button", { name: `Download ${boundedTarget}` });
+    expect(download).toHaveAttribute("title", `Download ${boundedTarget}`);
+    fireEvent.click(download);
+    expect(screen.getByRole("button", { name: `Confirm download ${boundedTarget}` })).toBeInTheDocument();
   });
 });

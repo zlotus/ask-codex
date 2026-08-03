@@ -83,6 +83,7 @@ import {
   uploadImageAttachments,
   type UploadedAttachment,
 } from "./utils/attachments";
+import { downloadFileCapability } from "./utils/fileDownloads";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -127,6 +128,22 @@ function unavailableSkillsCwdIndex(error: unknown, cwdCount: number): number | n
 interface ThreadDialogState {
   mode: "new" | "existing";
   settings: ThreadSettings;
+}
+
+interface ThreadCwdAuthority {
+  cwd: string;
+  revision: number;
+  authorityRevision: number;
+}
+
+interface ThreadListSnapshot {
+  thread: CodexThread;
+  authorityRevision: number;
+}
+
+interface ResyncSnapshot {
+  thread: CodexThread;
+  authorityRevision: number;
 }
 
 interface PendingImagePreviewGroup {
@@ -241,6 +258,8 @@ export default function App() {
   const settingsLoadGenerationRef = useRef(0);
   const threadListRefreshGenerationRef = useRef(0);
   const threadListMutationEpochRef = useRef(0);
+  const threadCwdAuthorityRevisionRef = useRef(0);
+  const threadCwdUpdatesRef = useRef(new Map<string, ThreadCwdAuthority>());
   const skillsLoadGenerationRef = useRef(0);
   const skillsLoadedRef = useRef(false);
   const handledSkillsInvalidationRef = useRef(0);
@@ -420,6 +439,47 @@ export default function App() {
     setThreadDialog(null);
   }, []);
 
+  const captureThreadCwdAuthorityRevision = useCallback((): number => {
+    threadCwdAuthorityRevisionRef.current += 1;
+    return threadCwdAuthorityRevisionRef.current;
+  }, []);
+
+  const rememberAuthoritativeThreadCwd = useCallback((
+    threadId: string,
+    cwd: string,
+    authorityRevision: number,
+    options: { syncState?: boolean; invalidateThreadLists?: boolean } = {},
+  ): ThreadCwdAuthority => {
+    const previous = threadCwdUpdatesRef.current.get(threadId);
+    if (previous && authorityRevision < previous.authorityRevision) return previous;
+
+    const knownCwd = previous?.cwd || (
+      currentThreadRef.current?.id === threadId
+        ? currentThreadRef.current.cwd
+        : undefined
+    );
+    const cwdChanged = knownCwd !== undefined && knownCwd !== cwd;
+    const authority = {
+      cwd,
+      revision: (previous?.revision ?? 0) + (cwdChanged ? 1 : 0),
+      authorityRevision,
+    };
+    threadCwdUpdatesRef.current.set(threadId, authority);
+    if (
+      options.invalidateThreadLists !== false &&
+      (previous === undefined || cwdChanged)
+    ) {
+      threadListMutationEpochRef.current += 1;
+    }
+    if (currentThreadRef.current?.id === threadId && currentThreadRef.current.cwd !== cwd) {
+      currentThreadRef.current = { ...currentThreadRef.current, cwd };
+    }
+    if (options.syncState !== false) {
+      dispatch({ type: "threadSettings", threadId, settings: { cwd } });
+    }
+    return authority;
+  }, []);
+
   const applyNotification = useCallback((message: NotificationMessage) => {
     const params = paramsRecord(message.params);
     const threadId = readString(params.threadId);
@@ -458,8 +518,17 @@ export default function App() {
         return;
       }
       case "thread/started": {
-        const thread = normalizeThread(params.thread);
+        let thread = normalizeThread(params.thread);
         if (thread) {
+          if (thread.cwd) {
+            const authority = rememberAuthoritativeThreadCwd(
+              thread.id,
+              thread.cwd,
+              captureThreadCwdAuthorityRevision(),
+              { syncState: false, invalidateThreadLists: false },
+            );
+            thread = { ...thread, cwd: authority.cwd };
+          }
           threadListMutationEpochRef.current += 1;
           rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, thread.id);
           dispatch({ type: "upsertThread", thread });
@@ -502,6 +571,12 @@ export default function App() {
       case "thread/deleted": {
         if (threadId) {
           threadListMutationEpochRef.current += 1;
+          const previous = threadCwdUpdatesRef.current.get(threadId);
+          threadCwdUpdatesRef.current.set(threadId, {
+            cwd: "",
+            revision: (previous?.revision ?? 0) + (previous?.cwd ? 1 : 0),
+            authorityRevision: captureThreadCwdAuthorityRevision(),
+          });
           pendingCanonicalThreadIdsRef.current.delete(threadId);
           invalidateSelectedThread(threadId);
           removeImagePreviewsForThread(threadId);
@@ -511,17 +586,28 @@ export default function App() {
       }
       case "thread/settings/updated": {
         const rawSettings = paramsRecord(params.threadSettings);
+        const updatedCwd = readString(rawSettings.cwd);
         const sandbox = sandboxMode(rawSettings.sandboxPolicy ?? rawSettings.sandbox);
-        if (threadId) dispatch({
-          type: "threadSettings",
-          threadId,
-          settings: {
-            ...(readString(rawSettings.cwd) ? { cwd: readString(rawSettings.cwd) } : {}),
-            ...(readString(rawSettings.model) ? { model: readString(rawSettings.model) } : {}),
-            effort: readString(rawSettings.effort) ?? "",
-            ...(sandbox ? { sandbox } : {}),
-          },
-        });
+        if (threadId) {
+          const authoritativeCwd = updatedCwd
+            ? rememberAuthoritativeThreadCwd(
+                threadId,
+                updatedCwd,
+                captureThreadCwdAuthorityRevision(),
+                { syncState: false },
+              ).cwd
+            : undefined;
+          dispatch({
+            type: "threadSettings",
+            threadId,
+            settings: {
+              ...(authoritativeCwd ? { cwd: authoritativeCwd } : {}),
+              ...(readString(rawSettings.model) ? { model: readString(rawSettings.model) } : {}),
+              effort: readString(rawSettings.effort) ?? "",
+              ...(sandbox ? { sandbox } : {}),
+            },
+          });
+        }
         return;
       }
       case "turn/started": {
@@ -618,7 +704,12 @@ export default function App() {
     } else if (message.method === "item/fileChange/outputDelta") {
       dispatch({ type: "appendItemDelta", turnId, itemId, itemType: "fileChange", field: "output", delta });
     }
-  }, [invalidateSelectedThread, removeImagePreviewsForThread]);
+  }, [
+    captureThreadCwdAuthorityRevision,
+    invalidateSelectedThread,
+    rememberAuthoritativeThreadCwd,
+    removeImagePreviewsForThread,
+  ]);
 
   const onNotification = useCallback((message: NotificationMessage) => {
     if (message.method === "skills/changed") {
@@ -824,11 +915,12 @@ export default function App() {
     const mutationEpoch = threadListMutationEpochRef.current;
     setLoadingThreads(true);
     try {
-      const listThreads = async (archived: boolean): Promise<CodexThread[]> => {
-        const threads: CodexThread[] = [];
+      const listThreads = async (archived: boolean): Promise<ThreadListSnapshot[]> => {
+        const snapshots: ThreadListSnapshot[] = [];
         const seenCursors = new Set<string>();
         let cursor: string | undefined;
         for (let page = 0; page < 50; page += 1) {
+          const authorityRevision = captureThreadCwdAuthorityRevision();
           const result = await rpc("thread/list", {
             limit: 100,
             sortKey: "recency_at",
@@ -837,15 +929,18 @@ export default function App() {
             archived,
             ...(cursor !== undefined ? { cursor } : {}),
           });
-          threads.push(...extractThreads(result));
+          snapshots.push(...extractThreads(result).map((thread) => ({
+            thread,
+            authorityRevision,
+          })));
           const nextCursor = isRecord(result) ? readString(result.nextCursor) : undefined;
           if (nextCursor === undefined || seenCursors.has(nextCursor)) break;
           seenCursors.add(nextCursor);
           cursor = nextCursor;
         }
-        return threads;
+        return snapshots;
       };
-      const [threads, archivedThreads] = await Promise.all([
+      const [threadSnapshots, archivedThreadSnapshots] = await Promise.all([
         listThreads(false),
         listThreads(true),
       ]);
@@ -855,6 +950,24 @@ export default function App() {
       ) {
         return false;
       }
+
+      for (const snapshot of [...threadSnapshots, ...archivedThreadSnapshots]) {
+        if (!snapshot.thread.cwd) continue;
+        rememberAuthoritativeThreadCwd(
+          snapshot.thread.id,
+          snapshot.thread.cwd,
+          snapshot.authorityRevision,
+          { syncState: false, invalidateThreadLists: false },
+        );
+      }
+      const projectAuthoritativeCwd = (snapshot: ThreadListSnapshot): CodexThread => {
+        const authority = threadCwdUpdatesRef.current.get(snapshot.thread.id);
+        return authority?.cwd
+          ? { ...snapshot.thread, cwd: authority.cwd }
+          : snapshot.thread;
+      };
+      const threads = threadSnapshots.map(projectAuthoritativeCwd);
+      const archivedThreads = archivedThreadSnapshots.map(projectAuthoritativeCwd);
       const canonicalThreadIds = new Set([
         ...threads.map((thread) => thread.id),
         ...archivedThreads.map((thread) => thread.id),
@@ -870,6 +983,17 @@ export default function App() {
         protectedThreadIds: [...pendingCanonicalThreadIdsRef.current],
       });
       dispatch({ type: "setArchivedThreads", threads: archivedThreads });
+      const currentThreadId = currentThreadRef.current?.id;
+      const selectedAuthority = currentThreadId
+        ? threadCwdUpdatesRef.current.get(currentThreadId)
+        : undefined;
+      if (currentThreadId && selectedAuthority?.cwd) {
+        dispatch({
+          type: "threadSettings",
+          threadId: currentThreadId,
+          settings: { cwd: selectedAuthority.cwd },
+        });
+      }
       return true;
     } catch (error) {
       if (generation === threadListRefreshGenerationRef.current) {
@@ -881,7 +1005,13 @@ export default function App() {
         setLoadingThreads(false);
       }
     }
-  }, [connection, rpc, showToast]);
+  }, [
+    captureThreadCwdAuthorityRevision,
+    connection,
+    rememberAuthoritativeThreadCwd,
+    rpc,
+    showToast,
+  ]);
 
   const loadSkillsDirectory = useCallback(async (forceReload = false) => {
     if (connection !== "connected") return;
@@ -1026,6 +1156,7 @@ export default function App() {
 
   const selectThread = useCallback(async (threadId: string) => {
     const generation = ++selectionGenerationRef.current;
+    const cwdAuthorityRevision = captureThreadCwdAuthorityRevision();
     nextTurnSettingsInitializedRef.current = true;
     selectedThreadIdRef.current = threadId;
     setDraftThreadConfigured(false);
@@ -1050,12 +1181,17 @@ export default function App() {
       }
       if (generation !== selectionGenerationRef.current) return;
       if (!page) throw new Error("Codex did not return the requested turn page");
+      const resumeRecord = paramsRecord(resumed);
+      const resumedCwd = thread.cwd ?? readString(resumeRecord.cwd);
+      const authority = resumedCwd
+        ? rememberAuthoritativeThreadCwd(threadId, resumedCwd, cwdAuthorityRevision)
+        : threadCwdUpdatesRef.current.get(threadId);
+      const selectedCwd = authority?.cwd || bootstrap?.defaultCwd || "";
       dispatch({
         type: "setCurrentThread",
-        thread: { ...thread, turns: turnsForDisplay(page, null) },
+        thread: { ...thread, cwd: selectedCwd, turns: turnsForDisplay(page, null) },
         history: { nextCursor: page.nextCursor },
       });
-      const resumeRecord = paramsRecord(resumed);
       const model = readString(resumeRecord.model) ?? thread.model ?? configuredDefaults.model;
       const resumedEffort = readString(resumeRecord.effort) ?? readString(resumeRecord.reasoningEffort);
       const effort = resumedEffort ?? (model === configuredDefaults.model
@@ -1065,7 +1201,7 @@ export default function App() {
       dispatch({
         type: "settings",
         settings: {
-          cwd: readString(resumeRecord.cwd) ?? thread.cwd ?? bootstrap?.defaultCwd ?? "",
+          cwd: selectedCwd,
           model,
           effort,
           sandbox: sandboxMode(resumeRecord.sandbox) ?? "workspace-write",
@@ -1080,9 +1216,18 @@ export default function App() {
     } finally {
       if (generation === selectionGenerationRef.current) setLoadingThread(false);
     }
-  }, [bootstrap, configuredDefaults, models, rpc, showToast]);
+  }, [
+    bootstrap,
+    captureThreadCwdAuthorityRevision,
+    configuredDefaults,
+    models,
+    rememberAuthoritativeThreadCwd,
+    rpc,
+    showToast,
+  ]);
 
-  const loadResyncSnapshot = useCallback(async (threadId: string): Promise<CodexThread> => {
+  const loadResyncSnapshot = useCallback(async (threadId: string): Promise<ResyncSnapshot> => {
+    const authorityRevision = captureThreadCwdAuthorityRevision();
     const readResult = await rpc("thread/read", { threadId, includeTurns: false });
     const thread = extractThread(readResult);
     if (!thread) throw new Error("Codex did not return the requested thread");
@@ -1090,8 +1235,11 @@ export default function App() {
       threadId,
       preferredLimit: TURN_PAGE_SIZE,
     });
-    return { ...thread, turns: turnsForDisplay(page, null) };
-  }, [rpc]);
+    return {
+      thread: { ...thread, turns: turnsForDisplay(page, null) },
+      authorityRevision,
+    };
+  }, [captureThreadCwdAuthorityRevision, rpc]);
 
   const runResync = useCallback(async () => {
     const coordinator = resyncCoordinatorRef.current;
@@ -1113,9 +1261,9 @@ export default function App() {
           return;
         }
 
-        let snapshot: CodexThread;
+        let snapshotResult: ResyncSnapshot;
         try {
-          snapshot = await loadResyncSnapshot(threadId);
+          snapshotResult = await loadResyncSnapshot(threadId);
         } catch (error) {
           for (const message of coordinator.abort()) applyNotification(message);
           const detail = `Live state refresh failed: ${errorMessage(error)}`;
@@ -1132,6 +1280,17 @@ export default function App() {
           for (const message of coordinator.abort()) applyNotification(message);
           return;
         }
+
+        const snapshotAuthority = snapshotResult.thread.cwd
+          ? rememberAuthoritativeThreadCwd(
+              threadId,
+              snapshotResult.thread.cwd,
+              snapshotResult.authorityRevision,
+            )
+          : threadCwdUpdatesRef.current.get(threadId);
+        const snapshot = snapshotAuthority?.cwd
+          ? { ...snapshotResult.thread, cwd: snapshotAuthority.cwd }
+          : snapshotResult.thread;
 
         const result = coordinator.finishPass(pass === 0);
         const notifications = filterSnapshotCoveredNotifications(
@@ -1155,7 +1314,13 @@ export default function App() {
       setResyncing(coordinator.isBuffering());
       if (restart) setResyncSignal((current) => current + 1);
     }
-  }, [applyNotification, loadResyncSnapshot, refreshThreads, showToast]);
+  }, [
+    applyNotification,
+    loadResyncSnapshot,
+    refreshThreads,
+    rememberAuthoritativeThreadCwd,
+    showToast,
+  ]);
 
   const retryResync = useCallback(() => {
     if (!selectedThreadIdRef.current) {
@@ -1321,12 +1486,32 @@ export default function App() {
       model: configuredDefaults.model || composerSettings.model,
       effort: configuredDefaults.effort || composerSettings.effort,
     };
+    const selectedCurrentThread = state.currentThread?.id === state.selectedThreadId
+      ? state.currentThread
+      : undefined;
+    const selectedThreadSummary = state.threads.find((thread) => (
+      thread.id === state.selectedThreadId
+    )) ?? state.archivedThreads.find((thread) => (
+      thread.id === state.selectedThreadId
+    ));
+    const initialCwd = selectedCurrentThread?.cwd
+      || selectedThreadSummary?.cwd
+      || bootstrap?.defaultCwd
+      || "";
     setThreadDialog({
       mode: "new",
-      settings: newThreadSettings(bootstrap?.defaultCwd ?? "", defaults),
+      settings: newThreadSettings(initialCwd, defaults),
     });
     setSidebarOpen(false);
-  }, [bootstrap?.defaultCwd, composerSettings, configuredDefaults]);
+  }, [
+    bootstrap?.defaultCwd,
+    composerSettings,
+    configuredDefaults,
+    state.currentThread,
+    state.archivedThreads,
+    state.selectedThreadId,
+    state.threads,
+  ]);
 
   const openThreadSettings = useCallback(() => {
     setThreadDialog({
@@ -1366,6 +1551,10 @@ export default function App() {
     const selectionGeneration = selectionGenerationRef.current;
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
+    let guardedThreadId = thread?.id;
+    let cwdUpdateRevision = guardedThreadId
+      ? threadCwdUpdatesRef.current.get(guardedThreadId)?.revision ?? 0
+      : 0;
     const cwd = state.settings.cwd.trim();
     let uploaded: UploadedAttachment[] = [];
     let turnAccepted = false;
@@ -1373,12 +1562,22 @@ export default function App() {
       if (selectionGeneration !== selectionGenerationRef.current) {
         throw new Error("Thread changed while preparing the message; nothing was sent");
       }
+      if (guardedThreadId) {
+        const latestCwdUpdate = threadCwdUpdatesRef.current.get(guardedThreadId);
+        if (
+          (latestCwdUpdate?.revision ?? 0) !== cwdUpdateRevision ||
+          (latestCwdUpdate && latestCwdUpdate.cwd !== cwd)
+        ) {
+          throw new Error("Working directory changed while preparing the message; nothing was sent");
+        }
+      }
     };
     try {
       if (!cwd) throw new Error("Choose an absolute working directory first");
       uploaded = await uploadImageAttachments(images, token);
       assertSelectionUnchanged();
       if (!thread) {
+        const threadStartAuthorityRevision = captureThreadCwdAuthorityRevision();
         const result = await rpc("thread/start", {
           cwd,
           approvalPolicy: "on-request",
@@ -1388,14 +1587,31 @@ export default function App() {
         assertSelectionUnchanged();
         thread = extractThread(result);
         if (!thread) throw new Error("Codex did not return a new thread");
+        const createdAuthority = thread.cwd
+          ? rememberAuthoritativeThreadCwd(
+              thread.id,
+              thread.cwd,
+              threadStartAuthorityRevision,
+            )
+          : threadCwdUpdatesRef.current.get(thread.id);
+        const createdCwd = createdAuthority?.cwd || cwd;
+        thread = { ...thread, cwd: createdCwd };
         setDraftThreadConfigured(false);
         threadListMutationEpochRef.current += 1;
         rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, thread.id);
         selectedThreadIdRef.current = thread.id;
         currentThreadRef.current = thread;
         dispatch({ type: "setCurrentThread", thread });
+        if (createdCwd !== cwd) dispatch({ type: "settings", settings: { cwd: createdCwd } });
+        guardedThreadId = thread.id;
+        cwdUpdateRevision = threadCwdUpdatesRef.current.get(thread.id)?.revision ?? 0;
+        if (createdCwd !== cwd) {
+          throw new Error("Working directory changed while preparing the message; nothing was sent");
+        }
+        assertSelectionUnchanged();
       }
       if (existingThread) {
+        const resumeAuthorityRevision = captureThreadCwdAuthorityRevision();
         const resumed = await rpc(
           "thread/resume",
           existingThreadResumeParams(thread.id, sandboxOverride, state.settings.sandbox),
@@ -1403,8 +1619,20 @@ export default function App() {
         assertSelectionUnchanged();
         if (sandboxOverride) setSandboxOverride(null);
         const updatedThread = extractThread(resumed);
+        const resumedCandidateCwd = updatedThread?.cwd ?? readString(paramsRecord(resumed).cwd);
+        const resumedAuthority = resumedCandidateCwd
+          ? rememberAuthoritativeThreadCwd(
+              thread.id,
+              resumedCandidateCwd,
+              resumeAuthorityRevision,
+            )
+          : threadCwdUpdatesRef.current.get(thread.id);
+        const resumedCwd = resumedAuthority?.cwd || cwd;
+        if (resumedCwd !== cwd) {
+          throw new Error("Working directory changed while preparing the message; nothing was sent");
+        }
         if (updatedThread) {
-          thread = { ...updatedThread, turns: thread.turns };
+          thread = { ...updatedThread, cwd: resumedCwd, turns: thread.turns };
           dispatch({ type: "setCurrentThread", thread });
         }
       }
@@ -1434,7 +1662,18 @@ export default function App() {
       }
       throw error;
     }
-  }, [nextTurnSettings, refreshThreads, rememberImagePreviews, rpc, sandboxOverride, state.currentThread, state.settings, token]);
+  }, [
+    captureThreadCwdAuthorityRevision,
+    nextTurnSettings,
+    refreshThreads,
+    rememberAuthoritativeThreadCwd,
+    rememberImagePreviews,
+    rpc,
+    sandboxOverride,
+    state.currentThread,
+    state.settings,
+    token,
+  ]);
 
   const stopTurn = useCallback(async () => {
     if (!state.currentThread || !state.activeTurnId) return;
@@ -1633,6 +1872,7 @@ export default function App() {
           hasMore={state.turnHistory.nextCursor !== null}
           historyError={state.turnHistory.error}
           imagePreviews={imagePreviews}
+          onDownloadFile={(capability) => downloadFileCapability(capability, token)}
           onLoadEarlier={() => void loadEarlierTurns()}
           onLoadTurnDetail={(turnId) => void loadTurnDetail(turnId)}
           onRetryThread={() => {

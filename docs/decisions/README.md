@@ -16,6 +16,7 @@
 | [0010](0010-app-server-default-thread-history.md) | 已接受 | 新线程使用 app-server 的默认历史契约，同时保留分页线程的只读恢复能力。 |
 | [0011](0011-browser-local-image-previews.md) | 已接受 | 在同一浏览器配置文件和 Origin 的 IndexedDB 中有界保留已发送图片的预览。 |
 | [0012](0012-read-only-connection-recovery.md) | 已接受 | 通过只读快照恢复连接，不后台认领线程或重放未确认写请求。 |
+| [0013](0013-thread-working-directory-defaults-and-file-download-scope.md) | 已接受 | 将所选线程的 Working directory 用作新线程默认上下文和受限文件下载范围。 |
 
 英文索引见 [README.en.md](README.en.md)。
 
