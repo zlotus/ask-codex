@@ -456,7 +456,7 @@ async function openRichDetails(page) {
   }
 }
 
-async function inspectFileDownload(page, screenshotPath) {
+async function inspectFileDownload(page, screenshotPaths) {
   const trigger = page.getByRole("button", { name: "Download progress.md", exact: true });
   await trigger.scrollIntoViewIfNeeded();
   const initialBox = await trigger.boundingBox();
@@ -484,7 +484,7 @@ async function inspectFileDownload(page, screenshotPath) {
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
     };
   });
-  await page.screenshot({ path: screenshotPath, fullPage: true });
+  await page.screenshot({ path: screenshotPaths.confirm, fullPage: true });
 
   const confirm = page.getByRole("button", { name: "Confirm download progress.md", exact: true });
   const [download] = await Promise.all([
@@ -493,18 +493,37 @@ async function inspectFileDownload(page, screenshotPath) {
   ]);
   const started = page.getByRole("button", { name: "Download started progress.md", exact: true });
   await started.waitFor();
-  const completion = await started.evaluate((element) => ({
+  const startedFeedback = await started.evaluate((element) => ({
     ariaDisabled: element.getAttribute("aria-disabled") === "true",
     hasCheck: Boolean(element.querySelector(".lucide-check")),
     focused: document.activeElement === element,
+    label: element.querySelector(".markdown-file-download__label")?.textContent?.trim(),
+    horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+  }));
+  await page.screenshot({ path: screenshotPaths.started, fullPage: true });
+  const restored = page.getByRole("button", {
+    name: "Download already started progress.md",
+    exact: true,
+  });
+  await restored.waitFor();
+  await page.screenshot({ path: screenshotPaths.restored, fullPage: true });
+  const restoredBox = await restored.boundingBox();
+  const completion = await restored.evaluate((element) => ({
+    ariaDisabled: element.getAttribute("aria-disabled") === "true",
+    hasCheck: Boolean(element.querySelector(".lucide-check")),
+    focused: document.activeElement === element,
+    label: element.querySelector(".markdown-file-download__label")?.textContent?.trim(),
+    feedbackRemoved: !element.parentElement?.querySelector('[role="status"]'),
     horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
   }));
   await download.cancel().catch(() => undefined);
   return {
     initialVisible: Boolean(initialBox && initialBox.width > 0 && initialBox.height > 0),
     stableConfirmationWidth: Boolean(initialBox && Math.abs(initialBox.width - confirmationLayout.width) <= 1),
+    stableRestoredWidth: Boolean(initialBox && restoredBox && Math.abs(initialBox.width - restoredBox.width) <= 1),
     suggestedFilename: download.suggestedFilename(),
     confirmation: confirmationLayout,
+    startedFeedback,
     completion,
   };
 }
@@ -1177,7 +1196,11 @@ try {
   await page.getByRole("button", { name: "Close", exact: true }).click();
   const desktopFileDownload = await inspectFileDownload(
     page,
-    `${outputDirectory}/desktop-file-download-confirm.png`,
+    {
+      confirm: `${outputDirectory}/desktop-file-download-confirm.png`,
+      started: `${outputDirectory}/desktop-file-download-started.png`,
+      restored: `${outputDirectory}/desktop-file-download-restored.png`,
+    },
   );
 
   await addFixtureImage(page);
@@ -1296,7 +1319,11 @@ try {
   await page.getByRole("button", { name: "Close", exact: true }).click();
   const mobileFileDownload = await inspectFileDownload(
     page,
-    `${outputDirectory}/mobile-file-download-confirm.png`,
+    {
+      confirm: `${outputDirectory}/mobile-file-download-confirm.png`,
+      started: `${outputDirectory}/mobile-file-download-started.png`,
+      restored: `${outputDirectory}/mobile-file-download-restored.png`,
+    },
   );
   const mobileSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-sent-image.png`, fullPage: true });
@@ -1461,6 +1488,7 @@ try {
     desktopUsage.horizontalOverflow ||
     !desktopFileDownload.initialVisible ||
     !desktopFileDownload.stableConfirmationWidth ||
+    !desktopFileDownload.stableRestoredWidth ||
     desktopFileDownload.suggestedFilename !== "progress.md" ||
     !desktopFileDownload.confirmation.contained ||
     !desktopFileDownload.confirmation.confirmFocused ||
@@ -1468,9 +1496,16 @@ try {
       !control.contained || control.width < 27 || control.height < 27
     )) ||
     desktopFileDownload.confirmation.horizontalOverflow ||
+    !desktopFileDownload.startedFeedback.ariaDisabled ||
+    !desktopFileDownload.startedFeedback.hasCheck ||
+    !desktopFileDownload.startedFeedback.focused ||
+    desktopFileDownload.startedFeedback.label !== "Download started" ||
+    desktopFileDownload.startedFeedback.horizontalOverflow ||
     !desktopFileDownload.completion.ariaDisabled ||
     !desktopFileDownload.completion.hasCheck ||
     !desktopFileDownload.completion.focused ||
+    desktopFileDownload.completion.label !== "progress.md" ||
+    !desktopFileDownload.completion.feedbackRemoved ||
     desktopFileDownload.completion.horizontalOverflow ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
@@ -1551,6 +1586,7 @@ try {
     mobileUsage.horizontalOverflow ||
     !mobileFileDownload.initialVisible ||
     !mobileFileDownload.stableConfirmationWidth ||
+    !mobileFileDownload.stableRestoredWidth ||
     mobileFileDownload.suggestedFilename !== "progress.md" ||
     !mobileFileDownload.confirmation.contained ||
     !mobileFileDownload.confirmation.confirmFocused ||
@@ -1558,9 +1594,16 @@ try {
       !control.contained || control.width < 27 || control.height < 27
     )) ||
     mobileFileDownload.confirmation.horizontalOverflow ||
+    !mobileFileDownload.startedFeedback.ariaDisabled ||
+    !mobileFileDownload.startedFeedback.hasCheck ||
+    !mobileFileDownload.startedFeedback.focused ||
+    mobileFileDownload.startedFeedback.label !== "Download started" ||
+    mobileFileDownload.startedFeedback.horizontalOverflow ||
     !mobileFileDownload.completion.ariaDisabled ||
     !mobileFileDownload.completion.hasCheck ||
     !mobileFileDownload.completion.focused ||
+    mobileFileDownload.completion.label !== "progress.md" ||
+    !mobileFileDownload.completion.feedbackRemoved ||
     mobileFileDownload.completion.horizontalOverflow ||
     !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||

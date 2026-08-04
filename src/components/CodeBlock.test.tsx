@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
@@ -9,6 +9,7 @@ const CAPABILITY_C = "c".repeat(32);
 const CAPABILITY_D = "d".repeat(32);
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -143,12 +144,13 @@ describe("CodeBlock", () => {
     expect(screen.queryByRole("button", { name: "Download website" })).not.toBeInTheDocument();
   });
 
-  it("confirms a file download and exposes its pending and started states", async () => {
+  it("confirms a file download and exposes its pending, started, and consumed states", async () => {
+    vi.useFakeTimers();
     let finishDownload: (() => void) | undefined;
     const onDownloadFile = vi.fn(() => new Promise<void>((resolve) => {
       finishDownload = resolve;
     }));
-    const { rerender } = render(
+    const { rerender, unmount } = render(
       <Markdown
         fileDownloads={[{ href: "/tmp/report.txt", capabilityId: CAPABILITY_A }]}
         onDownloadFile={onDownloadFile}
@@ -173,14 +175,30 @@ describe("CodeBlock", () => {
     expect(screen.getByRole("button", { name: "Downloading report.txt" })).toHaveFocus();
     expect(screen.getByRole("status")).toHaveTextContent("Downloading");
 
-    finishDownload?.();
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Download started"));
+    await act(async () => {
+      finishDownload?.();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Download started");
     const started = screen.getByRole("button", { name: "Download started report.txt" });
     expect(started).toHaveAttribute("aria-disabled", "true");
     expect(started).toHaveFocus();
     expect(started).toHaveTextContent("Download started");
     expect(started.querySelector(".lucide-check")).toBeInTheDocument();
     fireEvent.click(started);
+    expect(onDownloadFile).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("group", { name: "Confirm download report.txt" })).not.toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1_999));
+    expect(screen.getByRole("button", { name: "Download started report.txt" })).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    const consumed = screen.getByRole("button", { name: "Download already started report.txt" });
+    expect(consumed).toHaveTextContent("report");
+    expect(consumed).toHaveAttribute("aria-disabled", "true");
+    expect(consumed.querySelector(".lucide-check")).toBeInTheDocument();
+    expect(consumed).toHaveFocus();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(consumed);
     expect(onDownloadFile).toHaveBeenCalledOnce();
     expect(screen.queryByRole("group", { name: "Confirm download report.txt" })).not.toBeInTheDocument();
 
@@ -194,6 +212,19 @@ describe("CodeBlock", () => {
     );
     expect(screen.getByRole("button", { name: "Download report.txt" })).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm download report.txt" }));
+    const timersBeforeStarted = vi.getTimerCount();
+    await act(async () => {
+      finishDownload?.();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "Download started report.txt" })).toBeInTheDocument();
+    const timersWithStartedFeedback = vi.getTimerCount();
+    expect(timersWithStartedFeedback).toBe(timersBeforeStarted + 1);
+    unmount();
+    expect(vi.getTimerCount()).toBeLessThan(timersWithStartedFeedback);
   });
 
   it("reports download failures accessibly and allows retrying", async () => {
@@ -230,6 +261,7 @@ describe("CodeBlock", () => {
   });
 
   it("shares one-shot capability state across repeated links", async () => {
+    vi.useFakeTimers();
     let finishDownload: (() => void) | undefined;
     const onDownloadFile = vi.fn(() => new Promise<void>((resolve) => {
       finishDownload = resolve;
@@ -250,11 +282,24 @@ describe("CodeBlock", () => {
     expect(onDownloadFile).toHaveBeenCalledOnce();
     expect(screen.getAllByRole("button", { name: "Downloading report.txt" })).toHaveLength(2);
 
-    finishDownload?.();
-    await waitFor(() => expect(
-      screen.getAllByRole("button", { name: "Download started report.txt" }),
-    ).toHaveLength(2));
+    await act(async () => {
+      finishDownload?.();
+      await Promise.resolve();
+    });
+    expect(screen.getAllByRole("button", { name: "Download started report.txt" })).toHaveLength(2);
     fireEvent.click(screen.getAllByRole("button", { name: "Download started report.txt" })[1]);
+    expect(onDownloadFile).toHaveBeenCalledOnce();
+
+    act(() => vi.advanceTimersByTime(2_000));
+    const consumed = screen.getAllByRole("button", { name: "Download already started report.txt" });
+    expect(consumed).toHaveLength(2);
+    expect(consumed[0]).toHaveTextContent("first");
+    expect(consumed[1]).toHaveTextContent("second");
+    expect(consumed[0].querySelector(".lucide-check")).toBeInTheDocument();
+    expect(consumed[1].querySelector(".lucide-check")).toBeInTheDocument();
+    expect(consumed[0]).toHaveAttribute("aria-disabled", "true");
+    expect(consumed[1]).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(consumed[1]);
     expect(onDownloadFile).toHaveBeenCalledOnce();
   });
 

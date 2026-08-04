@@ -34,13 +34,14 @@ const COMPACT_MARKDOWN_CHARACTERS = 120_000;
 const MAX_MARKDOWN_NODES = 2_000;
 const DOWNLOAD_ERROR_CHARACTERS = 300;
 const DOWNLOAD_LABEL_CHARACTERS = 120;
+const DOWNLOAD_STARTED_FEEDBACK_MS = 2_000;
 const MAX_DOWNLOAD_STATES = 32;
 const FILE_DOWNLOAD_CAPABILITY_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const ORIGINAL_LINK_HREF_PROPERTY = "data-ask-codex-original-href";
 const LOCATION_SUFFIX_PATTERN = /^(.*?):[1-9]\d{0,8}(?::[1-9]\d{0,8})?$/;
 const MARKDOWN_COMPLEXITY_NOTICE = "Additional Markdown omitted because it exceeds the rendering complexity limit.";
 
-type FileDownloadState = "idle" | "downloading" | "started";
+type FileDownloadState = "idle" | "downloading" | "started" | "consumed";
 
 interface FileDownloadProgress {
   state: FileDownloadState;
@@ -220,6 +221,22 @@ function downloadTargetName(href: string): string {
   return boundedDownloadText(leaf, "file");
 }
 
+function withDownloadProgress(
+  current: ReadonlyMap<string, FileDownloadProgress>,
+  capabilityId: string,
+  progress: FileDownloadProgress,
+): Map<string, FileDownloadProgress> {
+  const next = new Map(current);
+  next.delete(capabilityId);
+  next.set(capabilityId, progress);
+  while (next.size > MAX_DOWNLOAD_STATES) {
+    const oldest = next.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    next.delete(oldest);
+  }
+  return next;
+}
+
 function FileDownloadLink({
   capability,
   children,
@@ -237,6 +254,7 @@ function FileDownloadLink({
   const restoreFocusRef = useRef(false);
   const feedbackId = useId();
   const targetName = downloadTargetName(capability.href);
+  const downloaded = state === "started" || state === "consumed";
   const feedback = error || (
     state === "downloading" ? "Downloading" : state === "started" ? "Download started" : ""
   );
@@ -262,25 +280,35 @@ function FileDownloadLink({
     <span className="markdown-file-download">
       <button
         ref={downloadButtonRef}
-        className={`markdown-file-download__button${showingConfirmation ? " markdown-file-download__control--concealed" : ""}${state === "started" ? " markdown-file-download__button--downloaded" : ""}`}
+        className={`markdown-file-download__button${showingConfirmation ? " markdown-file-download__control--concealed" : ""}${downloaded ? " markdown-file-download__button--downloaded" : ""}`}
         type="button"
         aria-busy={state === "downloading" ? true : undefined}
-        aria-disabled={state === "downloading" || state === "started" ? true : undefined}
+        aria-disabled={state === "downloading" || downloaded ? true : undefined}
         aria-hidden={showingConfirmation}
         aria-describedby={feedback ? feedbackId : undefined}
         aria-label={
           state === "downloading"
             ? `Downloading ${targetName}`
-            : state === "started" ? `Download started ${targetName}` : `Download ${targetName}`
+            : state === "started"
+              ? `Download started ${targetName}`
+              : state === "consumed"
+                ? `Download already started ${targetName}`
+                : `Download ${targetName}`
         }
         tabIndex={showingConfirmation ? -1 : undefined}
-        title={state === "started" ? `Download started ${targetName}` : `Download ${targetName}`}
+        title={
+          state === "started"
+            ? `Download started ${targetName}`
+            : state === "consumed"
+              ? `Download already started ${targetName}`
+              : `Download ${targetName}`
+        }
         onClick={() => {
-          if (state === "downloading" || state === "started") return;
+          if (state !== "idle") return;
           setConfirming(true);
         }}
       >
-        {state === "started"
+        {downloaded
           ? <Check size={14} aria-hidden="true" />
           : state === "downloading"
           ? <LoaderCircle className="spin" size={14} aria-hidden="true" />
@@ -375,32 +403,61 @@ export function Markdown({
     () => new Map<string, FileDownloadProgress>(),
   );
   const inFlightDownloadsRef = useRef(new Set<string>());
+  const downloadFeedbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    const timers = downloadFeedbackTimersRef.current;
+    return () => {
+      mountedRef.current = false;
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
   const downloadFile = useCallback(async (capability: FileDownloadCapability): Promise<void> => {
     if (!onDownloadFile || inFlightDownloadsRef.current.has(capability.capabilityId)) return;
+    const previousTimer = downloadFeedbackTimersRef.current.get(capability.capabilityId);
+    if (previousTimer !== undefined) {
+      clearTimeout(previousTimer);
+      downloadFeedbackTimersRef.current.delete(capability.capabilityId);
+    }
     inFlightDownloadsRef.current.add(capability.capabilityId);
-    setDownloadStates((current) => {
-      const next = new Map(current);
-      next.delete(capability.capabilityId);
-      next.set(capability.capabilityId, { state: "downloading", error: "" });
-      while (next.size > MAX_DOWNLOAD_STATES) {
-        const oldest = next.keys().next().value as string | undefined;
-        if (oldest === undefined) break;
-        next.delete(oldest);
-      }
-      return next;
-    });
+    setDownloadStates((current) => withDownloadProgress(
+      current,
+      capability.capabilityId,
+      { state: "downloading", error: "" },
+    ));
     try {
       await onDownloadFile(capability);
-      setDownloadStates((current) => new Map(current).set(
+      if (!mountedRef.current) return;
+      setDownloadStates((current) => withDownloadProgress(
+        current,
         capability.capabilityId,
         { state: "started", error: "" },
       ));
+      const timer = setTimeout(() => {
+        downloadFeedbackTimersRef.current.delete(capability.capabilityId);
+        setDownloadStates((current) => {
+          if (current.get(capability.capabilityId)?.state !== "started") return current;
+          return withDownloadProgress(
+            current,
+            capability.capabilityId,
+            { state: "consumed", error: "" },
+          );
+        });
+      }, DOWNLOAD_STARTED_FEEDBACK_MS);
+      downloadFeedbackTimersRef.current.set(capability.capabilityId, timer);
     } catch (cause) {
+      if (!mountedRef.current) return;
       const message = errorMessage(cause).trim() || "Unknown error";
-      setDownloadStates((current) => new Map(current).set(capability.capabilityId, {
-        state: "idle",
-        error: `Download failed: ${message.slice(0, DOWNLOAD_ERROR_CHARACTERS)}`,
-      }));
+      setDownloadStates((current) => withDownloadProgress(
+        current,
+        capability.capabilityId,
+        {
+          state: "idle",
+          error: `Download failed: ${message.slice(0, DOWNLOAD_ERROR_CHARACTERS)}`,
+        },
+      ));
     } finally {
       inFlightDownloadsRef.current.delete(capability.capabilityId);
     }
