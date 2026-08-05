@@ -77,7 +77,10 @@ describe("ApprovalPanel", () => {
         requests={[{
           id: "legacy-1",
           method: "execCommandApproval",
-          params: { command: ["npm", "test"] },
+          params: {
+            command: ["npm", "test"],
+            availableDecisions: ["approved", "abort"],
+          },
           receivedAt: 1,
         }]}
         onResolve={onResolve}
@@ -87,6 +90,10 @@ describe("ApprovalPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
     expect(onResolve).toHaveBeenCalledWith("legacy-1", { decision: "approved" });
+
+    onResolve.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(onResolve).toHaveBeenCalledWith("legacy-1", { decision: "abort" });
   });
 
   it("shows security-relevant approval context", () => {
@@ -114,6 +121,8 @@ describe("ApprovalPanel", () => {
   });
 
   it("only offers decisions declared available by app-server", () => {
+    const onResolve = vi.fn();
+    const onReject = vi.fn();
     render(
       <ApprovalPanel
         requests={[{
@@ -122,12 +131,61 @@ describe("ApprovalPanel", () => {
           params: { command: "true", availableDecisions: ["accept", "decline"] },
           receivedAt: 1,
         }]}
-        onResolve={vi.fn()}
-        onReject={vi.fn()}
+        onResolve={onResolve}
+        onReject={onReject}
       />,
     );
 
     expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "For session" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(onResolve).toHaveBeenCalledWith("limited-command", { decision: "decline" });
+    expect(onReject).not.toHaveBeenCalled();
+  });
+
+  it("uses cancel or a fail-closed error when no decline decision is offered", () => {
+    const onResolve = vi.fn();
+    const onReject = vi.fn();
+    const { rerender } = render(
+      <ApprovalPanel
+        requests={[{
+          id: "cancel-only",
+          method: "item/commandExecution/requestApproval",
+          params: { command: "true", availableDecisions: ["cancel"] },
+          receivedAt: 1,
+        }]}
+        onResolve={onResolve}
+        onReject={onReject}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onResolve).toHaveBeenCalledWith("cancel-only", { decision: "cancel" });
+    onResolve.mockClear();
+
+    rerender(
+      <ApprovalPanel
+        requests={[{
+          id: "unsupported-only",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            command: "true",
+            availableDecisions: [{
+              acceptWithExecpolicyAmendment: { execpolicy_amendment: ["git"] },
+            }],
+          },
+          receivedAt: 1,
+        }]}
+        onResolve={onResolve}
+        onReject={onReject}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject request" }));
+    expect(onReject).toHaveBeenCalledWith(
+      "unsupported-only",
+      "Ask Codex cannot return any offered decision for item/commandExecution/requestApproval",
+    );
+    expect(onResolve).not.toHaveBeenCalled();
   });
 });

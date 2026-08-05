@@ -705,13 +705,14 @@ describe("ItemRenderer", () => {
     assertDiffFollowsMessages();
   });
 
-  it("makes an unrecoverable oversized turn projection explicit", () => {
+  it("makes unrecoverable turn projections explicit", () => {
     render(<TurnView turn={{
       id: "turn-1",
       items: [],
-      recoveryOmissions: ["turn/diff/updated"],
+      recoveryOmissions: ["turn/diff/updated", "turn/plan/updated"],
     }} />);
 
     expect(screen.getByText(/latest turn diff exceeded the gateway limit/)).toBeInTheDocument();
+    expect(screen.getByText(/latest turn plan could not be recovered/)).toBeInTheDocument();
   });
 });

@@ -30,6 +30,7 @@ import {
 } from "./file-downloads.js";
 import {
   assertSafeBind,
+  ClientInputError,
   ClientRpcError,
   isAllowedOrigin,
   isHttpAuthorized,
@@ -51,7 +52,11 @@ import {
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
 } from "./rpc-policy.js";
-import { normalizeServerRequestResponse } from "./server-request-policy.js";
+import {
+  assertServerRequestRoutable,
+  normalizeServerRequestResponse,
+} from "./server-request-policy.js";
+import { TurnPlanCache } from "./turn-plan-cache.js";
 import {
   isRecord,
   isRpcId,
@@ -183,9 +188,9 @@ function waitForFirstFileDownloadChunk(
 }
 
 function turnIdFromStartResult(result: unknown): string | undefined {
-  const candidate = isRecord(result) && isRecord(result.turn) ? result.turn : result;
-  return isRecord(candidate) && typeof candidate.id === "string" && candidate.id
-    ? candidate.id
+  const turn = isRecord(result) && isRecord(result.turn) ? result.turn : undefined;
+  return turn && typeof turn.id === "string" && turn.id
+    ? turn.id
     : undefined;
 }
 
@@ -195,6 +200,52 @@ function turnIdFromNotification(params: unknown): string | undefined {
   return isRecord(params.turn) && typeof params.turn.id === "string" && params.turn.id
     ? params.turn.id
     : undefined;
+}
+
+const OVERRIDABLE_SANDBOX_POLICY_TYPES = new Set([
+  "dangerFullAccess",
+  "readOnly",
+  "workspaceWrite",
+]);
+const SANDBOX_POLICY_TYPES = new Set([
+  ...OVERRIDABLE_SANDBOX_POLICY_TYPES,
+  "externalSandbox",
+]);
+const SANDBOX_POLICY_TYPE_BY_MODE: Readonly<Record<string, string>> = {
+  "danger-full-access": "dangerFullAccess",
+  "read-only": "readOnly",
+  "workspace-write": "workspaceWrite",
+};
+
+function resumeSandboxOverride(params: unknown): string | undefined {
+  return isRecord(params) && typeof params.sandbox === "string"
+    ? params.sandbox
+    : undefined;
+}
+
+function resumeResultSandboxType(result: unknown, threadId: string): string {
+  const response = isRecord(result) ? result : undefined;
+  const thread = response && isRecord(response.thread) ? response.thread : undefined;
+  if (thread?.id !== threadId) {
+    throw new ClientInputError("thread/resume could not verify the existing sandbox");
+  }
+
+  const sandbox = response && isRecord(response.sandbox) ? response.sandbox : undefined;
+  if (typeof sandbox?.type !== "string" || !SANDBOX_POLICY_TYPES.has(sandbox.type)) {
+    throw new ClientInputError("thread/resume could not verify the existing sandbox");
+  }
+  return sandbox.type;
+}
+
+function assertResumeSandboxOverrideSafe(sandboxType: string): void {
+  if (sandboxType === "externalSandbox") {
+    throw new ClientInputError(
+      "thread/resume cannot override an externally managed sandbox",
+    );
+  }
+  if (!OVERRIDABLE_SANDBOX_POLICY_TYPES.has(sandboxType)) {
+    throw new ClientInputError("thread/resume could not verify the existing sandbox");
+  }
 }
 
 function attachmentTurnKey(threadId: string, turnId: string): string {
@@ -424,11 +475,16 @@ export class AskCodexServer {
   private readonly pendingAttachmentStarts = new Map<string, number>();
   private readonly attachments: AttachmentStore;
   private readonly fileDownloads: FileDownloadStore;
+  private readonly turnPlans = new TurnPlanCache();
   private readonly createFileDownloadTransferTimeout: CreateFileDownloadTransferTimeout;
   private readonly pendingServerRequests = new Map<string, PendingServerRequest>();
   private readonly inFlightRpc = new Map<WebSocket, number>();
+  private readonly threadOwnershipRpcTails = new Map<string, Promise<boolean>>();
+  private readonly activeSandboxResumeProbes = new Set<string>();
+  private readonly blockedSandboxResumeProbes = new Set<string>();
   private totalInFlightRpc = 0;
   private inFlightAttachmentUploads = 0;
+  private codexErrorRevision = 0;
   private started = false;
 
   constructor(
@@ -787,15 +843,20 @@ export class AskCodexServer {
 
   private configureWebSocket(): void {
     this.httpServer.on("upgrade", (request, socket, head) => {
+      const requestTarget = request.url ?? "/";
       let requestUrl: URL;
       try {
-        requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "invalid"}`);
+        requestUrl = new URL(requestTarget, `http://${request.headers.host ?? "invalid"}`);
       } catch {
         this.rejectUpgrade(socket, 400, "Bad Request");
         return;
       }
       if (requestUrl.pathname !== "/ws") {
         this.rejectUpgrade(socket, 404, "Not Found");
+        return;
+      }
+      if (requestTarget !== "/ws") {
+        this.rejectUpgrade(socket, 400, "Bad Request");
         return;
       }
       if (!isAllowedOrigin(
@@ -886,7 +947,9 @@ export class AskCodexServer {
 
   private configureCodexEvents(): void {
     this.codex.on("status", (status) => this.handleCodexStatus(status));
-    this.codex.on("notification", (method, params) => {
+    this.codex.on("notification", (method, params, emittedAtMs) => {
+      const gatewayReceivedAtMs = Date.now();
+      this.observeSandboxResumeProbe(method, params);
       this.fileDownloads.observeNotification(method, params);
       if (method === "serverRequest/resolved" && isRecord(params) && isRpcId(params.requestId)) {
         this.pendingServerRequests.delete(rpcIdKey(params.requestId));
@@ -897,10 +960,39 @@ export class AskCodexServer {
         if (threadId && turnId) this.completeAttachmentTurn(threadId, turnId);
       }
       const projectedParams = sanitizeBrowserNotificationParams(method, params);
+      const planObservation = this.turnPlans.observeNotification(method, projectedParams, {
+        emittedAtMs,
+        gatewayReceivedAtMs,
+      });
+      if (planObservation.recoveryRequired) {
+        this.broadcast({
+          type: "notification",
+          method: "gateway/resyncRequired",
+          params: {
+            reason: "planUnavailable",
+            lostMethod: method,
+            ...(planObservation.threadId === undefined
+              ? {}
+              : { threadId: planObservation.threadId }),
+            ...(planObservation.turnId === undefined
+              ? {}
+              : { turnId: planObservation.turnId }),
+          },
+          ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+          gatewayReceivedAtMs,
+        });
+        return;
+      }
+      const decoratedParams = this.turnPlans.decorateNotification(
+        method,
+        this.fileDownloads.decorateNotification(method, planObservation.projectedParams),
+      );
       this.broadcast({
         type: "notification",
         method,
-        params: this.fileDownloads.decorateNotification(method, projectedParams),
+        params: decoratedParams,
+        ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+        gatewayReceivedAtMs,
       });
     });
     this.codex.on("request", (id, method, params) => {
@@ -962,6 +1054,7 @@ export class AskCodexServer {
   ): Promise<void> {
     let attachmentLeases: AttachmentLease[] = [];
     let pendingAttachmentThreadId: string | undefined;
+    const requestCodexErrorRevision = this.codexErrorRevision;
     try {
       if (!ALLOWED_BROWSER_RPC_METHODS.has(message.method)) {
         throw new MethodNotAllowedError(message.method);
@@ -991,26 +1084,18 @@ export class AskCodexServer {
           (this.pendingAttachmentStarts.get(existingThreadId) ?? 0) + 1,
         );
       }
-      if (
-        existingThreadId &&
-        (message.method === "thread/resume" || message.method === "turn/start")
-      ) {
-        this.ownership.set(existingThreadId, client);
-      }
-
       const fileDownloadAuthorityRevision = this.fileDownloads.captureAuthorityRevision();
-      const rawResult = await this.codex.request(message.method, codexParams);
+      const rawResult = await this.requestCodexForBrowserRpc(
+        client,
+        message.method,
+        codexParams,
+        requestCodexErrorRevision,
+      );
       if (message.method === "turn/start" && attachmentLeases.length > 0) {
         const turnId = turnIdFromStartResult(rawResult);
         if (existingThreadId && turnId) {
           this.holdAttachmentLeases(existingThreadId, turnId, attachmentLeases);
           attachmentLeases = [];
-        }
-      }
-      if (message.method === "thread/start") {
-        const newThreadId = threadIdFromStartResult(rawResult);
-        if (newThreadId) {
-          this.ownership.set(newThreadId, client);
         }
       }
       const canDecorateFileDownloads = this.fileDownloads.observeRpcResult(
@@ -1019,8 +1104,9 @@ export class AskCodexServer {
         rawResult,
         fileDownloadAuthorityRevision,
       );
+      this.turnPlans.observeRpcResult(message.method, sanitizedParams);
       const projectedResult = sanitizeBrowserRpcResult(message.method, rawResult);
-      const result = canDecorateFileDownloads
+      const fileDecoratedResult = canDecorateFileDownloads
           ? this.fileDownloads.decorateRpcResult(
             message.method,
             sanitizedParams,
@@ -1028,6 +1114,11 @@ export class AskCodexServer {
             fileDownloadAuthorityRevision,
           )
         : projectedResult;
+      const result = this.turnPlans.decorateRpcResult(
+        message.method,
+        sanitizedParams,
+        fileDecoratedResult,
+      );
       this.send(client, { type: "rpcResult", id: message.id, result });
     } catch (error) {
       this.send(client, {
@@ -1045,6 +1136,166 @@ export class AskCodexServer {
         await Promise.allSettled(attachmentLeases.map((lease) => lease.release()));
       }
     }
+  }
+
+  private async requestCodexForBrowserRpc(
+    client: WebSocket,
+    method: string,
+    params: unknown,
+    requestCodexErrorRevision: number,
+  ): Promise<unknown> {
+    if (method === "thread/start") {
+      this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+      const result = await this.codex.requestWithResultObserver(method, params, (result) => {
+        this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
+        const threadId = threadIdFromStartResult(result);
+        if (!threadId) {
+          throw new Error("Codex app-server returned an invalid thread/start result");
+        }
+        this.claimThreadOwnership(threadId, client);
+      });
+      this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
+      return result;
+    }
+    if (method !== "thread/resume" && method !== "turn/start") {
+      return this.codex.request(method, params);
+    }
+
+    const threadId = threadIdFromParams(params);
+    if (!threadId) {
+      throw new ClientInputError(`${method} threadId must be a non-empty string`);
+    }
+    return this.serializeThreadOwnershipRpc(threadId, method, async (setFailureOutcomeKnown) => {
+      setFailureOutcomeKnown(true);
+      this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+      const sandboxOverride = method === "thread/resume"
+        ? resumeSandboxOverride(params)
+        : undefined;
+      if (sandboxOverride !== undefined) {
+        this.activeSandboxResumeProbes.add(threadId);
+        this.blockedSandboxResumeProbes.delete(threadId);
+        try {
+          setFailureOutcomeKnown(false);
+          const probeResult = await this.codex.request("thread/resume", {
+            threadId,
+            approvalPolicy: "on-request",
+            approvalsReviewer: "user",
+            excludeTurns: true,
+          });
+          const probeSandboxType = resumeResultSandboxType(probeResult, threadId);
+          setFailureOutcomeKnown(true);
+          assertResumeSandboxOverrideSafe(probeSandboxType);
+          if (this.blockedSandboxResumeProbes.has(threadId)) {
+            throw new ClientInputError(
+              "thread/resume could not verify the existing sandbox",
+            );
+          }
+        } finally {
+          this.activeSandboxResumeProbes.delete(threadId);
+          this.blockedSandboxResumeProbes.delete(threadId);
+        }
+        this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+      }
+      setFailureOutcomeKnown(false);
+      const result = await this.codex.requestWithResultObserver(method, params, (result) => {
+        this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
+        if (method === "thread/resume") {
+          const sandboxType = resumeResultSandboxType(result, threadId);
+          if (
+            sandboxOverride !== undefined &&
+            SANDBOX_POLICY_TYPE_BY_MODE[sandboxOverride] !== sandboxType
+          ) {
+            throw new ClientInputError("thread/resume did not apply the requested sandbox");
+          }
+        } else if (!turnIdFromStartResult(result)) {
+          throw new Error("Codex app-server returned an invalid turn/start result");
+        }
+        this.claimThreadOwnership(threadId, client);
+      });
+      setFailureOutcomeKnown(true);
+      this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
+      return result;
+    });
+  }
+
+  private assertCodexErrorRevisionCurrent(
+    requestCodexErrorRevision: number,
+    method: string,
+  ): void {
+    if (requestCodexErrorRevision !== this.codexErrorRevision) {
+      throw new Error(`${method} was canceled after Codex entered an error state`);
+    }
+  }
+
+  private assertThreadOwnershipRpcCanStart(
+    client: WebSocket,
+    requestCodexErrorRevision: number,
+    method: string,
+  ): void {
+    this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
+    if (!this.clients.has(client) || client.readyState !== WebSocket.OPEN) {
+      throw new Error(`${method} was canceled after its requester disconnected`);
+    }
+  }
+
+  private claimThreadOwnership(threadId: string, client: WebSocket): void {
+    if (this.clients.has(client) && client.readyState === WebSocket.OPEN) {
+      this.ownership.set(threadId, client);
+    }
+  }
+
+  private observeSandboxResumeProbe(method: string, params: unknown): void {
+    if (method !== "thread/settings/updated") return;
+    const threadId = threadIdFromParams(params);
+    if (!threadId) {
+      for (const activeThreadId of this.activeSandboxResumeProbes) {
+        this.blockedSandboxResumeProbes.add(activeThreadId);
+      }
+      return;
+    }
+    if (!this.activeSandboxResumeProbes.has(threadId)) return;
+
+    const threadSettings = isRecord(params) && isRecord(params.threadSettings)
+      ? params.threadSettings
+      : undefined;
+    const sandboxPolicy = threadSettings && isRecord(threadSettings.sandboxPolicy)
+      ? threadSettings.sandboxPolicy
+      : undefined;
+    if (
+      typeof sandboxPolicy?.type !== "string" ||
+      !OVERRIDABLE_SANDBOX_POLICY_TYPES.has(sandboxPolicy.type)
+    ) {
+      this.blockedSandboxResumeProbes.add(threadId);
+    }
+  }
+
+  private serializeThreadOwnershipRpc(
+    threadId: string,
+    method: string,
+    operation: (setFailureOutcomeKnown: (known: boolean) => void) => Promise<unknown>,
+  ): Promise<unknown> {
+    const previous = this.threadOwnershipRpcTails.get(threadId) ?? Promise.resolve(true);
+    let failureOutcomeKnown = false;
+    const result = previous.then((canContinue) => {
+      if (!canContinue) {
+        throw new Error(
+          `${method} was canceled because an earlier thread operation had an indeterminate result`,
+        );
+      }
+      return operation((known) => {
+        failureOutcomeKnown = known;
+      });
+    });
+    const tail = result.then(
+      () => true,
+      (error: unknown) => error instanceof CodexRpcError || failureOutcomeKnown,
+    );
+    this.threadOwnershipRpcTails.set(threadId, tail);
+    return result.finally(() => {
+      if (this.threadOwnershipRpcTails.get(threadId) === tail) {
+        this.threadOwnershipRpcTails.delete(threadId);
+      }
+    });
   }
 
   private holdAttachmentLeases(
@@ -1119,6 +1370,16 @@ export class AskCodexServer {
       }).catch(() => undefined);
       return;
     }
+    try {
+      assertServerRequestRoutable(message);
+    } catch (error) {
+      const code = error instanceof ClientRpcError ? error.code : -32_000;
+      void this.codex.respond(message.id, undefined, {
+        code,
+        message: "Ask Codex cannot safely handle this approval request",
+      }).catch(() => undefined);
+      return;
+    }
     const pending: PendingServerRequest = { message, recipients: new Set() };
     this.pendingServerRequests.set(key, pending);
     const owner = this.ownership.get(threadIdFromParams(message.params));
@@ -1180,6 +1441,7 @@ export class AskCodexServer {
 
   private handleCodexStatus(status: CodexStatusEvent): void {
     if (status.status === "error") {
+      this.codexErrorRevision += 1;
       this.fileDownloads.clearAuthority();
       this.pendingServerRequests.clear();
       const leases = [...this.activeAttachmentLeases.values()].flat();

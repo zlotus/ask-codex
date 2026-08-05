@@ -14,18 +14,25 @@ interface RequestCardProps {
   onResolve: ApprovalPanelProps["onResolve"];
 }
 
-function ApprovalRequest({ request, onResolve }: RequestCardProps) {
+function ApprovalRequest({
+  request,
+  onResolve,
+  onReject,
+}: RequestCardProps & Pick<ApprovalPanelProps, "onReject">) {
   const isFile = request.method === "item/fileChange/requestApproval" || request.method === "applyPatchApproval";
   const legacy = request.method === "execCommandApproval" || request.method === "applyPatchApproval";
   const decisions = legacy
-    ? { accept: "approved", session: "approved_for_session", decline: "denied" }
-    : { accept: "accept", session: "acceptForSession", decline: "decline" };
+    ? { accept: "approved", session: "approved_for_session", decline: "abort", cancel: "abort" }
+    : { accept: "accept", session: "acceptForSession", decline: "decline", cancel: "cancel" };
   const command = commandText({ id: "request", type: "commandExecution", ...request.params });
   const reason = readString(request.params.reason);
   const availableDecisions = Array.isArray(request.params.availableDecisions)
     ? request.params.availableDecisions.filter((decision): decision is string => typeof decision === "string")
     : null;
   const decisionIsAvailable = (decision: string) => !availableDecisions || availableDecisions.includes(decision);
+  const rejectionDecision = decisionIsAvailable(decisions.decline)
+    ? decisions.decline
+    : decisionIsAvailable(decisions.cancel) ? decisions.cancel : null;
   const context = Object.fromEntries(Object.entries(request.params).filter(([key, value]) => (
     value !== undefined &&
     value !== null &&
@@ -62,9 +69,19 @@ function ApprovalRequest({ request, onResolve }: RequestCardProps) {
             <CheckCheck size={15} aria-hidden="true" />For session
           </button>
         )}
-        <button type="button" className="button button--danger" onClick={() => onResolve(request.id, { decision: decisions.decline })}>
-          <X size={15} aria-hidden="true" />Decline
-        </button>
+        {rejectionDecision ? (
+          <button type="button" className="button button--danger" onClick={() => onResolve(request.id, { decision: rejectionDecision })}>
+            <X size={15} aria-hidden="true" />{rejectionDecision === decisions.decline ? "Decline" : "Cancel"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="button button--danger"
+            onClick={() => onReject(request.id, `Ask Codex cannot return any offered decision for ${request.method}`)}
+          >
+            <X size={15} aria-hidden="true" />Reject request
+          </button>
+        )}
       </div>
     </section>
   );
@@ -209,7 +226,14 @@ export function ApprovalPanel({ requests, onResolve, onReject }: ApprovalPanelPr
           return <QuestionRequest key={request.id} request={request} onResolve={onResolve} />;
         }
         if (COMMAND_APPROVAL_METHODS.has(request.method) || FILE_APPROVAL_METHODS.has(request.method)) {
-          return <ApprovalRequest key={request.id} request={request} onResolve={onResolve} />;
+          return (
+            <ApprovalRequest
+              key={request.id}
+              request={request}
+              onResolve={onResolve}
+              onReject={onReject}
+            />
+          );
         }
         if (
           request.method === "item/permissions/requestApproval" ||

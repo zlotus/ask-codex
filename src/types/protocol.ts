@@ -45,6 +45,8 @@ export interface NotificationMessage {
   type: "notification";
   method: string;
   params: unknown;
+  emittedAtMs?: number;
+  gatewayReceivedAtMs?: number;
 }
 
 export interface ServerRequestMessage {
@@ -113,6 +115,8 @@ export interface PlanStep {
 export interface TurnPlan {
   explanation?: string;
   plan: PlanStep[];
+  emittedAtMs?: number;
+  gatewayReceivedAtMs?: number;
 }
 
 export interface CodexTurn {
@@ -124,7 +128,7 @@ export interface CodexTurn {
   completedAt?: number | null;
   durationMs?: number | null;
   diff?: string;
-  plan?: TurnPlan;
+  plan?: TurnPlan | null;
   recoveryOmissions?: string[];
   historyDetail?: {
     cursor: string | null;

@@ -1074,6 +1074,84 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/read")).toHaveLength(1);
   });
 
+  it("restores a missed plan update from the read-only reconnect snapshot", async () => {
+    let recovering = false;
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (recovering && method === "thread/read") {
+        return Promise.resolve({ thread: existingThread });
+      }
+      if (recovering && method === "thread/turns/list") {
+        return Promise.resolve({
+          data: [{
+            id: "turn-new",
+            status: "inProgress",
+            itemsView: "full",
+            items: [],
+            plan: {
+              explanation: "Recovered after reconnecting.",
+              plan: [
+                { step: "Inspect", status: "completed" },
+                { step: "Repair", status: "completed" },
+                { step: "Verify", status: "inProgress" },
+              ],
+              emittedAtMs: 1_800_000_000_200,
+              gatewayReceivedAtMs: 1_800_000_000_210,
+            },
+          }],
+          nextCursor: null,
+          backwardsCursor: null,
+        });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: existingThread.id,
+        turnId: "turn-new",
+        explanation: "Initial live plan.",
+        plan: [
+          { step: "Inspect", status: "inProgress" },
+          { step: "Repair", status: "pending" },
+          { step: "Verify", status: "pending" },
+        ],
+      },
+      emittedAtMs: 1_800_000_000_100,
+      gatewayReceivedAtMs: 1_800_000_000_110,
+    }));
+    expect(screen.getByRole("button", {
+      name: /Step 1 of 3: Inspect/,
+    })).toBeInTheDocument();
+    const resumeCallsBeforeReconnect = socket.rpc.mock.calls
+      .filter(([method]) => method === "thread/resume").length;
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeDisabled());
+
+    recovering = true;
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+
+    expect(await screen.findByRole("button", {
+      name: /Step 3 of 3: Verify/,
+    })).toBeInTheDocument();
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/resume"))
+      .toHaveLength(resumeCallsBeforeReconnect);
+  });
+
   it("does not let an older thread list overwrite a newer reconnect snapshot cwd", async () => {
     const snapshotCwd = "/workspace/from-reconnect-read";
     let deferActiveList = false;

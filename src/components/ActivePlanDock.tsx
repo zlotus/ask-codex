@@ -34,7 +34,9 @@ export function ActivePlanDock({ plan, updateUnavailable = false }: ActivePlanDo
         className="active-plan-dock__summary"
         aria-controls={contentId}
         aria-expanded={open}
-        aria-label={`${open ? "Collapse" : "Expand"} current plan. ${accessibleState}`}
+        aria-label={`${open ? "Collapse" : "Expand"} current plan. ${accessibleState}${
+          updateUnavailable ? ". Latest plan update unavailable" : ""
+        }`}
         onClick={() => setOpen((current) => !current)}
       >
         <span className="active-plan-dock__title">
@@ -63,7 +65,7 @@ export function ActivePlanDock({ plan, updateUnavailable = false }: ActivePlanDo
       <div className="active-plan-dock__body" id={contentId} hidden={!open}>
         {updateUnavailable && (
           <p className="active-plan-dock__notice" role="status">
-            The latest plan update exceeded the gateway limit. This is the last available snapshot.
+            The latest plan update could not be recovered. This is the last available snapshot.
           </p>
         )}
         {plan.explanation && <p className="muted-copy">{plan.explanation}</p>}

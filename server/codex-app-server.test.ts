@@ -123,6 +123,176 @@ describe("CodexAppServer", () => {
     client.close();
   });
 
+  it("forwards only valid notification emission timestamps without changing params or order", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const client = new CodexAppServer({ spawnCodex: () => fakeProcess });
+    const notifications: Array<{
+      method: string;
+      params: unknown;
+      emittedAtMs: number | undefined;
+    }> = [];
+    client.on("notification", (method, params, emittedAtMs) => {
+      notifications.push({ method, params, emittedAtMs });
+    });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+
+    const notification = (sequence: number, emittedAtMs?: number): string => JSON.stringify({
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", sequence },
+      ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+    });
+    fakeProcess.stdout.write([
+      notification(1, 1_800_000_000_123),
+      notification(2),
+      notification(3, -1),
+      notification(4, 1.5),
+      notification(5, Number.MAX_SAFE_INTEGER + 1),
+      "",
+    ].join("\n"));
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(5));
+    expect(notifications).toEqual([
+      {
+        method: "turn/plan/updated",
+        params: { threadId: "thread-1", turnId: "turn-1", sequence: 1 },
+        emittedAtMs: 1_800_000_000_123,
+      },
+      {
+        method: "turn/plan/updated",
+        params: { threadId: "thread-1", turnId: "turn-1", sequence: 2 },
+        emittedAtMs: undefined,
+      },
+      {
+        method: "turn/plan/updated",
+        params: { threadId: "thread-1", turnId: "turn-1", sequence: 3 },
+        emittedAtMs: undefined,
+      },
+      {
+        method: "turn/plan/updated",
+        params: { threadId: "thread-1", turnId: "turn-1", sequence: 4 },
+        emittedAtMs: undefined,
+      },
+      {
+        method: "turn/plan/updated",
+        params: { threadId: "thread-1", turnId: "turn-1", sequence: 5 },
+        emittedAtMs: undefined,
+      },
+    ]);
+    client.close();
+  });
+
+  it("observes an RPC result before a later server request in the same stdout chunk", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const client = new CodexAppServer({ spawnCodex: () => fakeProcess });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+
+    const order: string[] = [];
+    client.on("request", () => order.push("serverRequest"));
+    const rpc = client.requestWithResultObserver(
+      "turn/start",
+      { threadId: "thread-1", input: [] },
+      () => order.push("result"),
+    );
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    fakeProcess.stdout.write([
+      JSON.stringify({
+        id: 2,
+        result: { turn: { id: "turn-1", status: "inProgress", items: [] } },
+      }),
+      JSON.stringify({
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-1" },
+      }),
+      "",
+    ].join("\n"));
+
+    await expect(rpc).resolves.toMatchObject({ turn: { id: "turn-1" } });
+    expect(order).toEqual(["result", "serverRequest"]);
+    client.close();
+  });
+
+  it("observes an RPC result before a later protocol error in the same stdout chunk", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const client = new CodexAppServer({ spawnCodex: () => fakeProcess });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+
+    const order: string[] = [];
+    client.on("status", ({ status }) => {
+      if (status === "error") order.push("error");
+    });
+    const rpc = client.requestWithResultObserver(
+      "turn/start",
+      { threadId: "thread-1", input: [] },
+      () => order.push("result"),
+    );
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    fakeProcess.stdout.write([
+      JSON.stringify({
+        id: 2,
+        result: { turn: { id: "turn-1", status: "inProgress", items: [] } },
+      }),
+      "not-json",
+      "",
+    ].join("\n"));
+
+    await expect(rpc).resolves.toMatchObject({ turn: { id: "turn-1" } });
+    expect(order).toEqual(["result", "error"]);
+    expect(client.status).toBe("error");
+    expect(client.error).toEqual({ message: "Codex app-server emitted invalid JSONL" });
+    expect(fakeProcess.killed).toBe(true);
+    client.close();
+  });
+
+  it("rejects observer failures and does not observe RPC errors", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const client = new CodexAppServer({ spawnCodex: () => fakeProcess });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/test" } });
+    await starting;
+
+    const throwingObserver = vi.fn(() => {
+      throw new Error("invalid observed result");
+    });
+    const invalidResult = client.requestWithResultObserver(
+      "turn/start",
+      { threadId: "thread-1", input: [] },
+      throwingObserver,
+    );
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    fakeProcess.send({
+      id: 2,
+      result: { turn: { id: "turn-1", status: "inProgress", items: [] } },
+    });
+    await expect(invalidResult).rejects.toThrow("invalid observed result");
+    expect(throwingObserver).toHaveBeenCalledOnce();
+
+    const errorObserver = vi.fn();
+    const rpcError = client.requestWithResultObserver(
+      "turn/start",
+      { threadId: "thread-1", input: [] },
+      errorObserver,
+    );
+    await vi.waitFor(() => expect(output).toHaveLength(4));
+    fakeProcess.send({ id: 3, error: { code: -32_001, message: "turn rejected" } });
+    await expect(rpcError).rejects.toThrow("turn rejected");
+    expect(errorObserver).not.toHaveBeenCalled();
+    client.close();
+  });
+
   it("does not pass the web access token to the Codex process", async () => {
     const previousToken = process.env.ASK_CODEX_TOKEN;
     process.env.ASK_CODEX_TOKEN = "gateway-secret";

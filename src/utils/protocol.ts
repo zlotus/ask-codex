@@ -8,6 +8,7 @@ import type {
   ImageDetail,
   InputModality,
   ModelInfo,
+  NotificationMessage,
   PlanStep,
   ServerMessage,
   SkillInfo,
@@ -73,6 +74,12 @@ export function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function diagnosticTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
 export function errorMessage(value: unknown): string {
   if (typeof value === "string") return value;
   if (value instanceof Error) return value.message;
@@ -106,10 +113,18 @@ export function parseServerMessage(value: unknown): ServerMessage | null {
       return typeof value.id === "string" && "error" in value
         ? (value as unknown as ServerMessage)
         : null;
-    case "notification":
-      return typeof value.method === "string"
-        ? (value as unknown as ServerMessage)
-        : null;
+    case "notification": {
+      if (typeof value.method !== "string") return null;
+      const emittedAtMs = diagnosticTimestamp(value.emittedAtMs);
+      const gatewayReceivedAtMs = diagnosticTimestamp(value.gatewayReceivedAtMs);
+      return {
+        type: "notification",
+        method: value.method,
+        params: value.params,
+        ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+        ...(gatewayReceivedAtMs === undefined ? {} : { gatewayReceivedAtMs }),
+      };
+    }
     case "request":
       return (typeof value.id === "string" || typeof value.id === "number") &&
         typeof value.method === "string"
@@ -132,6 +147,11 @@ export function normalizeTurn(value: unknown): CodexTurn | null {
   const rawItems = Array.isArray(value.items) ? value.items : [];
   const items = rawItems.map(normalizeItem).filter((item): item is CodexItem => item !== null);
   const turn: CodexTurn = { ...value, id: value.id, items };
+  if (Object.hasOwn(value, "plan")) {
+    turn.plan = value.plan === null ? null : parsePlan(value.plan) ?? null;
+  } else {
+    delete turn.plan;
+  }
   for (const field of ["startedAt", "completedAt", "durationMs"] as const) {
     const raw = value[field];
     if (raw === null || (typeof raw === "number" && Number.isFinite(raw) && raw >= 0)) {
@@ -389,13 +409,61 @@ export function commandText(item: CodexItem): string {
   return "Command";
 }
 
-export function parsePlan(value: unknown): TurnPlan | undefined {
-  if (!isRecord(value) || !Array.isArray(value.plan)) return undefined;
-  const plan: PlanStep[] = value.plan.flatMap((entry) => {
-    if (!isRecord(entry) || typeof entry.step !== "string" || typeof entry.status !== "string") return [];
-    return [{ step: entry.step, status: entry.status }];
-  });
-  return { explanation: readString(value.explanation), plan };
+const PLAN_STEP_STATUSES = new Set(["pending", "inProgress", "completed"]);
+const MAX_PLAN_STEPS = 128;
+const MAX_PLAN_EXPLANATION_BYTES = 32 * 1024;
+const MAX_PLAN_STEP_BYTES = 8 * 1024;
+const MAX_PLAN_SNAPSHOT_BYTES = 128 * 1024;
+const PLAN_TEXT_ENCODER = new TextEncoder();
+
+function planUtf8Bytes(value: string): number {
+  return PLAN_TEXT_ENCODER.encode(value).byteLength;
+}
+
+export function parsePlan(
+  value: unknown,
+  timing?: Pick<NotificationMessage, "emittedAtMs" | "gatewayReceivedAtMs">,
+): TurnPlan | undefined {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.plan) ||
+    value.plan.length > MAX_PLAN_STEPS
+  ) {
+    return undefined;
+  }
+  const explanation = readString(value.explanation);
+  if (
+    explanation !== undefined &&
+    planUtf8Bytes(explanation) > MAX_PLAN_EXPLANATION_BYTES
+  ) {
+    return undefined;
+  }
+  const plan: PlanStep[] = [];
+  for (const entry of value.plan) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.step !== "string" ||
+      planUtf8Bytes(entry.step) > MAX_PLAN_STEP_BYTES ||
+      typeof entry.status !== "string" ||
+      !PLAN_STEP_STATUSES.has(entry.status)
+    ) {
+      return undefined;
+    }
+    plan.push({ step: entry.step, status: entry.status });
+  }
+  const emittedAtMs = diagnosticTimestamp(timing?.emittedAtMs ?? value.emittedAtMs);
+  const gatewayReceivedAtMs = diagnosticTimestamp(
+    timing?.gatewayReceivedAtMs ?? value.gatewayReceivedAtMs,
+  );
+  const parsed: TurnPlan = {
+    explanation,
+    plan,
+    ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+    ...(gatewayReceivedAtMs === undefined ? {} : { gatewayReceivedAtMs }),
+  };
+  return planUtf8Bytes(JSON.stringify(parsed)) <= MAX_PLAN_SNAPSHOT_BYTES
+    ? parsed
+    : undefined;
 }
 
 export function parseQuestions(params: Record<string, unknown>): UserQuestion[] {

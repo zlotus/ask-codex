@@ -26,6 +26,8 @@ export interface NotificationMessage {
   type: "notification";
   method: string;
   params: unknown;
+  emittedAtMs?: number;
+  gatewayReceivedAtMs?: number;
 }
 
 export interface RequestMessage {

@@ -75,7 +75,11 @@ describe("ActivePlanDock", () => {
 
     rerender(<ActivePlanDock plan={initialPlan} updateUnavailable />);
     expect(screen.getByText("Update unavailable")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /Expand current plan/ }));
-    expect(screen.getByRole("status")).toHaveTextContent("last available snapshot");
+    const toggle = screen.getByRole("button", { name: /Expand current plan/ });
+    expect(toggle).toHaveAccessibleName(/Latest plan update unavailable/);
+    fireEvent.click(toggle);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "latest plan update could not be recovered",
+    );
   });
 });

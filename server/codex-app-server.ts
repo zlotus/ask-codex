@@ -14,7 +14,7 @@ export interface CodexStatusEvent {
 
 interface CodexEventMap {
   status: [status: CodexStatusEvent];
-  notification: [method: string, params: unknown];
+  notification: [method: string, params: unknown, emittedAtMs?: number];
   request: [id: RpcId, method: string, params: unknown];
 }
 
@@ -37,6 +37,11 @@ export interface CodexGateway {
   readonly error: { message: string } | undefined;
   start(): Promise<void>;
   request(method: string, params: unknown): Promise<unknown>;
+  requestWithResultObserver(
+    method: string,
+    params: unknown,
+    onResult: (result: unknown) => void,
+  ): Promise<unknown>;
   respond(id: RpcId, result: unknown, error?: unknown): Promise<void>;
   close(): void;
   on(
@@ -45,7 +50,7 @@ export interface CodexGateway {
   ): this;
   on(
     event: "notification",
-    listener: (method: string, params: unknown) => void,
+    listener: (method: string, params: unknown, emittedAtMs?: number) => void,
   ): this;
   on(
     event: "request",
@@ -57,6 +62,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: NodeJS.Timeout;
+  onResult?: (result: unknown) => void;
 }
 
 const DEFAULT_MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
@@ -74,6 +80,12 @@ function errorMessage(value: unknown): string {
     return value.message;
   }
   return "Codex app-server returned an RPC error";
+}
+
+function notificationTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function cleanStatusError(value: unknown): { message: string } {
@@ -171,6 +183,24 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
       throw new Error("Codex app-server is not ready");
     }
     return this.sendRequest(this.child, method, params, this.requestTimeoutMs);
+  }
+
+  async requestWithResultObserver(
+    method: string,
+    params: unknown,
+    onResult: (result: unknown) => void,
+  ): Promise<unknown> {
+    await this.start();
+    if (!this.child || this._status !== "ready") {
+      throw new Error("Codex app-server is not ready");
+    }
+    return this.sendRequest(
+      this.child,
+      method,
+      params,
+      this.requestTimeoutMs,
+      onResult,
+    );
   }
 
   async respond(id: RpcId, result: unknown, error?: unknown): Promise<void> {
@@ -338,6 +368,7 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     method: string,
     params: unknown,
     timeoutMs: number,
+    onResult?: (result: unknown) => void,
   ): Promise<unknown> {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
@@ -347,7 +378,7 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
         }
       }, timeoutMs);
       timer.unref();
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, onResult });
       void this.writeLine(child, { method, id, params }).catch((error: unknown) => {
         const pending = this.pending.get(id);
         if (pending) {
@@ -397,7 +428,12 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
       return;
     }
     if (typeof message.method === "string") {
-      this.emit("notification", message.method, message.params);
+      const emittedAtMs = notificationTimestamp(message.emittedAtMs);
+      if (emittedAtMs === undefined) {
+        this.emit("notification", message.method, message.params);
+      } else {
+        this.emit("notification", message.method, message.params, emittedAtMs);
+      }
       return;
     }
     if (!isRpcId(message.id)) {
@@ -413,7 +449,12 @@ export class CodexAppServer extends EventEmitter<CodexEventMap> implements Codex
     if (Object.prototype.hasOwnProperty.call(message, "error")) {
       pending.reject(new CodexRpcError(message.error));
     } else {
-      pending.resolve(message.result);
+      try {
+        pending.onResult?.(message.result);
+        pending.resolve(message.result);
+      } catch (error) {
+        pending.reject(error);
+      }
     }
   }
 

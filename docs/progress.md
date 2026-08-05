@@ -2,14 +2,16 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-04
+最后审阅：2026-08-05
 
 ## 当前里程碑
 
-线程工作目录的连续性和文件交接已经实现。新线程默认继承当前所选线程的精确 cwd，没有
-选择时才使用 bootstrap 初始目录，并始终从 `workspace-write` 沙箱开始。已完成 Agent
-消息明确链接的 cwd 内普通文件可以通过二次确认下载；浏览器只兑换短期一次性 capability，
-不能提交宿主机路径，网关也不使用全局下载根列表。下一项近期工作尚未选定。
+线程工作目录的连续性、文件交接和本轮网关安全硬化已经完成。新线程默认继承当前所选线程的
+精确 cwd，没有选择时才使用 bootstrap 初始目录，并始终从 `workspace-write` 沙箱开始。
+已完成 Agent 消息明确链接的 cwd 内普通文件可以通过二次确认下载；浏览器只兑换短期一次性
+capability，不能提交宿主机路径，网关也不使用全局下载根列表。审批决策、线程 owner、
+`externalSandbox` 和 WebSocket request-target 的安全欠账已关闭。结构化 Plan 现在也能从
+有界网关快照跨断线、只读重同步、切换线程和 Codex 子进程重启恢复。下一项近期工作尚未选定。
 
 ## 当前基线
 
@@ -64,7 +66,10 @@
   则保留固定的推理状态槽，活动推理显示动画，无活动推理时显示灰态，从而避免推理生命周期
   反复改变信息流高度。当前轮次的结构化计划会同时在输入区上方显示为普通布局的紧凑摘要，
   可展开查看有界滚动的完整步骤；轮次结束后摘要消失，历史计划仍留在原轮次中。
-  轮次 diff 明确呈现为位于轮次末尾的整轮变更汇总；其后的轮次 footer 会显示
+  实时 Plan 与恢复快照使用同一份严格有界投影；网关按线程与轮次缓存最新完整通知，并将其
+  附加到只读轮次响应和生命周期通知。Plan 对象、明确不可恢复的 `null` 和缓存未知的缺失字段
+  分别覆盖、清除或保留浏览器状态，重同步快照也会压过它已覆盖的较早缓冲 Plan。轮次 diff
+  明确呈现为位于轮次末尾的整轮变更汇总；其后的轮次 footer 会显示
   app-server 原生的开始时间与总耗时，缺失字段则静默省略。流和消息大小均有明确边界。
   完成或重同步返回的非完整轮次快照不会清空已经流式物化的内容，只有明确的 `full` 快照
   可以替换条目。
@@ -79,8 +84,10 @@
   `ASK_CODEX_DOWNLOAD_ROOTS`。消费时以固定的 canonical 根目录 fd 解析目标，并复核根
   `dev`/`ino`、目标 `realpath`、已打开文件 fd、普通文件类型、25 MiB 大小、2 个并发下载
   和 2 分钟活动传输时限。
-- 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。捕获到
-  的命令审批理由会在当前浏览器会话中继续绑定到对应的确切命令条目。
+- 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。审批按钮和
+  网关响应都收窄到协议允许且 app-server 在 `availableDecisions` 中实际提供的字符串决策；
+  畸形、未知或只有客户端不支持的结构化决策会失败关闭。捕获到的命令审批理由会在当前
+  浏览器会话中继续绑定到对应的确切命令条目。
 - 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
   控件，以及中断活跃轮次。有当前选择时，新线程 cwd 依次取精确匹配的当前线程、Active
   或 Archived 摘要；没有选择时取 bootstrap 默认 cwd。新线程沙箱始终重置为
@@ -95,6 +102,11 @@
   接受空参数并向上游发送无参数请求；结果最多投影 366 个每日 bucket 和 32 个限额 bucket，
   丢弃账户身份、reset-credit 细节和未知字段。`account/rateLimits/updated` 通知使用同样的
   逐字段稀疏投影，三类账户读取错误均使用固定消息脱敏。
+- WebSocket 升级只接受原始 request-target 精确等于 `/ws`，在认证前拒绝 query、fragment、
+  归一化路径和 authority/absolute-form 混入。普通 `thread/resume` 不发送 sandbox 覆盖，
+  因而保留 `externalSandbox`；显式覆盖先用固定参数探测权威 sandbox，并对不可信响应或并发
+  settings 通知失败关闭。同线程的 resume/turn start 串行，未知结果会取消已排队后继；
+  thread owner 只在上游返回结构有效的成功结果时同步提交，失败、断线或畸形结果不会抢占旧 owner。
 - 输入框支持选择、粘贴、预览、删除和单独发送 PNG、JPEG、WebP 图片，并只在模型明确
   声明图片输入能力时开放入口。图片二进制通过复用现有 HTTP 令牌与 Origin/Host 策略的
   临时附件端点上传，一次性 ID 在网关内重建为官方 `localImage` 路径；数量、字节、并发、
@@ -138,6 +150,10 @@
 - 文件下载不会列目录、接受浏览器指定路径、预览任意格式，或导出没有出现在合格完成态
   Agent 消息中的文件。capability 只存在于当前服务进程且短期一次有效；服务重启、过期或
   首次消费后，需要重新读取合格历史才能获得新 capability。
+- 当前 Codex CLI 的官方 Turn 和读取响应不含结构化 Plan。Plan 缓存只存在于当前 Ask Codex
+  网关进程并受条目、总字节和单次响应预算限制；网关进程重启、记录逐出或通知在抵达网关前
+  丢失后，新页面或另一设备无法从原生历史重建该 Plan。已有浏览器在快照字段缺失时会保留
+  自己最后观察到的状态，但不能据此证明它仍是最新状态。
 - 轮次 steering、跨设备持久消息队列、固定宿主机操作和嵌入式 PTY 尚未实现。
 
 ## 后续步骤
@@ -172,24 +188,33 @@
   引入路径或命令透传。
 - 自动恢复和只读视图不得声称拥有线程，也不得把审批请求从启动或恢复该线程的浏览器
   重定向出去。普通重连和 Codex 重启只能自动重试有界只读请求，不得重放未确认写操作。
+- `turn/plan/updated` 是完整快照，必须继续以 JSONL/WebSocket 到达顺序为权威，并让实时通知
+  与缓存恢复使用同一份逐字段投影和资源上限。`emittedAtMs` 与 `gatewayReceivedAtMs` 只能
+  用于诊断，不能用于重排 Plan 状态。
+- sandbox probe 与实际 override 是两个独立的 app-server RPC；当前协议没有 CAS 或 revision
+  条件写接口，其他 Codex 进程仍可能在两次调用之间改变 sandbox。网关会串行本进程请求、
+  监测 probe 期间的 settings 通知并复核最终响应，以缩小窗口并对不一致失败关闭，但不能
+  提供跨进程原子保证。
 - 账户用量与限额方法必须继续使用空参数重建、结果和通知逐字段投影、有界集合及固定上游
   错误消息；滚动限额通知是稀疏更新，不能用缺失或空字段清除最近的完整快照。
 - 浏览器终端会绕过 Codex 审批，因此需要独立的威胁模型、隔离边界和显式启用机制。
 
 ## 验证
 
-本轮已于 2026-08-04 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+本轮已于 2026-08-05 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.146.0` 完成验证：
 
 - 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
-  `Thread.cwd`、`ThreadStartedNotification`、`ItemCompletedNotification`、
-  `TurnCompletedNotification`、轮次状态以及 `thread/items/list` 的相关结构；没有创建真实轮次。
+  `ThreadResumeResponse.sandbox`、`ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`、
+  `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、完整快照形式的
+  `TurnPlanUpdatedNotification`、不含 Plan 的官方 Turn 读取结构，以及通知 envelope 的
+  `emittedAtMs`；没有创建真实轮次。
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：34 个测试文件、484 项测试；服务端测试在允许绑定回环
+- `NODE_ENV=test npm test` 通过：35 个测试文件、569 项测试；服务端测试在允许绑定回环
   套接字的环境中运行。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-download-visual-final-3 npm run check:visual`
-  针对当前生产构建通过。桌面端和 390x844 移动端夹具确认下载二次确认的宽度稳定、控件
-  contained、焦点、建议文件名和下载已启动状态，并继续覆盖项目导航、Activity、Skills、Usage、
-  富内容、推理状态槽、图片和输入区；未发现水平溢出、裁切、内容重叠、console error 或
-  page error。所有 RPC 和下载均由确定性浏览器夹具拦截，没有创建真实 Codex 轮次。
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4176
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-plan-recovery-visual npm run check:visual`
+  针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
+  Usage、文件下载、富内容、推理状态槽、图片和输入区；未发现水平溢出、裁切、内容重叠、
+  console error 或 page error。所有 RPC 和下载均由确定性浏览器夹具拦截，没有创建真实
+  Codex 轮次。

@@ -628,8 +628,10 @@ export default function App() {
         return;
       }
       case "turn/plan/updated": {
-        const plan = parsePlan(params);
-        if (turnId && plan) dispatch({ type: "setTurnPlan", turnId, plan });
+        const plan = parsePlan(params, message);
+        if (threadId && turnId && plan) {
+          dispatch({ type: "setTurnPlan", threadId, turnId, plan });
+        }
         return;
       }
       case "item/started":

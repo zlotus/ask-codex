@@ -17,6 +17,7 @@
 | [0011](0011-browser-local-image-previews.md) | 已接受 | 在同一浏览器配置文件和 Origin 的 IndexedDB 中有界保留已发送图片的预览。 |
 | [0012](0012-read-only-connection-recovery.md) | 已接受 | 通过只读快照恢复连接，不后台认领线程或重放未确认写请求。 |
 | [0013](0013-thread-working-directory-defaults-and-file-download-scope.md) | 已接受 | 将所选线程的 Working directory 用作新线程默认上下文和受限文件下载范围。 |
+| [0014](0014-bounded-structured-plan-recovery.md) | 已接受 | 通过有界网关快照恢复结构化 Plan，并区分可恢复、不可恢复和未知状态。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

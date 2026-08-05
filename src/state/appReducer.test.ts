@@ -413,6 +413,148 @@ describe("appReducer", () => {
     expect(reconciled.pendingRequests).toEqual(hydrated.pendingRequests);
   });
 
+  it("uses an authoritative plan snapshot and clears only its recovery omission", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          items: [],
+          plan: { plan: [{ step: "Old step", status: "inProgress" }] },
+          recoveryOmissions: ["turn/plan/updated", "turn/diff/updated"],
+        }],
+      },
+    });
+    const reconciled = appReducer(hydrated, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [],
+          plan: {
+            plan: [{ step: "Recovered step", status: "completed" }],
+            emittedAtMs: 1_800_000_000_100,
+            gatewayReceivedAtMs: 1_800_000_000_125,
+          },
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]?.plan).toEqual({
+      plan: [{ step: "Recovered step", status: "completed" }],
+      emittedAtMs: 1_800_000_000_100,
+      gatewayReceivedAtMs: 1_800_000_000_125,
+    });
+    expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
+      .toEqual(["turn/diff/updated"]);
+  });
+
+  it("clears a stale plan for an authoritative null snapshot", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          items: [],
+          plan: { plan: [{ step: "Stale step", status: "inProgress" }] },
+          recoveryOmissions: ["turn/plan/updated", "turn/diff/updated"],
+        }],
+      },
+    });
+    const reconciled = appReducer(hydrated, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [],
+          plan: null,
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]?.plan).toBeNull();
+    expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
+      .toEqual(["turn/diff/updated"]);
+  });
+
+  it("keeps an explicit plan omission tombstone with a null snapshot", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          items: [],
+          plan: { plan: [{ step: "Stale step", status: "inProgress" }] },
+          recoveryOmissions: ["turn/diff/updated"],
+        }],
+      },
+    });
+    const reconciled = appReducer(hydrated, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [],
+          plan: null,
+          recoveryOmissions: ["turn/plan/updated"],
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]?.plan).toBeNull();
+    expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
+      .toEqual(["turn/diff/updated", "turn/plan/updated"]);
+  });
+
+  it("preserves the live plan and omission when a snapshot has no plan field", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          items: [],
+          plan: { plan: [{ step: "Live step", status: "inProgress" }] },
+          recoveryOmissions: ["turn/plan/updated"],
+        }],
+      },
+    });
+    const reconciled = appReducer(hydrated, {
+      type: "reconcileCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          itemsView: "full",
+          items: [],
+        }],
+      },
+    });
+
+    expect(reconciled.currentThread?.turns?.[0]?.plan).toEqual({
+      plan: [{ step: "Live step", status: "inProgress" }],
+    });
+    expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
+      .toEqual(["turn/plan/updated"]);
+  });
+
   it("uses summary state without replacing full items or uncovered live turns", () => {
     const hydrated = appReducer(initialState, {
       type: "setCurrentThread",
@@ -1216,6 +1358,72 @@ describe("appReducer", () => {
     expect(loaded.currentThread?.turns?.[0]?.historyDetail).toBeUndefined();
   });
 
+  it("applies the same plan snapshot semantics when full turn detail loads", () => {
+    const hydrated = appReducer(initialState, {
+      type: "setCurrentThread",
+      thread: {
+        id: "thread-1",
+        turns: [{
+          id: "turn-large",
+          status: "completed",
+          items: [],
+          itemsView: "summary",
+          plan: { plan: [{ step: "Existing step", status: "inProgress" }] },
+          recoveryOmissions: ["turn/plan/updated"],
+          historyDetail: { cursor: "page-large", status: "idle", error: null },
+        }],
+      },
+    });
+    const load = (
+      plan: "updated" | "cleared" | "missing",
+    ): AppState => {
+      const loading = appReducer(hydrated, {
+        type: "loadTurnDetailStarted",
+        threadId: "thread-1",
+        turnId: "turn-large",
+        cursor: "page-large",
+      });
+      const baseTurn = {
+        id: "turn-large",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: `message-${plan}`, type: "agentMessage", text: plan }],
+      };
+      const turn = plan === "updated"
+        ? {
+            ...baseTurn,
+            plan: { plan: [{ step: "Recovered detail", status: "completed" }] },
+          }
+        : plan === "cleared"
+          ? { ...baseTurn, plan: null }
+          : baseTurn;
+      return appReducer(loading, {
+        type: "loadTurnDetailSucceeded",
+        threadId: "thread-1",
+        turnId: "turn-large",
+        cursor: "page-large",
+        turn,
+      });
+    };
+
+    const updated = load("updated");
+    const cleared = load("cleared");
+    const missing = load("missing");
+
+    expect(updated.currentThread?.turns?.[0]).toEqual(expect.objectContaining({
+      items: [expect.objectContaining({ text: "updated" })],
+      plan: { plan: [{ step: "Recovered detail", status: "completed" }] },
+    }));
+    expect(updated.currentThread?.turns?.[0]?.recoveryOmissions).toBeUndefined();
+    expect(cleared.currentThread?.turns?.[0]?.plan).toBeNull();
+    expect(cleared.currentThread?.turns?.[0]?.recoveryOmissions).toBeUndefined();
+    expect(missing.currentThread?.turns?.[0]?.plan).toEqual({
+      plan: [{ step: "Existing step", status: "inProgress" }],
+    });
+    expect(missing.currentThread?.turns?.[0]?.recoveryOmissions)
+      .toEqual(["turn/plan/updated"]);
+  });
+
   it("does not start history pagination while a summary turn is still running", () => {
     const hydrated = appReducer(initialState, {
       type: "setCurrentThread",
@@ -1493,6 +1701,7 @@ describe("appReducer", () => {
   it("stores plan and diff updates on the matching turn", () => {
     const planned = appReducer(stateWithTurn(), {
       type: "setTurnPlan",
+      threadId: "thread-1",
       turnId: "turn-1",
       plan: { plan: [{ step: "Run tests", status: "in_progress" }] },
     });
@@ -1504,6 +1713,19 @@ describe("appReducer", () => {
 
     expect(diffed.currentThread?.turns?.[0]?.plan?.plan[0]?.step).toBe("Run tests");
     expect(diffed.currentThread?.turns?.[0]?.diff).toContain("fixed");
+  });
+
+  it("ignores a plan update scoped to a different thread", () => {
+    const state = stateWithTurn();
+    const ignored = appReducer(state, {
+      type: "setTurnPlan",
+      threadId: "thread-2",
+      turnId: "turn-1",
+      plan: { plan: [{ step: "Wrong thread", status: "inProgress" }] },
+    });
+
+    expect(ignored).toBe(state);
+    expect(ignored.currentThread?.turns?.[0]?.plan).toBeUndefined();
   });
 
   it("keeps streamed items when turn/completed carries a notLoaded turn", () => {

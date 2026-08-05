@@ -162,4 +162,34 @@ describe("ResyncCoordinator", () => {
 
     expect(filterSnapshotCoveredNotifications(null, snapshot, [message])).toEqual([message]);
   });
+
+  it("drops plan notifications already covered by a plan snapshot or tombstone", () => {
+    const planNotification: NotificationMessage = {
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        plan: [{ step: "Buffered", status: "inProgress" }],
+      },
+    };
+    const snapshot = {
+      id: "thread-1",
+      turns: [{
+        id: "turn-1",
+        items: [],
+        plan: { plan: [{ step: "Snapshot", status: "completed" }] },
+      }],
+    };
+
+    expect(filterSnapshotCoveredNotifications(null, snapshot, [planNotification])).toEqual([]);
+    expect(filterSnapshotCoveredNotifications(null, {
+      ...snapshot,
+      turns: [{ ...snapshot.turns[0], plan: null }],
+    }, [planNotification])).toEqual([]);
+    expect(filterSnapshotCoveredNotifications(null, {
+      ...snapshot,
+      turns: [{ id: "turn-1", items: [] }],
+    }, [planNotification])).toEqual([planNotification]);
+  });
 });

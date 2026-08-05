@@ -9,6 +9,7 @@ import {
   normalizeThread,
   normalizeTurn,
   normalizeTurnsPage,
+  parseServerMessage,
   sandboxMode,
   userMessageContent,
   userMessageImages,
@@ -214,6 +215,77 @@ describe("skills directory normalization", () => {
 });
 
 describe("turn page normalization", () => {
+  it("normalizes recoverable plan snapshots and preserves their diagnostic timing", () => {
+    expect(normalizeTurn({
+      id: "turn-planned",
+      items: [],
+      plan: {
+        explanation: "Work through the recovery path.",
+        plan: [
+          { step: "Read the snapshot", status: "completed" },
+          { step: "Replay notifications", status: "inProgress" },
+          { step: "Verify the result", status: "pending" },
+        ],
+        emittedAtMs: 1_800_000_000_100,
+        gatewayReceivedAtMs: 1_800_000_000_125,
+      },
+    })).toEqual({
+      id: "turn-planned",
+      items: [],
+      plan: {
+        explanation: "Work through the recovery path.",
+        plan: [
+          { step: "Read the snapshot", status: "completed" },
+          { step: "Replay notifications", status: "inProgress" },
+          { step: "Verify the result", status: "pending" },
+        ],
+        emittedAtMs: 1_800_000_000_100,
+        gatewayReceivedAtMs: 1_800_000_000_125,
+      },
+    });
+  });
+
+  it("distinguishes an authoritative null plan from an absent plan and fails malformed plans closed", () => {
+    const absent = normalizeTurn({ id: "turn-absent", items: [] });
+    const cleared = normalizeTurn({ id: "turn-cleared", items: [], plan: null });
+    const malformed = normalizeTurn({
+      id: "turn-malformed",
+      items: [],
+      plan: {
+        plan: [
+          { step: "Valid step", status: "completed" },
+          { step: "Unknown state", status: "unexpected" },
+        ],
+      },
+    });
+
+    expect(Object.hasOwn(absent!, "plan")).toBe(false);
+    expect(cleared).toEqual({ id: "turn-cleared", items: [], plan: null });
+    expect(malformed).toEqual({ id: "turn-malformed", items: [], plan: null });
+  });
+
+  it("rejects plan snapshots outside the browser rendering bounds", () => {
+    for (const plan of [
+      Array.from({ length: 129 }, (_, index) => ({
+        step: `Step ${index}`,
+        status: "pending",
+      })),
+      [{ step: "x".repeat(8 * 1024 + 1), status: "inProgress" }],
+      Array.from({ length: 128 }, () => ({
+        step: "x".repeat(1_100),
+        status: "pending",
+      })),
+    ]) {
+      expect(normalizeTurn({ id: "turn-bounded", items: [], plan: { plan } })?.plan)
+        .toBeNull();
+    }
+    expect(normalizeTurn({
+      id: "turn-bounded-explanation",
+      items: [],
+      plan: { explanation: "x".repeat(32 * 1024 + 1), plan: [] },
+    })?.plan).toBeNull();
+  });
+
   it("keeps valid turn timing and drops malformed values", () => {
     expect(normalizeTurn({
       id: "turn-timed",
@@ -264,6 +336,38 @@ describe("turn page normalization", () => {
     });
     expect(normalizeTurnsPage({ data: "not-an-array" })).toBeNull();
     expect(extractInitialTurnsPage({ initialTurnsPage: null })).toBeNull();
+  });
+});
+
+describe("server message normalization", () => {
+  it("preserves valid notification diagnostic timestamps", () => {
+    expect(parseServerMessage({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", plan: [] },
+      emittedAtMs: 1_800_000_000_100,
+      gatewayReceivedAtMs: 1_800_000_000_125,
+    })).toEqual({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", plan: [] },
+      emittedAtMs: 1_800_000_000_100,
+      gatewayReceivedAtMs: 1_800_000_000_125,
+    });
+  });
+
+  it("drops malformed optional timestamps without rejecting the notification", () => {
+    expect(parseServerMessage({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: { plan: [] },
+      emittedAtMs: -1,
+      gatewayReceivedAtMs: 1.5,
+    })).toEqual({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: { plan: [] },
+    });
   });
 });
 

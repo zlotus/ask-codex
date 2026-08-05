@@ -132,6 +132,20 @@ function coveredDeltaCharacters(
   return snapshotField.value.endsWith(combinedDelta) ? combinedDelta.length : 0;
 }
 
+function planNotificationCoveredBySnapshot(
+  snapshot: CodexThread,
+  message: NotificationMessage,
+): boolean {
+  if (message.method !== "turn/plan/updated") return false;
+  if (typeof message.params !== "object" || message.params === null || Array.isArray(message.params)) {
+    return false;
+  }
+  const params = message.params as Record<string, unknown>;
+  if (params.threadId !== snapshot.id || typeof params.turnId !== "string") return false;
+  const turn = snapshot.turns?.find((candidate) => candidate.id === params.turnId);
+  return turn !== undefined && Object.hasOwn(turn, "plan");
+}
+
 export function filterSnapshotCoveredNotifications(
   baseline: CodexThread | null,
   snapshot: CodexThread,
@@ -155,6 +169,7 @@ export function filterSnapshotCoveredNotifications(
   }
 
   return notifications.flatMap((message) => {
+    if (planNotificationCoveredBySnapshot(snapshot, message)) return [];
     const descriptor = deltaDescriptor(message);
     if (!descriptor) return [message];
     const covered = remainingCovered.get(descriptor.key) ?? 0;

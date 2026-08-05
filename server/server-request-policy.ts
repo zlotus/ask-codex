@@ -16,7 +16,6 @@ const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchAppro
 const LEGACY_DECISIONS = new Set([
   "approved",
   "approved_for_session",
-  "denied",
   "timed_out",
   "abort",
 ]);
@@ -56,6 +55,110 @@ function decisionResult(value: unknown, allowed: ReadonlySet<string>): { decisio
     throw new ClientInputError("approval decision is invalid");
   }
   return { decision: value.decision };
+}
+
+type ApprovalDecisionValidator = (value: unknown) => boolean;
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && keys.every((key) => (
+    Object.prototype.hasOwnProperty.call(value, key)
+  ));
+}
+
+function isExecPolicyAmendmentDecision(
+  value: unknown,
+  decisionKey: string,
+  amendmentKey: string,
+): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, [decisionKey])) return false;
+  const decision = value[decisionKey];
+  if (!isRecord(decision) || !hasExactKeys(decision, [amendmentKey])) return false;
+  const amendment = decision[amendmentKey];
+  return Array.isArray(amendment) && amendment.every((entry) => typeof entry === "string");
+}
+
+function isNetworkPolicyAmendmentDecision(value: unknown, decisionKey: string): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, [decisionKey])) return false;
+  const decision = value[decisionKey];
+  if (!isRecord(decision) || !hasExactKeys(decision, ["network_policy_amendment"])) return false;
+  const amendment = decision.network_policy_amendment;
+  return isRecord(amendment) &&
+    hasExactKeys(amendment, ["host", "action"]) &&
+    typeof amendment.host === "string" &&
+    (amendment.action === "allow" || amendment.action === "deny");
+}
+
+function isModernCommandDecision(value: unknown): boolean {
+  return (typeof value === "string" && MODERN_DECISIONS.has(value)) ||
+    isExecPolicyAmendmentDecision(
+      value,
+      "acceptWithExecpolicyAmendment",
+      "execpolicy_amendment",
+    ) ||
+    isNetworkPolicyAmendmentDecision(value, "applyNetworkPolicyAmendment");
+}
+
+function isModernFileDecision(value: unknown): boolean {
+  return typeof value === "string" && MODERN_DECISIONS.has(value);
+}
+
+function isLegacyDecision(value: unknown): boolean {
+  if (typeof value === "string") return LEGACY_DECISIONS.has(value);
+  if (
+    isExecPolicyAmendmentDecision(
+      value,
+      "approved_execpolicy_amendment",
+      "proposed_execpolicy_amendment",
+    ) ||
+    isNetworkPolicyAmendmentDecision(value, "network_policy_amendment")
+  ) {
+    return true;
+  }
+  if (!isRecord(value) || !hasExactKeys(value, ["denied"])) return false;
+  const denied = value.denied;
+  return isRecord(denied) &&
+    hasExactKeys(denied, ["rejection"]) &&
+    typeof denied.rejection === "string";
+}
+
+function requestApprovalDecisions(
+  requestParams: unknown,
+  protocolDecisions: ReadonlySet<string>,
+  isProtocolDecision: ApprovalDecisionValidator,
+): ReadonlySet<string> {
+  if (!isRecord(requestParams)) {
+    throw new ClientInputError("approval request params are invalid");
+  }
+  if (!Object.prototype.hasOwnProperty.call(requestParams, "availableDecisions")) {
+    return protocolDecisions;
+  }
+
+  const availableDecisions = requestParams.availableDecisions;
+  if (availableDecisions === null) return protocolDecisions;
+  if (
+    !Array.isArray(availableDecisions) ||
+    !availableDecisions.every(isProtocolDecision)
+  ) {
+    throw new ClientInputError("approval availableDecisions is invalid");
+  }
+  return new Set(availableDecisions.filter((decision): decision is string => (
+    typeof decision === "string" && protocolDecisions.has(decision)
+  )));
+}
+
+export function assertServerRequestRoutable(request: RequestMessage): void {
+  if (MODERN_APPROVAL_METHODS.has(request.method)) {
+    requestApprovalDecisions(
+      request.params,
+      MODERN_DECISIONS,
+      request.method === "item/commandExecution/requestApproval"
+        ? isModernCommandDecision
+        : isModernFileDecision,
+    );
+  } else if (LEGACY_APPROVAL_METHODS.has(request.method)) {
+    requestApprovalDecisions(request.params, LEGACY_DECISIONS, isLegacyDecision);
+  }
 }
 
 function userInputResult(value: unknown, requestParams: unknown): unknown {
@@ -105,10 +208,26 @@ export function normalizeServerRequestResponse(
     return { error: sanitizedError(response.error) };
   }
   if (MODERN_APPROVAL_METHODS.has(request.method)) {
-    return { result: decisionResult(response.result, MODERN_DECISIONS) };
+    return {
+      result: decisionResult(
+        response.result,
+        requestApprovalDecisions(
+          request.params,
+          MODERN_DECISIONS,
+          request.method === "item/commandExecution/requestApproval"
+            ? isModernCommandDecision
+            : isModernFileDecision,
+        ),
+      ),
+    };
   }
   if (LEGACY_APPROVAL_METHODS.has(request.method)) {
-    return { result: decisionResult(response.result, LEGACY_DECISIONS) };
+    return {
+      result: decisionResult(
+        response.result,
+        requestApprovalDecisions(request.params, LEGACY_DECISIONS, isLegacyDecision),
+      ),
+    };
   }
   if (request.method === "item/tool/requestUserInput") {
     return { result: userInputResult(response.result, request.params) };

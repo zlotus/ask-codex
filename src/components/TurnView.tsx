@@ -180,7 +180,7 @@ export function TurnView({
       )}
       {omissions.includes("turn/plan/updated") && (
         <div className="turn-history-notice" role="status">
-          The latest turn plan exceeded the gateway limit and is not available in this view.
+          The latest turn plan could not be recovered and is not available in this view.
         </div>
       )}
       {turn.itemsView === "summary" && (

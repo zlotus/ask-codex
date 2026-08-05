@@ -61,7 +61,7 @@ export type AppAction =
   | { type: "recordIndexedItemOmission"; turnId: string; itemId: string; itemType?: string; field: "summary" | "content"; omitted: number }
   | { type: "clearActiveReasoningItems" }
   | { type: "setTurnDiff"; turnId: string; diff: string }
-  | { type: "setTurnPlan"; turnId: string; plan: TurnPlan }
+  | { type: "setTurnPlan"; threadId: string; turnId: string; plan: TurnPlan }
   | { type: "recordTurnRecoveryOmission"; threadId?: string; turnId: string; method: string }
   | { type: "addRequest"; request: PendingRequest }
   | { type: "recordCommandApprovalReason"; threadId: string; turnId?: string; itemId: string; reason: string }
@@ -442,11 +442,61 @@ function moreCompleteItemsView(existing: unknown, snapshot: unknown): unknown {
   return existing ?? snapshot;
 }
 
+function withoutRecoveryOmission(
+  omissions: string[] | undefined,
+  method: string,
+): string[] | undefined {
+  const filtered = omissions?.filter((entry) => entry !== method);
+  return filtered && filtered.length > 0 ? filtered : undefined;
+}
+
+function mergeRecoveryOmissions(
+  ...groups: Array<string[] | undefined>
+): string[] | undefined {
+  const merged = [...new Set(groups.flatMap((group) => group ?? []))];
+  return merged.length > 0 ? merged : undefined;
+}
+
+function reconcilePlanSnapshot(
+  existing: CodexTurn,
+  snapshot: CodexTurn,
+  reconciled: CodexTurn,
+): CodexTurn {
+  if (Object.hasOwn(snapshot, "recoveryOmissions")) {
+    reconciled.recoveryOmissions = mergeRecoveryOmissions(
+      existing.recoveryOmissions,
+      snapshot.recoveryOmissions,
+    );
+    if (reconciled.recoveryOmissions === undefined) delete reconciled.recoveryOmissions;
+  }
+  if (!Object.hasOwn(snapshot, "plan")) return reconciled;
+  const snapshotMarksPlanUnavailable = snapshot.recoveryOmissions?.includes(
+    "turn/plan/updated",
+  ) === true;
+  if (snapshot.plan) {
+    reconciled.plan = snapshot.plan;
+    reconciled.recoveryOmissions = withoutRecoveryOmission(
+      reconciled.recoveryOmissions,
+      "turn/plan/updated",
+    );
+  } else {
+    reconciled.plan = null;
+    if (!snapshotMarksPlanUnavailable) {
+      reconciled.recoveryOmissions = withoutRecoveryOmission(
+        reconciled.recoveryOmissions ?? existing.recoveryOmissions,
+        "turn/plan/updated",
+      );
+    }
+  }
+  if (reconciled.recoveryOmissions === undefined) delete reconciled.recoveryOmissions;
+  return reconciled;
+}
+
 function reconcileSnapshotTurn(existing: CodexTurn, snapshot: CodexTurn): CodexTurn {
   if (snapshot.itemsView === "full") {
     const reconciled = { ...existing, ...snapshot };
     delete reconciled.historyDetail;
-    return reconciled;
+    return reconcilePlanSnapshot(existing, snapshot, reconciled);
   }
 
   const reconciled: CodexTurn = {
@@ -463,7 +513,7 @@ function reconcileSnapshotTurn(existing: CodexTurn, snapshot: CodexTurn): CodexT
   if (itemsView === "full") {
     delete reconciled.historyDetail;
   }
-  return reconciled;
+  return reconcilePlanSnapshot(existing, snapshot, reconciled);
 }
 
 function reconcileTurns(existing: CodexTurn[], snapshot: CodexTurn[]): CodexTurn[] {
@@ -812,7 +862,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ) {
             return turn;
           }
-          const replacement = { ...turn, ...action.turn, items: action.turn.items };
+          const replacement = reconcilePlanSnapshot(
+            turn,
+            action.turn,
+            { ...turn, ...action.turn, items: action.turn.items },
+          );
           delete replacement.historyDetail;
           return replacement;
         });
@@ -1054,12 +1108,16 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         })),
       };
     case "setTurnPlan":
+      if (state.currentThread?.id !== action.threadId) return state;
       return {
         ...state,
         currentThread: updateTurn(state.currentThread, action.turnId, (turn) => ({
           ...turn,
           plan: action.plan,
-          recoveryOmissions: turn.recoveryOmissions?.filter((method) => method !== "turn/plan/updated"),
+          recoveryOmissions: withoutRecoveryOmission(
+            turn.recoveryOmissions,
+            "turn/plan/updated",
+          ),
         })),
       };
     case "recordTurnRecoveryOmission": {

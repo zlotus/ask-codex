@@ -2,17 +2,22 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-04
+Last reviewed: 2026-08-05
 
 ## Current Milestone
 
-Working-directory continuity and file handoff are implemented. A new thread
-defaults to the exact cwd of the currently selected thread, uses the bootstrap
-initial directory only when nothing is selected, and always starts from a
-`workspace-write` sandbox. Regular files explicitly linked by completed Agent
-messages can be downloaded after confirmation. The browser redeems only
-short-lived, one-use capabilities, cannot submit a host path, and the gateway
-uses no global download-root list. The next near-term item has not been selected.
+Working-directory continuity, file handoff, and this round of gateway security
+hardening are implemented. A new thread defaults to the exact cwd of the
+currently selected thread, uses the bootstrap initial directory only when
+nothing is selected, and always starts from a `workspace-write` sandbox. Regular
+files explicitly linked by completed Agent messages can be downloaded after
+confirmation. The browser redeems only short-lived, one-use capabilities,
+cannot submit a host path, and the gateway uses no global download-root list.
+The approval-decision, thread-owner, `externalSandbox`, and WebSocket
+request-target gaps are closed. Structured Plans can now recover from bounded
+gateway snapshots across disconnects, read-only resynchronization, thread
+switches, and Codex child-process restarts. The next near-term item has not been
+selected.
 
 ## Current Baseline
 
@@ -100,7 +105,12 @@ The implementation currently provides:
   structured plan also appears above the composer as a compact normal-layout
   summary that expands into a bounded scrolling step list; the summary
   disappears when the turn ends while the historical plan stays in its original
-  turn. A turn diff
+  turn. Realtime Plans and recovery snapshots use one strict bounded projection.
+  The gateway caches each thread and turn's latest complete notification and
+  attaches it to read-only turn results and lifecycle notifications. A Plan
+  object, explicit unrecoverable `null`, or absent unknown cache field replaces,
+  clears, or preserves browser state respectively; a resync snapshot also
+  supersedes earlier buffered Plans that it covers. A turn diff
   is explicitly shown as a whole-turn change summary at the end of its turn;
   the following turn footer shows the app-server's native start time and total
   duration, silently omitting missing fields. Stream and message sizes remain
@@ -124,8 +134,12 @@ The implementation currently provides:
   target `realpath`, the opened file fd, regular-file type, the 25-MiB limit,
   the two-download concurrency bound, and a two-minute active-transfer deadline.
 - Browser handling for command and file-change approvals and structured
-  `request_user_input` requests. Captured command approval reasons remain
-  attached to the exact command item for the current browser session.
+  `request_user_input` requests. Approval buttons and gateway responses are
+  narrowed to string decisions allowed by the protocol and actually offered in
+  app-server `availableDecisions`; malformed, unknown, or exclusively
+  client-unsupported structured decisions fail closed. Captured command
+  approval reasons remain attached to the exact command item for the current
+  browser session.
 - New-thread working-directory and sandbox settings, explicit idle-thread
   sandbox overrides, next-turn model and reasoning controls beside the
   composer, and active-turn interruption. With a current selection, new-thread
@@ -149,6 +163,16 @@ The implementation currently provides:
   buckets while dropping account identity, reset-credit details, and unknown
   fields. `account/rateLimits/updated` uses the same field-level sparse
   projection, and all three account-read failures use fixed redacted messages.
+- WebSocket upgrades accept only a raw request-target exactly equal to `/ws`,
+  rejecting queries, fragments, normalized paths, and authority or absolute
+  forms before authentication. Ordinary `thread/resume` sends no sandbox
+  override and therefore preserves `externalSandbox`; an explicit override
+  first probes the authoritative sandbox with fixed parameters and fails closed
+  on an untrusted result or concurrent settings notification. Resume and turn
+  start operations for one thread are serialized, indeterminate results cancel
+  already queued successors, and thread ownership is committed synchronously
+  only after a structurally valid upstream success. Failure, disconnect, or a
+  malformed result cannot take ownership from the previous browser.
 - Composer support for selecting, pasting, previewing, removing, and sending
   PNG, JPEG, and WebP images, including image-only turns, with the entry point
   enabled only when a model explicitly declares image input. Image bytes use
@@ -215,6 +239,13 @@ as executed.
   Agent content. A capability is short-lived, one-use, and local to the current
   server process; after restart, expiry, or first consumption, qualifying
   history must be read again to obtain a new one.
+- The current Codex CLI's official Turn and read responses contain no structured
+  Plan. The Plan cache exists only in the current Ask Codex gateway process and
+  has entry, aggregate-byte, and per-response budgets. After a gateway restart,
+  record eviction, or a notification lost before reaching the gateway, a new
+  page or another device cannot reconstruct that Plan from native history. A
+  browser that already observed one preserves its last state when the snapshot
+  field is absent, but cannot prove that state is still current.
 - Turn steering, persistent cross-device message queues, fixed host actions,
   and an embedded PTY are not implemented.
 
@@ -260,6 +291,16 @@ not a delivery commitment.
   redirect approval requests away from the browser that started or resumed it.
   Ordinary reconnection and Codex restart may retry bounded read-only requests,
   never unconfirmed writes.
+- `turn/plan/updated` is a complete snapshot. JSONL and WebSocket arrival order
+  must remain authoritative, and realtime delivery and cached recovery must use
+  the same field projection and resource bounds. `emittedAtMs` and
+  `gatewayReceivedAtMs` are diagnostic only and must never reorder Plan state.
+- The sandbox probe and actual override are separate app-server RPCs. The
+  current protocol has no CAS or revision-conditioned write, so another Codex
+  process can still change the sandbox between them. The gateway serializes its
+  own requests, observes settings notifications during the probe, and validates
+  the final response to narrow this window and fail closed on inconsistency, but
+  cannot provide a cross-process atomic guarantee.
 - Account usage and rate-limit methods must retain empty-parameter rebuilding,
   field-level result and notification projections, bounded collections, and
   fixed upstream error messages. Rolling rate-limit notifications are sparse
@@ -269,23 +310,24 @@ not a delivery commitment.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-04 with Node.js
+Verification for this round was completed on 2026-08-05 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - Current experimental TypeScript bindings were generated from the installed
-  CLI and compared for `Thread.cwd`, `ThreadStartedNotification`,
-  `ItemCompletedNotification`, `TurnCompletedNotification`, turn status, and
-  the related `thread/items/list` shapes. No real turn was created.
+  CLI and compared for `ThreadResumeResponse.sandbox`,
+  `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
+  `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`, the
+  complete-snapshot `TurnPlanUpdatedNotification`, official Plan-free Turn read
+  structures, and the notification envelope's `emittedAtMs`. No real turn was
+  created.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 34 test files and 484 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 35 test files and 569 tests. Server tests ran
   in an environment that permits loopback socket binding.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4174
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-download-visual-final-3 npm run
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4176
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-plan-recovery-visual npm run
   check:visual` passed against the current production build. Desktop and
-  390x844 mobile fixtures verified stable download-confirmation width,
-  contained controls, focus, the suggested filename, and download-started state while
-  retaining coverage for project navigation, Activity, Skills, Usage, rich
-  content, the fixed reasoning slot, images, and the composer. There was no
-  horizontal overflow, clipping, content overlap, console error, or page error.
-  Deterministic browser fixtures intercepted every RPC and download and created
-  no real Codex turn.
+  390x844 mobile fixtures covered approvals, project navigation, Activity,
+  Skills, Usage, file downloads, rich content, the fixed reasoning slot, images,
+  and the composer. There was no horizontal overflow, clipping, content overlap,
+  console error, or page error. Deterministic browser fixtures intercepted every
+  RPC and download and created no real Codex turn.

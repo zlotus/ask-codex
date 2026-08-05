@@ -18,6 +18,7 @@ the records relevant to the current task.
 | [0011](0011-browser-local-image-previews.en.md) | Accepted | Retain bounded sent-image previews in IndexedDB for the same browser profile and Origin. |
 | [0012](0012-read-only-connection-recovery.en.md) | Accepted | Recover connections from read-only snapshots without claiming threads or replaying unconfirmed writes. |
 | [0013](0013-thread-working-directory-defaults-and-file-download-scope.en.md) | Accepted | Use the selected thread's Working directory as new-thread context and a constrained file-download scope. |
+| [0014](0014-bounded-structured-plan-recovery.en.md) | Accepted | Recover structured Plans through bounded gateway snapshots with distinct recoverable, unrecoverable, and unknown states. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 
