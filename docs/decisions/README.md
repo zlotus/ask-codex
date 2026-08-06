@@ -19,6 +19,8 @@
 | [0013](0013-thread-working-directory-defaults-and-file-download-scope.md) | 已接受 | 将所选线程的 Working directory 用作新线程默认上下文和受限文件下载范围。 |
 | [0014](0014-bounded-structured-plan-recovery.md) | 已接受 | 通过有界网关快照恢复结构化 Plan，并区分可恢复、不可恢复和未知状态。 |
 | [0015](0015-explicit-active-turn-steering.md) | 已接受 | 将显式文本 steering 绑定到确切活跃轮次，并保持严格确认、owner 和不重放语义。 |
+| [0016](0016-constrained-native-thread-fork.md) | 已接受 | 仅按来源线程 ID 开放原生 fork，并严格约束参数、结果、owner 与不重放语义。 |
+| [0017](0017-constrained-file-input-and-browser-local-copies.md) | 已接受 | 通过临时网关上下文提交普通文件，并仅在同源浏览器中有界保留下载副本。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

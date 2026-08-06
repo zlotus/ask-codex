@@ -2,6 +2,8 @@ import { errorMessage, isRecord, readString } from "./protocol";
 
 export const MAX_IMAGES_PER_TURN = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENTS_PER_TURN = 4;
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const SUPPORTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 
 type SupportedImageType = (typeof SUPPORTED_IMAGE_TYPES)[number];
@@ -40,6 +42,10 @@ export interface UploadedAttachment {
   expiresAt: number;
 }
 
+export interface UploadedFileAttachment extends UploadedAttachment {
+  name: string;
+}
+
 export function isPotentialImageFile(file: Pick<File, "name" | "type">): boolean {
   const mediaType = file.type.trim().toLowerCase();
   if (POTENTIAL_IMAGE_TYPE_SET.has(mediaType)) return true;
@@ -55,6 +61,38 @@ function requestHeaders(token: string, contentType?: string): HeadersInit {
     ...(contentType ? { "Content-Type": contentType } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
+}
+
+function fileUploadMediaType(file: File): string {
+  const mediaType = file.type.trim().toLowerCase();
+  return /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(mediaType)
+    ? mediaType
+    : "application/octet-stream";
+}
+
+function hasAttachmentFileNameControlCharacter(name: string): boolean {
+  for (let index = 0; index < name.length; index += 1) {
+    const code = name.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+export function isValidAttachmentFileName(name: string): boolean {
+  return Boolean(name) &&
+    name.trim() === name &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    !hasAttachmentFileNameControlCharacter(name) &&
+    new TextEncoder().encode(name).byteLength <= 255;
+}
+
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
 }
 
 function startsWithBytes(data: Uint8Array, signature: readonly number[]): boolean {
@@ -293,9 +331,105 @@ export async function uploadImageAttachments(
   return results.map((result) => (result as PromiseFulfilledResult<UploadedAttachment>).value);
 }
 
+function validateGenericFiles(files: readonly File[]): void {
+  if (files.length > MAX_ATTACHMENTS_PER_TURN) {
+    throw new Error(`A turn can include at most ${MAX_ATTACHMENTS_PER_TURN} attachments`);
+  }
+  for (const file of files) {
+    if (!isValidAttachmentFileName(file.name)) {
+      throw new Error("File name is invalid");
+    }
+    if (file.size === 0) {
+      throw new Error(`${file.name} is empty`);
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      throw new Error(`${file.name} exceeds the 10 MiB file limit`);
+    }
+  }
+}
+
+async function uploadFile(file: File, token: string): Promise<UploadedFileAttachment> {
+  try {
+    return await withTimeout(UPLOAD_TIMEOUT_MS, "File upload timed out", async (signal) => {
+      const response = await fetch("/api/file-attachments", {
+        method: "POST",
+        headers: {
+          ...requestHeaders(token, fileUploadMediaType(file)),
+          "X-Ask-Codex-File-Name": encodeURIComponent(file.name),
+        },
+        body: file,
+        signal,
+      });
+      if (!response.ok) throw await responseError(response);
+
+      const body: unknown = await response.json();
+      const attachment = isRecord(body) && isRecord(body.attachment) ? body.attachment : null;
+      const id = attachment ? readString(attachment.id) : undefined;
+      const name = attachment ? readString(attachment.name) : undefined;
+      const mediaType = attachment ? readString(attachment.mediaType) : undefined;
+      const size = attachment?.size;
+      const expiresAt = attachment?.expiresAt;
+      if (
+        !id ||
+        !ATTACHMENT_ID_PATTERN.test(id) ||
+        name !== file.name ||
+        !mediaType ||
+        !Number.isSafeInteger(size) ||
+        (size as number) !== file.size ||
+        !Number.isFinite(expiresAt)
+      ) {
+        throw new Error("The server returned an invalid attachment response");
+      }
+      return { id, name, mediaType, size: size as number, expiresAt: expiresAt as number };
+    });
+  } catch (error) {
+    throw new Error(`${file.name || "File"}: ${errorMessage(error)}`, { cause: error });
+  }
+}
+
+export async function uploadFileAttachments(
+  files: readonly File[],
+  token: string,
+): Promise<UploadedFileAttachment[]> {
+  validateGenericFiles(files);
+  if (files.length === 0) return [];
+
+  const results = await Promise.allSettled(files.map((file) => uploadFile(file, token)));
+  const uploaded = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) {
+    void discardFileAttachments(uploaded, token);
+    throw failed.reason instanceof Error ? failed.reason : new Error(errorMessage(failed.reason));
+  }
+  return results.map((result) => (
+    result as PromiseFulfilledResult<UploadedFileAttachment>
+  ).value);
+}
+
 export async function discardAttachments(
   attachments: readonly Pick<UploadedAttachment, "id">[],
   token: string,
 ): Promise<void> {
   await Promise.allSettled(attachments.map((attachment) => discardAttachment(attachment.id, token)));
+}
+
+export async function discardFileAttachment(id: string, token: string): Promise<void> {
+  if (!ATTACHMENT_ID_PATTERN.test(id)) return;
+  await withTimeout(DISCARD_TIMEOUT_MS, "Attachment cleanup timed out", async (signal) => {
+    const response = await fetch(`/api/file-attachments/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: requestHeaders(token),
+      signal,
+    });
+    if (!response.ok && response.status !== 404) throw await responseError(response);
+  });
+}
+
+export async function discardFileAttachments(
+  attachments: readonly Pick<UploadedFileAttachment, "id">[],
+  token: string,
+): Promise<void> {
+  await Promise.allSettled(
+    attachments.map((attachment) => discardFileAttachment(attachment.id, token)),
+  );
 }

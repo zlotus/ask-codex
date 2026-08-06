@@ -12,6 +12,104 @@ import {
 } from "./rpc-policy.js";
 
 describe("browser RPC policy", () => {
+  it("exposes a minimal fork request and fixes approval ownership settings", () => {
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("thread/fork")).toBe(true);
+    expect(sanitizeBrowserRpcParams("thread/fork", {
+      threadId: "thread-source",
+    })).toEqual({
+      threadId: "thread-source",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      excludeTurns: true,
+    });
+
+    for (const unsupported of [
+      { path: "/private/rollout.jsonl" },
+      { cwd: "/private" },
+      { lastTurnId: "turn-1" },
+      { model: "private-model" },
+      { approvalPolicy: "never" },
+      { excludeTurns: false },
+    ]) {
+      expect(() => sanitizeBrowserRpcParams("thread/fork", {
+        threadId: "thread-source",
+        ...unsupported,
+      })).toThrow(/does not allow param/);
+    }
+  });
+
+  it("strictly projects a fork result without rollout or instruction paths", () => {
+    const result = sanitizeBrowserRpcResult("thread/fork", {
+      thread: {
+        id: "thread-fork",
+        forkedFromId: "thread-source",
+        cwd: "/workspace/project",
+        historyMode: "paginated",
+        turns: [],
+        name: "Forked work",
+        preview: "Continue here",
+        status: { type: "idle" },
+        path: "/private/rollout.jsonl",
+        extra: { secret: true },
+      },
+      model: "gpt-5",
+      cwd: "/workspace/project",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: {
+        type: "workspaceWrite",
+        writableRoots: ["/private/root"],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+      reasoningEffort: "high",
+      instructionSources: ["/private/AGENTS.md"],
+      runtimeWorkspaceRoots: ["/private/root"],
+    }, { threadId: "thread-source" });
+
+    expect(result).toEqual({
+      thread: {
+        id: "thread-fork",
+        forkedFromId: "thread-source",
+        cwd: "/workspace/project",
+        historyMode: "paginated",
+        turns: [],
+        name: "Forked work",
+        preview: "Continue here",
+        status: { type: "idle" },
+      },
+      model: "gpt-5",
+      cwd: "/workspace/project",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: { type: "workspaceWrite" },
+      reasoningEffort: "high",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/rollout|instruction|writableRoots|secret/);
+  });
+
+  it.each([
+    ["same thread id", { id: "thread-source", forkedFromId: "thread-source" }],
+    ["wrong source", { id: "thread-fork", forkedFromId: "thread-other" }],
+    ["unknown history", { id: "thread-fork", forkedFromId: "thread-source", historyMode: "future" }],
+  ])("rejects a fork result with %s", (_label, threadOverride) => {
+    expect(() => sanitizeBrowserRpcResult("thread/fork", {
+      thread: Object.assign({
+        id: "thread-fork",
+        forkedFromId: "thread-source",
+        cwd: "/workspace/project",
+        historyMode: "legacy",
+        turns: [],
+      }, threadOverride),
+      model: "gpt-5",
+      cwd: "/workspace/project",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: { type: "readOnly" },
+    }, { threadId: "thread-source" })).toThrow("thread/fork returned an invalid result");
+  });
+
   it("preserves opaque pagination cursors for list methods", () => {
     expect(sanitizeBrowserRpcParams("thread/list", {
       cursor: "next-thread-page",
@@ -842,7 +940,20 @@ describe("browser RPC policy", () => {
     });
 
     expect(attachmentIdsFromTurnStart(sanitized)).toEqual([firstId, secondId]);
-    expect(materializeTurnStartAttachments(sanitized, ["/private/first.png", "/private/second.webp"]))
+    expect(materializeTurnStartAttachments(sanitized, [
+      {
+        kind: "image",
+        mediaType: "image/png",
+        path: "/private/first.png",
+        size: 100,
+      },
+      {
+        kind: "image",
+        mediaType: "image/webp",
+        path: "/private/second.webp",
+        size: 200,
+      },
+    ]))
       .toEqual({
         threadId: "thread-1",
         input: [
@@ -853,22 +964,78 @@ describe("browser RPC policy", () => {
       });
   });
 
+  it("materializes uploaded files as a durable marker plus gateway-owned application context", () => {
+    const attachmentId = "f".repeat(32);
+    const sanitized = sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input: [
+        { type: "text", text: "Inspect the report", text_elements: [] },
+        { type: "file", attachmentId },
+      ],
+    });
+    const materialized = materializeTurnStartAttachments(sanitized, [{
+      kind: "file",
+      mediaType: "application/pdf",
+      name: "report.pdf",
+      path: "/private/server/report.pdf",
+      size: 2048,
+    }]) as Record<string, unknown>;
+    const markerText = "Attached file: report.pdf";
+
+    expect(attachmentIdsFromTurnStart(sanitized)).toEqual([attachmentId]);
+    expect(materialized.input).toEqual([
+      { type: "text", text: "Inspect the report", text_elements: [] },
+      {
+        type: "text",
+        text: markerText,
+        text_elements: [{
+          byteRange: { start: 0, end: Buffer.byteLength(markerText) },
+          placeholder: JSON.stringify({
+            type: "askCodexFile",
+            name: "report.pdf",
+            mediaType: "application/pdf",
+            size: 2048,
+          }),
+        }],
+      },
+    ]);
+    expect(materialized.additionalContext).toEqual({
+      "ask-codex.uploaded-files": {
+        kind: "application",
+        value: expect.stringContaining(JSON.stringify([{
+          name: "report.pdf",
+          path: "/private/server/report.pdf",
+        }])),
+      },
+    });
+    expect(() => materializeTurnStartAttachments(sanitized, [{
+      kind: "image",
+      mediaType: "image/png",
+      path: "/private/server/wrong.png",
+      size: 10,
+    }])).toThrow("metadata does not match");
+  });
+
   it.each([
     [
       [{ type: "localImage", path: "/tmp/browser-path.png" }],
       "does not allow param: path",
     ],
     [
+      [{ type: "file", attachmentId: "f".repeat(32), path: "/tmp/browser-file.pdf" }],
+      "does not allow param: path",
+    ],
+    [
       [{ type: "image", url: "https://example.com/image.png" }],
-      "must be text or an uploaded image",
+      "must be text or an uploaded attachment",
     ],
     [
       [{ type: "remoteImage", url: "https://example.com/image.png" }],
-      "must be text or an uploaded image",
+      "must be text or an uploaded attachment",
     ],
     [
       [{ type: "localAudio", path: "/tmp/audio.wav" }],
-      "must be text or an uploaded image",
+      "must be text or an uploaded attachment",
     ],
     [
       [{ type: "localImage", attachmentId: "too-short" }],
@@ -890,9 +1057,9 @@ describe("browser RPC policy", () => {
         type: "localImage",
         attachmentId: String(index).repeat(32),
       })),
-      "allows at most 4 images",
+      "allows at most 4 attachments",
     ],
-  ])("rejects unsafe uploaded-image input %#", (input, message) => {
+  ])("rejects unsafe uploaded attachment input %#", (input, message) => {
     expect(() => sanitizeBrowserRpcParams("turn/start", {
       threadId: "thread-1",
       input,

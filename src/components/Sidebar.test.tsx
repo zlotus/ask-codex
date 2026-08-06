@@ -44,6 +44,7 @@ function sidebarProps(overrides: Partial<ComponentProps<typeof Sidebar>> = {}): 
     onArchive: vi.fn(),
     onUnarchive: vi.fn(),
     onDelete: vi.fn(),
+    onFork: vi.fn(),
     onRename: vi.fn(),
     onPin: vi.fn(),
     onSkillsView: vi.fn(),
@@ -128,6 +129,20 @@ describe("Sidebar thread lifecycle actions", () => {
     expect(props.onArchive).toHaveBeenCalledWith("thread-active");
   });
 
+  it("forks idle threads and disables forking while the source thread is active", () => {
+    const props = sidebarProps();
+    const { rerender } = render(<Sidebar {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Active thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Fork" }));
+    expect(props.onFork).toHaveBeenCalledWith("thread-active");
+
+    rerender(<Sidebar {...props} isThreadActive={(threadId) => threadId === "thread-active"} />);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Active thread" }));
+    expect(screen.getByRole("menuitem", { name: "Fork" })).toBeDisabled();
+    expect(screen.getByRole("menu")).toHaveTextContent(/before forking, archiving, or deleting/i);
+  });
+
   it("cancels touch holds after clear movement or pointer cancellation", () => {
     vi.useFakeTimers();
     const props = sidebarProps();
@@ -164,7 +179,9 @@ describe("Sidebar thread lifecycle actions", () => {
     expect(archive).toBeDisabled();
     expect(remove).toBeDisabled();
     expect(rename).toHaveFocus();
-    expect(menu).toHaveAccessibleDescription("Finish the active turn before archiving or deleting this thread.");
+    expect(menu).toHaveAccessibleDescription(
+      "Finish the active turn before forking, archiving, or deleting this thread.",
+    );
   });
 
   it("groups threads by cwd and puts pinned threads first without reordering each tier", () => {

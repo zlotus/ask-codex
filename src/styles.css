@@ -1219,6 +1219,79 @@ pre {
   object-fit: contain;
 }
 
+.message-file {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 32px;
+  align-items: center;
+  width: min(100%, 340px);
+  min-height: 48px;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 7px;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid #d3d1c8;
+  border-radius: 5px;
+}
+
+.message-file__icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: #4f6b59;
+  background: #e7eee9;
+  border-radius: 4px;
+}
+
+.message-file__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 15px;
+}
+
+.message-file__copy strong {
+  overflow: hidden;
+  color: #343a34;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-file__copy small {
+  color: #777d77;
+  font-size: 9.5px;
+}
+
+.message-file__download,
+.message-file__unavailable {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 4px;
+}
+
+.message-file__download {
+  color: #526057;
+  background: #ffffff;
+  border: 1px solid #d0d1ca;
+  cursor: pointer;
+}
+
+.message-file__download:hover {
+  color: var(--green);
+  background: #edf4ef;
+  border-color: #adc7b5;
+}
+
+.message-file__unavailable {
+  color: #a4a6a0;
+  background: #efefea;
+  border: 1px solid #deded7;
+}
+
 .markdown {
   min-width: 0;
   color: #2b2f2b;
@@ -2942,6 +3015,56 @@ details[open] > summary .details-chevron {
   white-space: nowrap;
 }
 
+.composer-attachment--file {
+  flex: 0 0 188px;
+  grid-template-columns: 36px minmax(0, 1fr) 32px;
+  grid-template-rows: 52px;
+  align-items: center;
+  width: 188px;
+  gap: 7px;
+  padding: 0 5px;
+  background: #f3f3ee;
+  border: 1px solid #d4d4cd;
+  border-radius: 4px;
+}
+
+.composer-file-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #4f6b59;
+  background: #e2ebe5;
+  border-radius: 4px;
+}
+
+.composer-attachment .composer-file-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: #656b65;
+  line-height: 14px;
+}
+
+.composer-file-copy strong {
+  overflow: hidden;
+  color: #363c36;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-file-copy small {
+  font-size: 9px;
+}
+
+.composer-attachment--file .composer-attachment-remove {
+  position: static;
+  color: #6d736d;
+  background: #ffffff;
+  border-color: #d1d1ca;
+}
+
 .composer-attachment-remove {
   position: absolute;
   top: 3px;
@@ -2989,6 +3112,46 @@ details[open] > summary .details-chevron {
   color: var(--green);
   background: #ebf2ed;
   border-color: #b8cfbf;
+}
+
+.composer-add-control {
+  position: relative;
+  flex: 0 0 32px;
+}
+
+.composer-add-menu {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  width: 158px;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid #cacbc4;
+  border-radius: 5px;
+  box-shadow: 0 8px 24px rgba(27, 31, 28, 0.16);
+}
+
+.composer-add-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  color: #3f463f;
+  font-size: 11px;
+  text-align: left;
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.composer-add-menu > button:hover:not(:disabled),
+.composer-add-menu > button:focus-visible:not(:disabled) {
+  color: var(--green);
+  background: #edf3ee;
 }
 
 .composer-setting {

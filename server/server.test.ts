@@ -87,6 +87,25 @@ async function uploadAttachment(
   });
 }
 
+async function uploadFileAttachment(
+  url: string,
+  token: string,
+  name: string,
+  body: Uint8Array,
+  contentType = "application/octet-stream",
+): Promise<Response> {
+  return fetch(`${url}/api/file-attachments`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": contentType,
+      Origin: "http://localhost:5173",
+      "X-Ask-Codex-File-Name": encodeURIComponent(name),
+    },
+    body,
+  });
+}
+
 function config(token?: string): AskCodexConfig {
   return {
     host: "127.0.0.1",
@@ -540,10 +559,11 @@ describe("AskCodexServer", () => {
     const upload = await uploadAttachment(url, "test-token");
     expect(upload.status).toBe(201);
     const uploadBody = await upload.json() as {
-      attachment: { id: string; mediaType: string; size: number; expiresAt: number };
+      attachment: { id: string; kind: string; mediaType: string; size: number; expiresAt: number };
     };
     expect(uploadBody.attachment).toEqual({
       id: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+      kind: "image",
       mediaType: "image/png",
       size: PNG.byteLength,
       expiresAt: expect.any(Number),
@@ -615,6 +635,97 @@ describe("AskCodexServer", () => {
     });
     await vi.waitFor(async () => {
       await expect(stat(storedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("materializes ordinary files only through a server-owned application context", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const data = Buffer.from("private report contents");
+
+    const unauthorized = await fetch(`${url}/api/file-attachments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/pdf",
+        Origin: "http://localhost:5173",
+        "X-Ask-Codex-File-Name": encodeURIComponent("report.pdf"),
+      },
+      body: data,
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("connection")).toBe("close");
+
+    const upload = await uploadFileAttachment(
+      url,
+      "test-token",
+      "report.pdf",
+      data,
+      "application/pdf",
+    );
+    expect(upload.status).toBe(201);
+    const uploadBody = await upload.json() as {
+      attachment: { id: string; kind: string; mediaType: string; name: string; size: number };
+    };
+    expect(uploadBody.attachment).toMatchObject({
+      id: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+      kind: "file",
+      mediaType: "application/pdf",
+      name: "report.pdf",
+      size: data.byteLength,
+    });
+    expect(uploadBody.attachment).not.toHaveProperty("path");
+
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "file-turn",
+      method: "turn/start",
+      params: {
+        threadId: "thread-owned",
+        input: [
+          { type: "text", text: "Inspect this report", text_elements: [] },
+          { type: "file", attachmentId: uploadBody.attachment.id },
+        ],
+        cwd: process.cwd(),
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "file-turn",
+    );
+
+    const turnStartCall = gateway.request.mock.calls.find(([method]) => method === "turn/start");
+    const codexParams = turnStartCall?.[1] as {
+      input: Array<Record<string, unknown>>;
+      additionalContext: Record<string, { kind: string; value: string }>;
+    };
+    expect(codexParams.input).toEqual([
+      { type: "text", text: "Inspect this report", text_elements: [] },
+      expect.objectContaining({ type: "text", text: "Attached file: report.pdf" }),
+    ]);
+    expect(JSON.stringify(codexParams.input)).not.toContain("ask-codex-attachments-");
+    const context = codexParams.additionalContext["ask-codex.uploaded-files"];
+    expect(context.kind).toBe("application");
+    const files = JSON.parse(context.value.split("\n").at(-1)!) as Array<{
+      name: string;
+      path: string;
+    }>;
+    expect(files).toEqual([{
+      name: "report.pdf",
+      path: expect.stringMatching(/ask-codex-attachments-[^/]+\/[A-Za-z0-9_-]{32}\.pdf$/),
+    }]);
+    await expect(stat(files[0].path)).resolves.toBeDefined();
+
+    gateway.emit("notification", "turn/completed", {
+      threadId: "thread-owned",
+      turn: { id: "turn-with-attachments", status: "completed", items: [] },
+    });
+    await vi.waitFor(async () => {
+      await expect(stat(files[0].path)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 
@@ -2002,6 +2113,198 @@ describe("AskCodexServer", () => {
         .toBe(false);
     },
   );
+
+  it("claims only the new thread after a structurally valid fork result", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const sourceOwner = connect(url, "test-token");
+    const forkOwner = connect(url, "test-token");
+    await Promise.all([once(sourceOwner.socket, "open"), once(forkOwner.socket, "open")]);
+    await waitForMessage(sourceOwner.messages, (message) => message.type === "status");
+    await waitForMessage(forkOwner.messages, (message) => message.type === "status");
+
+    sourceOwner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "fork-source-owner",
+      method: "thread/start",
+      params: { cwd: process.cwd() },
+    }));
+    await waitForMessage(
+      sourceOwner.messages,
+      (message) => message.type === "rpcResult" && message.id === "fork-source-owner",
+    );
+
+    gateway.request.mockResolvedValueOnce({
+      thread: {
+        id: "thread-forked",
+        forkedFromId: "thread-owned",
+        cwd: process.cwd(),
+        historyMode: "legacy",
+        turns: [],
+      },
+      model: "gpt-5",
+      cwd: process.cwd(),
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: { type: "workspaceWrite" },
+      reasoningEffort: "high",
+    });
+    forkOwner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "fork-thread",
+      method: "thread/fork",
+      params: { threadId: "thread-owned" },
+    }));
+    await waitForMessage(
+      forkOwner.messages,
+      (message) => message.type === "rpcResult" && message.id === "fork-thread",
+    );
+    expect(gateway.request).toHaveBeenLastCalledWith("thread/fork", {
+      threadId: "thread-owned",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      excludeTurns: true,
+    });
+
+    gateway.emit(
+      "request",
+      190,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-owned", turnId: "turn-source", itemId: "item-source" },
+    );
+    gateway.emit(
+      "request",
+      191,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-forked", turnId: "turn-fork", itemId: "item-fork" },
+    );
+    await Promise.all([
+      waitForMessage(
+        sourceOwner.messages,
+        (message) => message.type === "request" && message.id === 190,
+      ),
+      waitForMessage(
+        forkOwner.messages,
+        (message) => message.type === "request" && message.id === 191,
+      ),
+    ]);
+    expect(forkOwner.messages.some((message) => message.type === "request" && message.id === 190))
+      .toBe(false);
+    expect(sourceOwner.messages.some((message) => message.type === "request" && message.id === 191))
+      .toBe(false);
+  });
+
+  it("rejects a malformed fork result without taking an existing thread owner", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const owner = connect(url, "test-token");
+    const challenger = connect(url, "test-token");
+    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
+    await waitForMessage(owner.messages, (message) => message.type === "status");
+    await waitForMessage(challenger.messages, (message) => message.type === "status");
+
+    owner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "fork-collision-owner",
+      method: "thread/start",
+      params: { cwd: process.cwd() },
+    }));
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "rpcResult" && message.id === "fork-collision-owner",
+    );
+
+    gateway.request.mockResolvedValueOnce({
+      thread: {
+        id: "thread-owned",
+        forkedFromId: "thread-source",
+        cwd: process.cwd(),
+        historyMode: "legacy",
+        turns: [],
+      },
+      model: "gpt-5",
+      cwd: process.cwd(),
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: { type: "workspaceWrite" },
+    });
+    challenger.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "fork-collision",
+      method: "thread/fork",
+      params: { threadId: "thread-source" },
+    }));
+    await waitForMessage(
+      challenger.messages,
+      (message) => message.type === "rpcError" && message.id === "fork-collision",
+    );
+
+    gateway.emit(
+      "request",
+      192,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-owned", turnId: "turn-owned", itemId: "item-owned" },
+    );
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "request" && message.id === 192,
+    );
+    expect(challenger.messages.some((message) => message.type === "request" && message.id === 192))
+      .toBe(false);
+  });
+
+  it("does not claim a fork result after its requester disconnects", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const requester = connect(url, "test-token");
+    await once(requester.socket, "open");
+    await waitForMessage(requester.messages, (message) => message.type === "status");
+
+    let resolveFork: ((result: unknown) => void) | undefined;
+    gateway.request.mockImplementationOnce(async () => (
+      await new Promise<unknown>((resolve) => {
+        resolveFork = resolve;
+      })
+    ));
+    requester.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "fork-before-disconnect",
+      method: "thread/fork",
+      params: { threadId: "thread-source" },
+    }));
+    await vi.waitFor(() => expect(resolveFork).toBeTypeOf("function"));
+
+    const closed = once(requester.socket, "close");
+    requester.socket.close();
+    await closed;
+    resolveFork?.({
+      thread: {
+        id: "thread-forked-after-disconnect",
+        forkedFromId: "thread-source",
+        cwd: process.cwd(),
+        historyMode: "legacy",
+        turns: [],
+      },
+      model: "gpt-5",
+      cwd: process.cwd(),
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: { type: "workspaceWrite" },
+    });
+    await vi.waitFor(() => expect(
+      (service as unknown as { totalInFlightRpc: number }).totalInFlightRpc
+    ).toBe(0));
+    const ownership = (service as unknown as {
+      ownership: { get(threadId: string): WebSocket | undefined };
+    }).ownership;
+    expect(ownership.get("thread-forked-after-disconnect")).toBeUndefined();
+  });
 
   it("does not claim steering ownership after its requester disconnects", async () => {
     const gateway = new FakeGateway();

@@ -86,6 +86,63 @@ describe("ItemRenderer", () => {
     expect(document.body).not.toHaveTextContent("private.example");
   });
 
+  it("downloads a matching browser-local file and rejects mismatched local metadata", () => {
+    const text = "Attached file: report.pdf";
+    const item = {
+      id: "user-file",
+      type: "userMessage",
+      content: [{
+        type: "text",
+        text,
+        text_elements: [{
+          byteRange: { start: 0, end: text.length },
+          placeholder: JSON.stringify({
+            type: "askCodexFile",
+            name: "report.pdf",
+            mediaType: "application/pdf",
+            size: 6,
+          }),
+        }],
+      }],
+    };
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:report");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const { rerender } = render(<ItemRenderer
+      item={item}
+      fileAttachments={[{
+        blob: new Blob(["report"], { type: "application/pdf" }),
+        mediaType: "application/pdf",
+        name: "report.pdf",
+        size: 6,
+      }]}
+    />);
+
+    expect(screen.getByLabelText("1 file attachment")).toBeInTheDocument();
+    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Download report.pdf" }));
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:report");
+
+    rerender(<ItemRenderer
+      item={item}
+      fileAttachments={[{
+        blob: new Blob(["wrong"], { type: "application/pdf" }),
+        mediaType: "application/pdf",
+        name: "report.pdf",
+        size: 5,
+      }]}
+    />);
+    expect(screen.queryByRole("button", { name: "Download report.pdf" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("report.pdf is unavailable for download in this browser"))
+      .toBeInTheDocument();
+
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+    click.mockRestore();
+  });
+
   it("defers completed command output and strips terminal control sequences", () => {
     const { container } = render(<ItemRenderer item={{
       id: "command-1",

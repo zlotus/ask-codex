@@ -86,7 +86,7 @@ describe("Composer", () => {
     );
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "  hello  " } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenCalledWith("hello", []);
+    expect(onSend).toHaveBeenCalledWith("hello", [], []);
 
     rerender(
       <Composer
@@ -271,7 +271,7 @@ describe("Composer", () => {
 
     const textarea = screen.getByLabelText("Message Codex");
     expect(textarea).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Add images" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add attachment" })).toBeDisabled();
     expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
     expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
@@ -333,7 +333,7 @@ describe("Composer", () => {
     fireEvent(textarea, shortcut);
 
     expect(shortcut.defaultPrevented).toBe(true);
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith("send this", []));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("send this", [], []));
   });
 
   it("does not send a shortcut while an input method is composing", () => {
@@ -426,7 +426,7 @@ describe("Composer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed message" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("Message not confirmed")).not.toBeInTheDocument());
-    expect(onSend).toHaveBeenLastCalledWith("first message", []);
+    expect(onSend).toHaveBeenLastCalledWith("first message", [], []);
     expect(textarea).toHaveValue("next draft");
   });
 
@@ -452,7 +452,7 @@ describe("Composer", () => {
     expect(fileInput).not.toBeVisible();
 
     fireEvent.change(fileInput, { target: { files: [first, second] } });
-    expect(screen.getByRole("list", { name: "Selected images" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Selected attachments" })).toBeInTheDocument();
     expect(screen.getByText("first.png")).toBeInTheDocument();
     expect(screen.getByText("second.webp")).toBeInTheDocument();
 
@@ -461,9 +461,36 @@ describe("Composer", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:first.png");
 
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [second]));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [second], []));
     await waitFor(() => expect(screen.queryByText("second.webp")).not.toBeInTheDocument());
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:second.webp");
+  });
+
+  it("opens the attachment menu and sends ordinary files without image capability", async () => {
+    const onSend = vi.fn();
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={[{ ...models[0], inputModalities: ["text"] }]}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />,
+    );
+    const file = new File(["project notes"], "notes.pdf", { type: "application/pdf" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+    expect(screen.getByRole("menuitem", { name: "Add images" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Add files" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Choose files"), { target: { files: [file] } });
+
+    expect(screen.getByRole("list", { name: "Selected attachments" })).toHaveTextContent("notes.pdf");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [], [file]));
   });
 
   it("adds pasted images and suppresses the browser's duplicate default paste", () => {
@@ -545,7 +572,8 @@ describe("Composer", () => {
     expect(pasteEvent.defaultPrevented).toBe(true);
   });
 
-  it("preserves default paste behavior when no image is accepted", () => {
+  it("accepts non-image clipboard files and preserves text-only paste behavior", async () => {
+    const onSend = vi.fn();
     render(
       <Composer
         disabled={false}
@@ -553,7 +581,7 @@ describe("Composer", () => {
         settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
         models={models}
         onSettingsChange={vi.fn()}
-        onSend={vi.fn()}
+        onSend={onSend}
         onStop={vi.fn()}
       />,
     );
@@ -571,9 +599,13 @@ describe("Composer", () => {
     fireEvent(textarea, invalidPaste);
 
     expect(textPaste.defaultPrevented).toBe(false);
-    expect(invalidPaste.defaultPrevented).toBe(false);
-    expect(screen.queryByText("vector.svg")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("PNG, JPEG, or WebP");
+    expect(invalidPaste.defaultPrevented).toBe(true);
+    expect(screen.getByText("vector.svg")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [], [expect.objectContaining({
+      name: "vector.svg",
+    })]));
   });
 
   it("preserves default paste behavior when the image limit is already full", () => {
@@ -602,7 +634,7 @@ describe("Composer", () => {
 
     expect(pasteEvent.defaultPrevented).toBe(false);
     expect(screen.queryByText("extra.png")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("at most 4 images");
+    expect(screen.getByRole("alert")).toHaveTextContent("at most 4 attachments");
   });
 
   it("keeps an image submission available for retry after send failure", async () => {
@@ -631,7 +663,7 @@ describe("Composer", () => {
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "keep me" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith("keep me", [valid]));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("keep me", [valid], []));
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry unconfirmed message" })).toBeEnabled());
     expect(screen.getByLabelText("Message Codex")).toHaveValue("");
     expect(screen.getByRole("alert")).toHaveTextContent("keep me");
@@ -639,7 +671,7 @@ describe("Composer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed message" }));
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
-    expect(onSend).toHaveBeenLastCalledWith("keep me", [valid]);
+    expect(onSend).toHaveBeenLastCalledWith("keep me", [valid], []);
     await waitFor(() => expect(screen.queryByText("Message not confirmed")).not.toBeInTheDocument());
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:retry.png");
   });
@@ -658,11 +690,13 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Add images" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+    expect(screen.getByRole("menuitem", { name: "Add images" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Add files" })).toBeEnabled();
     expect(screen.getByTitle("Selected model does not support images")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "text still works" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenCalledWith("text still works", []);
+    expect(onSend).toHaveBeenCalledWith("text still works", [], []);
   });
 
   it("requires explicit image capability without blocking text for an unknown model", () => {
@@ -679,10 +713,11 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Add images" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+    expect(screen.getByRole("menuitem", { name: "Add images" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "fallback to text" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    expect(onSend).toHaveBeenCalledWith("fallback to text", []);
+    expect(onSend).toHaveBeenCalledWith("fallback to text", [], []);
   });
 });

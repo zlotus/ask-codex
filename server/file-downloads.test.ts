@@ -579,6 +579,52 @@ describe("FileDownloadStore", () => {
     await store.close();
   });
 
+  it("establishes new-thread download authority from a fork result", async () => {
+    const cwd = await temporaryDirectory();
+    const path = join(cwd, "forked-result.txt");
+    await writeFile(path, "forked result");
+    const store = new FileDownloadStore();
+
+    expect(store.observeRpcResult(
+      "thread/fork",
+      { threadId: "thread-source" },
+      {
+        thread: {
+          id: "thread-forked",
+          forkedFromId: "thread-source",
+          cwd,
+          turns: [],
+        },
+        cwd,
+      },
+    )).toBe(true);
+
+    const page = {
+      data: [{
+        id: "turn-forked",
+        status: "completed",
+        itemsView: "full",
+        items: [{
+          id: "item-forked",
+          type: "agentMessage",
+          text: `[file](${path})`,
+        }],
+      }],
+    };
+    expect(store.observeRpcResult(
+      "thread/turns/list",
+      { threadId: "thread-forked" },
+      page,
+    )).toBe(true);
+    store.decorateRpcResult(
+      "thread/turns/list",
+      { threadId: "thread-forked", itemsView: "full" },
+      page,
+    );
+    expect(descriptors(page.data[0]?.items[0])).toHaveLength(1);
+    await store.close();
+  });
+
   it("keeps older content responses usable across newer same-scope authority refreshes", async () => {
     const cwd = await temporaryDirectory();
     const otherCwd = await temporaryDirectory();

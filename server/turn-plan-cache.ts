@@ -250,10 +250,35 @@ export class TurnPlanCache {
     };
   }
 
-  observeRpcResult(method: string, params: unknown): void {
-    if (method !== "thread/delete" || !isRecord(params)) return;
+  observeRpcResult(method: string, params: unknown, result?: unknown): void {
+    if (!isRecord(params)) return;
     const threadId = boundedIdentifier(params.threadId, this.limits.maxThreadIdBytes);
-    if (threadId) this.forgetThread(threadId);
+    if (!threadId) return;
+    if (method === "thread/delete") {
+      this.forgetThread(threadId);
+      return;
+    }
+    if (method !== "thread/fork" || !isRecord(result) || !isRecord(result.thread)) return;
+    const forkedThreadId = boundedIdentifier(result.thread.id, this.limits.maxThreadIdBytes);
+    if (
+      !forkedThreadId ||
+      forkedThreadId === threadId ||
+      result.thread.forkedFromId !== threadId
+    ) {
+      return;
+    }
+
+    const sourceRecords = [...this.records.values()].filter((record) => (
+      record.threadId === threadId
+    ));
+    for (const record of sourceRecords) {
+      this.remember(cacheRecord(
+        forkedThreadId,
+        record.turnId,
+        record.plan ? clonePlan(record.plan) : null,
+        record.unavailable,
+      ));
+    }
   }
 
   decorateRpcResult(method: string, params: unknown, projectedResult: unknown): unknown {

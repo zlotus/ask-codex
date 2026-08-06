@@ -15,8 +15,10 @@ export const SUPPORTED_ATTACHMENT_MEDIA_TYPES = [
   "image/webp",
 ] as const;
 
-export type AttachmentMediaType =
+export type ImageAttachmentMediaType =
   (typeof SUPPORTED_ATTACHMENT_MEDIA_TYPES)[number];
+
+export type AttachmentKind = "image" | "file";
 
 export interface AttachmentStoreLimits {
   maxAttachmentBytes: number;
@@ -48,14 +50,26 @@ export interface AttachmentStoreOptions {
   now?: () => number;
 }
 
-export interface AttachmentUpload {
+export interface ImageAttachmentUpload {
+  kind?: "image";
   mediaType: string;
   data: Uint8Array;
 }
 
+export interface FileAttachmentUpload {
+  kind: "file";
+  name: string;
+  mediaType: string;
+  data: Uint8Array;
+}
+
+export type AttachmentUpload = ImageAttachmentUpload | FileAttachmentUpload;
+
 export interface StoredAttachment {
   id: string;
-  mediaType: AttachmentMediaType;
+  kind: AttachmentKind;
+  name?: string;
+  mediaType: string;
   size: number;
   expiresAt: number;
 }
@@ -109,8 +123,12 @@ const DEFAULT_CLEANUP_INTERVAL_MS = 60_000;
 const MAX_OWNER_ID_CHARACTERS = 256;
 const FILE_CREATION_ATTEMPTS = 5;
 const JPEG_MARKER_SEARCH_BYTES = 4 * 1024;
+const MAX_ATTACHMENT_NAME_BYTES = 255;
+const MAX_MEDIA_TYPE_CHARACTERS = 127;
+const FILE_EXTENSION_PATTERN = /\.([A-Za-z0-9][A-Za-z0-9_-]{0,15})$/;
+const MEDIA_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 
-const EXTENSIONS: Record<AttachmentMediaType, string> = {
+const EXTENSIONS: Record<ImageAttachmentMediaType, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",
@@ -128,7 +146,7 @@ function storageUnavailable(): AttachmentStoreError {
   );
 }
 
-function normalizeMediaType(value: string): AttachmentMediaType | undefined {
+function normalizeImageMediaType(value: string): ImageAttachmentMediaType | undefined {
   const normalized = value.trim().toLowerCase();
   return SUPPORTED_ATTACHMENT_MEDIA_TYPES.find(
     (mediaType) => mediaType === normalized,
@@ -168,7 +186,7 @@ function hasJpegSignature(data: Uint8Array): boolean {
     data[markerCodeOffset] !== 0xff;
 }
 
-function detectedMediaType(data: Uint8Array): AttachmentMediaType | undefined {
+function detectedMediaType(data: Uint8Array): ImageAttachmentMediaType | undefined {
   if (
     startsWithBytes(data, [137, 80, 78, 71, 13, 10, 26, 10]) &&
     data.byteLength >= 24 &&
@@ -219,6 +237,35 @@ function hasControlCharacter(value: string): boolean {
     }
   }
   return false;
+}
+
+function normalizeFileName(value: string): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    hasControlCharacter(value) ||
+    Buffer.byteLength(value, "utf8") > MAX_ATTACHMENT_NAME_BYTES
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function normalizeFileMediaType(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase() || "application/octet-stream";
+  return normalized.length <= MAX_MEDIA_TYPE_CHARACTERS && MEDIA_TYPE_PATTERN.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function storedFileExtension(name: string): string {
+  const match = FILE_EXTENSION_PATTERN.exec(name);
+  return match ? `.${match[1].toLowerCase()}` : "";
 }
 
 function assertOwnerId(ownerId: string): void {
@@ -377,7 +424,20 @@ export class AttachmentStore {
       );
     }
 
-    const mediaType = normalizeMediaType(upload.mediaType);
+    const kind: AttachmentKind = upload.kind ?? "image";
+    const name = kind === "file" && "name" in upload
+      ? normalizeFileName(upload.name)
+      : undefined;
+    const mediaType = kind === "image"
+      ? normalizeImageMediaType(upload.mediaType)
+      : normalizeFileMediaType(upload.mediaType);
+    if (kind === "file" && !name) {
+      throw new AttachmentStoreError(
+        "invalidPayload",
+        400,
+        "Attachment file name is invalid",
+      );
+    }
     if (!mediaType) {
       throw new AttachmentStoreError(
         "unsupportedMediaType",
@@ -393,7 +453,7 @@ export class AttachmentStore {
         "Attachment exceeds the per-file size limit",
       );
     }
-    if (detectedMediaType(upload.data) !== mediaType) {
+    if (kind === "image" && detectedMediaType(upload.data) !== mediaType) {
       throw new AttachmentStoreError(
         "mediaTypeMismatch",
         415,
@@ -422,7 +482,10 @@ export class AttachmentStore {
         if (!ATTACHMENT_ID_PATTERN.test(candidate) || this.records.has(candidate)) {
           continue;
         }
-        const candidatePath = join(directory, `${candidate}.${EXTENSIONS[mediaType]}`);
+        const extension = kind === "image"
+          ? `.${EXTENSIONS[mediaType as ImageAttachmentMediaType]}`
+          : storedFileExtension(name!);
+        const candidatePath = join(directory, `${candidate}${extension}`);
         try {
           await writeFile(candidatePath, upload.data, {
             flag: "wx",
@@ -459,6 +522,8 @@ export class AttachmentStore {
       const record: AttachmentRecord = {
         id,
         ownerId,
+        kind,
+        ...(name === undefined ? {} : { name }),
         mediaType,
         size,
         expiresAt: this.now() + this.limits.ttlMs,
@@ -469,6 +534,8 @@ export class AttachmentStore {
       committed = true;
       return {
         id: record.id,
+        kind: record.kind,
+        ...(record.name === undefined ? {} : { name: record.name }),
         mediaType: record.mediaType,
         size: record.size,
         expiresAt: record.expiresAt,
@@ -550,6 +617,8 @@ export class AttachmentStore {
       record.expiresAt = now + this.limits.leaseTtlMs;
       return Object.freeze({
         id: record.id,
+        kind: record.kind,
+        ...(record.name === undefined ? {} : { name: record.name }),
         mediaType: record.mediaType,
         size: record.size,
         expiresAt: record.expiresAt,

@@ -1,11 +1,26 @@
-import { Gauge, ImagePlus, LoaderCircle, RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
+import {
+  FileText,
+  FileUp,
+  Gauge,
+  ImagePlus,
+  LoaderCircle,
+  Plus,
+  RotateCcw,
+  Send,
+  Sparkles,
+  Square,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ModelInfo, ThreadSettings } from "../types/protocol";
 import {
+  MAX_ATTACHMENTS_PER_TURN,
+  MAX_FILE_BYTES,
   MAX_IMAGE_BYTES,
-  MAX_IMAGES_PER_TURN,
   SUPPORTED_IMAGE_TYPES,
+  formatAttachmentSize,
   isPotentialImageFile,
+  isValidAttachmentFileName,
 } from "../utils/attachments";
 import { errorMessage } from "../utils/protocol";
 import { modelForSelection, normalizeEffortForModel } from "../utils/threadSettings";
@@ -21,7 +36,11 @@ interface ComposerProps {
   settings: ThreadSettings;
   models: ModelInfo[];
   onSettingsChange: (settings: Partial<ThreadSettings>) => void;
-  onSend: (text: string, images: readonly File[]) => Promise<void> | void;
+  onSend: (
+    text: string,
+    images: readonly File[],
+    files: readonly File[],
+  ) => Promise<void> | void;
   onSteer?: (text: string, expectedTurnId: string) => Promise<void> | void;
   onStop: () => Promise<void> | void;
 }
@@ -32,8 +51,14 @@ interface DraftImage {
   previewUrl: string;
 }
 
+interface DraftFile {
+  id: number;
+  file: File;
+}
+
 interface DraftSubmission {
   error?: string;
+  files: DraftFile[];
   images: DraftImage[];
   mode: "start" | "steer";
   expectedTurnId?: string;
@@ -69,13 +94,17 @@ export function Composer({
   const [inFlightSubmission, setInFlightSubmission] = useState<DraftSubmission | null>(null);
   const [failedSubmission, setFailedSubmission] = useState<DraftSubmission | null>(null);
   const [images, setImages] = useState<DraftImage[]>([]);
-  const [imageError, setImageError] = useState("");
+  const [files, setFiles] = useState<DraftFile[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const addControlRef = useRef<HTMLDivElement>(null);
   const imagesRef = useRef<DraftImage[]>([]);
   const failedSubmissionRef = useRef<DraftSubmission | null>(null);
   const inFlightSubmissionRef = useRef<DraftSubmission | null>(null);
-  const nextImageIdRef = useRef(0);
+  const nextAttachmentIdRef = useRef(0);
   const selectedModel = modelForSelection(models, settings.model);
   const efforts = selectedModel?.supportedReasoningEfforts ?? [];
   const effortKnown = !settings.effort || efforts.some((option) => option.reasoningEffort === settings.effort);
@@ -87,7 +116,7 @@ export function Composer({
   const canSubmit = !controlsDisabled && (canSteer
     ? Boolean(value.trim())
     : !running &&
-      (Boolean(value.trim()) || images.length > 0) &&
+      (Boolean(value.trim()) || images.length > 0 || files.length > 0) &&
       (images.length === 0 || imageInputSupported));
 
   useEffect(() => {
@@ -114,6 +143,22 @@ export function Composer({
   }, []);
 
   useEffect(() => {
+    if (!addMenuOpen) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!addControlRef.current?.contains(event.target as Node)) setAddMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAddMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [addMenuOpen]);
+
+  useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "0px";
@@ -122,14 +167,37 @@ export function Composer({
     textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
   }, [value]);
 
-  const addImages = (files: readonly File[]): number => {
-    if (turnControlsDisabled || files.length === 0) return 0;
+  const addAttachments = (
+    selectedFiles: readonly File[],
+    mode: "auto" | "files" | "images",
+  ): number => {
+    if (turnControlsDisabled || selectedFiles.length === 0) return 0;
     const accepted: DraftImage[] = [];
+    const acceptedFiles: DraftFile[] = [];
     let error = "";
-    for (const file of files) {
-      if (images.length + accepted.length >= MAX_IMAGES_PER_TURN) {
-        error = `A turn can include at most ${MAX_IMAGES_PER_TURN} images`;
+    let attachmentCount = images.length + files.length;
+    for (const file of selectedFiles) {
+      if (attachmentCount >= MAX_ATTACHMENTS_PER_TURN) {
+        error = `A turn can include at most ${MAX_ATTACHMENTS_PER_TURN} attachments`;
         break;
+      }
+      const asImage = mode === "images" || (mode === "auto" && isPotentialImageFile(file));
+      if (!asImage) {
+        if (!isValidAttachmentFileName(file.name)) {
+          error ||= "File name is invalid";
+          continue;
+        }
+        if (file.size === 0) {
+          error ||= `${file.name} is empty`;
+          continue;
+        }
+        if (file.size > MAX_FILE_BYTES) {
+          error ||= `${file.name} exceeds the 10 MiB file limit`;
+          continue;
+        }
+        acceptedFiles.push({ id: ++nextAttachmentIdRef.current, file });
+        attachmentCount += 1;
+        continue;
       }
       if (!isPotentialImageFile(file)) {
         error ||= `${file.name || "Image"} must be a PNG, JPEG, or WebP image`;
@@ -149,10 +217,11 @@ export function Composer({
       }
       try {
         accepted.push({
-          id: ++nextImageIdRef.current,
+          id: ++nextAttachmentIdRef.current,
           file,
           previewUrl: URL.createObjectURL(file),
         });
+        attachmentCount += 1;
       } catch {
         for (const image of accepted) revokePreview(image.previewUrl);
         accepted.length = 0;
@@ -161,8 +230,9 @@ export function Composer({
       }
     }
     if (accepted.length > 0) setImages((current) => [...current, ...accepted]);
-    setImageError(error);
-    return accepted.length;
+    if (acceptedFiles.length > 0) setFiles((current) => [...current, ...acceptedFiles]);
+    setAttachmentError(error);
+    return accepted.length + acceptedFiles.length;
   };
 
   const removeImage = (id: number) => {
@@ -172,7 +242,13 @@ export function Composer({
       if (removed) revokePreview(removed.previewUrl);
       return current.filter((image) => image.id !== id);
     });
-    setImageError("");
+    setAttachmentError("");
+  };
+
+  const removeFile = (id: number) => {
+    if (sending) return;
+    setFiles((current) => current.filter((file) => file.id !== id));
+    setAttachmentError("");
   };
 
   const sendSubmission = async (submission: DraftSubmission) => {
@@ -184,11 +260,15 @@ export function Composer({
         }
         await onSteer(submission.text, submission.expectedTurnId);
       } else {
-        await onSend(submission.text, submission.images.map((image) => image.file));
+        await onSend(
+          submission.text,
+          submission.images.map((image) => image.file),
+          submission.files.map((file) => file.file),
+        );
       }
       for (const image of submission.images) revokePreview(image.previewUrl);
       setFailedSubmission((current) => current === submission ? null : current);
-      setImageError("");
+      setAttachmentError("");
     } catch (error) {
       // Keep a failed send separate so it cannot overwrite typing that started in the meantime.
       setFailedSubmission({ ...submission, error: errorMessage(error) });
@@ -201,10 +281,14 @@ export function Composer({
     const text = value.trim();
     if (!canSubmit) return;
     const submission: DraftSubmission = canSteer
-      ? { mode: "steer", text, images: [], expectedTurnId: activeTurnId! }
-      : { mode: "start", text, images };
+      ? { mode: "steer", text, images: [], files: [], expectedTurnId: activeTurnId! }
+      : { mode: "start", text, images, files };
     setValue("");
-    if (submission.mode === "start") setImages([]);
+    if (submission.mode === "start") {
+      setImages([]);
+      setFiles([]);
+      setAddMenuOpen(false);
+    }
     await sendSubmission(submission);
   };
 
@@ -216,9 +300,9 @@ export function Composer({
 
   return (
     <div className="composer-wrap">
-      <div className={`composer${images.length > 0 ? " composer--with-attachments" : ""}`}>
-        {images.length > 0 && (
-          <div className="composer-attachments" role="list" aria-label="Selected images">
+      <div className={`composer${images.length + files.length > 0 ? " composer--with-attachments" : ""}`}>
+        {images.length + files.length > 0 && (
+          <div className="composer-attachments" role="list" aria-label="Selected attachments">
             {images.map((image) => (
               <div className="composer-attachment" role="listitem" key={image.id}>
                 <img src={image.previewUrl} alt="" />
@@ -230,6 +314,31 @@ export function Composer({
                   aria-label={`Remove ${image.file.name || "image"}`}
                   disabled={sending}
                   onClick={() => removeImage(image.id)}
+                >
+                  <X size={13} aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+            {files.map((file) => (
+              <div
+                className="composer-attachment composer-attachment--file"
+                role="listitem"
+                key={file.id}
+              >
+                <span className="composer-file-icon" aria-hidden="true">
+                  <FileText size={20} />
+                </span>
+                <span className="composer-file-copy">
+                  <strong title={file.file.name}>{file.file.name}</strong>
+                  <small>{formatAttachmentSize(file.file.size)}</small>
+                </span>
+                <button
+                  type="button"
+                  className="composer-attachment-remove"
+                  title={`Remove ${file.file.name}`}
+                  aria-label={`Remove ${file.file.name}`}
+                  disabled={sending}
+                  onClick={() => removeFile(file.id)}
                 >
                   <X size={13} aria-hidden="true" />
                 </button>
@@ -252,12 +361,9 @@ export function Composer({
             void submit();
           }}
           onPaste={(event) => {
-            const pastedImages = clipboardFiles(event.clipboardData)
-              .filter((file) => (
-                file.type.trim().toLowerCase().startsWith("image/") ||
-                isPotentialImageFile(file)
-              ));
-            if (addImages(pastedImages) > 0) event.preventDefault();
+            if (addAttachments(clipboardFiles(event.clipboardData), "auto") > 0) {
+              event.preventDefault();
+            }
           }}
           placeholder={running
             ? "Guide active turn (Ctrl+Enter to steer)"
@@ -268,16 +374,18 @@ export function Composer({
         />
         <span className="sr-only" aria-live="polite">
           {sending
-            ? inFlightSubmission?.mode === "steer"
+              ? inFlightSubmission?.mode === "steer"
               ? "Steering active turn"
-              : inFlightSubmission?.images.length ? "Uploading images" : "Sending message"
-            : images.length > 0
-              ? `${images.length} image${images.length === 1 ? "" : "s"} selected`
+              : inFlightSubmission && inFlightSubmission.images.length + inFlightSubmission.files.length > 0
+                ? "Uploading attachments"
+                : "Sending message"
+            : images.length + files.length > 0
+              ? `${images.length + files.length} attachment${images.length + files.length === 1 ? "" : "s"} selected`
               : ""}
         </span>
         <div className="composer-footer" aria-label={running ? "Active turn controls" : "Next turn settings"}>
           <input
-            ref={fileInputRef}
+            ref={imageInputRef}
             hidden
             type="file"
             accept={SUPPORTED_IMAGE_TYPES.join(",")}
@@ -286,7 +394,20 @@ export function Composer({
             aria-label="Choose images"
             tabIndex={-1}
             onChange={(event) => {
-              addImages(Array.from(event.target.files ?? []));
+              addAttachments(Array.from(event.target.files ?? []), "images");
+              event.target.value = "";
+            }}
+          />
+          <input
+            ref={attachmentInputRef}
+            hidden
+            type="file"
+            multiple
+            disabled={turnControlsDisabled}
+            aria-label="Choose files"
+            tabIndex={-1}
+            onChange={(event) => {
+              addAttachments(Array.from(event.target.files ?? []), "files");
               event.target.value = "";
             }}
           />
@@ -302,16 +423,48 @@ export function Composer({
               <Square size={14} fill="currentColor" aria-hidden="true" />
             </button>
           ) : (
-            <button
-              type="button"
-              className="composer-image-action"
-              title={imageInputSupported ? "Add images" : "Selected model does not support images"}
-              aria-label="Add images"
-              disabled={turnControlsDisabled || !imageInputSupported}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <ImagePlus size={15} aria-hidden="true" />
-            </button>
+            <div className="composer-add-control" ref={addControlRef}>
+              <button
+                type="button"
+                className="composer-image-action"
+                title="Add attachment"
+                aria-label="Add attachment"
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen}
+                disabled={turnControlsDisabled}
+                onClick={() => setAddMenuOpen((open) => !open)}
+              >
+                <Plus size={16} aria-hidden="true" />
+              </button>
+              {addMenuOpen && (
+                <div className="composer-add-menu" role="menu" aria-label="Add attachment">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!imageInputSupported}
+                    title={imageInputSupported ? "Add images" : "Selected model does not support images"}
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      imageInputRef.current?.click();
+                    }}
+                  >
+                    <ImagePlus size={15} aria-hidden="true" />
+                    Add images
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      attachmentInputRef.current?.click();
+                    }}
+                  >
+                    <FileUp size={15} aria-hidden="true" />
+                    Add files
+                  </button>
+                </div>
+              )}
+            </div>
           )}
           <label className="composer-setting" title="Model for the next turn">
             <Sparkles size={12} aria-hidden="true" />
@@ -382,9 +535,12 @@ export function Composer({
             <span className="composer-failed-preview">
               {failedSubmission.text
                 ? `${failedSubmission.text.slice(0, 160)}${failedSubmission.text.length > 160 ? "..." : ""}`
-                : "Image-only message"}
+                : "Attachment-only message"}
               {failedSubmission.images.length > 0 && (
                 ` · ${failedSubmission.images.length} image${failedSubmission.images.length === 1 ? "" : "s"}`
+              )}
+              {failedSubmission.files.length > 0 && (
+                ` · ${failedSubmission.files.length} file${failedSubmission.files.length === 1 ? "" : "s"}`
               )}
             </span>
           </span>
@@ -414,9 +570,9 @@ export function Composer({
           </button>
         </div>
       )}
-      {(imageError || (images.length > 0 && !imageInputSupported)) && (
+      {(attachmentError || (images.length > 0 && !imageInputSupported)) && (
         <div className="composer-error" role="alert">
-          {imageError || "Selected model does not support image input"}
+          {attachmentError || "Selected model does not support image input"}
         </div>
       )}
     </div>

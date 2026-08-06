@@ -61,6 +61,16 @@ import {
   type SessionImagePreviewSnapshot,
 } from "./utils/sessionImagePreviews";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
+import { BrowserFileAttachmentStore } from "./utils/browserFileAttachmentStore";
+import {
+  MAX_LOCAL_FILE_BYTES,
+  MAX_LOCAL_FILE_COUNT,
+  SessionFileAttachmentRegistry,
+  sessionFileAttachmentKey,
+  sessionFileAttachmentThreadId,
+  type LocalFileAttachment,
+  type SessionFileAttachmentSnapshot,
+} from "./utils/sessionFileAttachments";
 import { filterSnapshotCoveredNotifications, ResyncCoordinator } from "./utils/resyncCoordinator";
 import {
   configuredTurnSettings,
@@ -80,8 +90,12 @@ import {
 } from "./utils/turnHistory";
 import {
   discardAttachments,
+  discardFileAttachments,
+  MAX_ATTACHMENTS_PER_TURN,
+  uploadFileAttachments,
   uploadImageAttachments,
   type UploadedAttachment,
+  type UploadedFileAttachment,
 } from "./utils/attachments";
 import { downloadFileCapability } from "./utils/fileDownloads";
 
@@ -151,6 +165,11 @@ interface PendingImagePreviewGroup {
   byteSize: number;
 }
 
+interface PendingFileAttachmentGroup {
+  byteSize: number;
+  files: readonly LocalFileAttachment[];
+}
+
 type NextTurnSettings = Pick<ThreadSettings, "model" | "effort">;
 
 function reasoningPartIndex(value: unknown): number | null {
@@ -206,6 +225,30 @@ function queuePendingImagePreview(
   }
 }
 
+function queuePendingFileAttachments(
+  groups: Map<string, PendingFileAttachmentGroup>,
+  key: string,
+  files: readonly LocalFileAttachment[],
+): void {
+  groups.delete(key);
+  groups.set(key, {
+    files,
+    byteSize: files.reduce((total, file) => total + file.size, 0),
+  });
+  let fileCount = [...groups.values()]
+    .reduce((total, group) => total + group.files.length, 0);
+  let byteSize = [...groups.values()]
+    .reduce((total, group) => total + group.byteSize, 0);
+  while (fileCount > MAX_LOCAL_FILE_COUNT || byteSize > MAX_LOCAL_FILE_BYTES) {
+    const oldestKey = groups.keys().next().value as string | undefined;
+    if (oldestKey === undefined) break;
+    const oldest = groups.get(oldestKey)!;
+    groups.delete(oldestKey);
+    fileCount -= oldest.files.length;
+    byteSize -= oldest.byteSize;
+  }
+}
+
 export default function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [token, setToken] = useState(loadStoredToken);
@@ -242,6 +285,7 @@ export default function App() {
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
   const [sandboxOverride, setSandboxOverride] = useState<ThreadSettings["sandbox"] | null>(null);
   const [imagePreviews, setImagePreviews] = useState<SessionImagePreviewSnapshot>({});
+  const [fileAttachments, setFileAttachments] = useState<SessionFileAttachmentSnapshot>({});
   const toastIdRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
@@ -264,14 +308,24 @@ export default function App() {
   const skillsLoadedRef = useRef(false);
   const handledSkillsInvalidationRef = useRef(0);
   const pendingCanonicalThreadIdsRef = useRef(new Set<string>());
+  const pendingThreadForkIdsRef = useRef(new Set<string>());
   const imagePreviewsMountedRef = useRef(false);
   const imagePreviewRegistryRef = useRef<SessionImagePreviewRegistry | null>(null);
   const imagePreviewStoreRef = useRef<BrowserImagePreviewStore | null>(null);
   const imagePreviewHydratedRef = useRef(false);
   const pendingImagePreviewGroupsRef = useRef(new Map<string, PendingImagePreviewGroup>());
   const removedImagePreviewThreadIdsRef = useRef(new Set<string>());
+  const fileAttachmentsMountedRef = useRef(false);
+  const fileAttachmentRegistryRef = useRef<SessionFileAttachmentRegistry | null>(null);
+  const fileAttachmentStoreRef = useRef<BrowserFileAttachmentStore | null>(null);
+  const fileAttachmentHydratedRef = useRef(false);
+  const pendingFileAttachmentGroupsRef = useRef(new Map<string, PendingFileAttachmentGroup>());
+  const removedFileAttachmentThreadIdsRef = useRef(new Set<string>());
   if (imagePreviewRegistryRef.current === null) {
     imagePreviewRegistryRef.current = new SessionImagePreviewRegistry();
+  }
+  if (fileAttachmentRegistryRef.current === null) {
+    fileAttachmentRegistryRef.current = new SessionFileAttachmentRegistry();
   }
   const composerSettings = useMemo<ThreadSettings>(
     () => ({ ...state.settings, ...nextTurnSettings }),
@@ -400,13 +454,104 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    const registry = fileAttachmentRegistryRef.current!;
+    const store = new BrowserFileAttachmentStore();
+    const pendingGroups = pendingFileAttachmentGroupsRef.current;
+    let active = true;
+
+    registry.clear();
+    setFileAttachments(registry.snapshot());
+    fileAttachmentsMountedRef.current = true;
+    fileAttachmentHydratedRef.current = false;
+    pendingGroups.clear();
+    fileAttachmentStoreRef.current = store;
+    void (async () => {
+      let entries: Awaited<ReturnType<BrowserFileAttachmentStore["loadAll"]>> | null = null;
+      try {
+        entries = await store.loadAll();
+      } catch {
+        // Browser storage is optional; current-page file downloads remain in memory.
+      }
+      if (!active) return;
+
+      const pending = [...pendingGroups];
+      if (entries) {
+        registry.clear();
+        for (const entry of entries) {
+          const threadId = sessionFileAttachmentThreadId(entry.key);
+          if (threadId && !removedFileAttachmentThreadIdsRef.current.has(threadId)) {
+            registry.remember(entry.key, entry.files);
+          }
+        }
+        for (const [key, group] of pending) {
+          const threadId = sessionFileAttachmentThreadId(key);
+          if (threadId && !removedFileAttachmentThreadIdsRef.current.has(threadId)) {
+            registry.remember(key, group.files);
+          }
+        }
+        setFileAttachments(registry.snapshot());
+      }
+      pendingGroups.clear();
+      fileAttachmentHydratedRef.current = true;
+      for (const [key, group] of pending) {
+        const threadId = sessionFileAttachmentThreadId(key);
+        if (!threadId || removedFileAttachmentThreadIdsRef.current.has(threadId)) continue;
+        void store.remember(key, group.files).catch(() => {
+          // A local file write never changes the accepted Codex turn.
+        });
+      }
+    })();
+
+    return () => {
+      active = false;
+      fileAttachmentsMountedRef.current = false;
+      if (fileAttachmentStoreRef.current === store) {
+        fileAttachmentStoreRef.current = null;
+        fileAttachmentHydratedRef.current = false;
+        pendingGroups.clear();
+      }
+      store.close();
+      registry.clear();
+    };
+  }, []);
+
+  const rememberFileAttachments = useCallback((
+    threadId: string,
+    turnId: string,
+    files: readonly File[],
+    attachments: readonly UploadedFileAttachment[],
+  ): void => {
+    const registry = fileAttachmentRegistryRef.current;
+    if (!registry || !fileAttachmentsMountedRef.current || files.length === 0) return;
+    try {
+      const localFiles = files.map((file, index): LocalFileAttachment => ({
+        blob: file.slice(0, file.size, attachments[index]?.mediaType ?? file.type),
+        mediaType: attachments[index]?.mediaType || file.type || "application/octet-stream",
+        name: attachments[index]?.name || file.name,
+        size: file.size,
+      }));
+      const key = sessionFileAttachmentKey(threadId, turnId);
+      setFileAttachments(registry.remember(key, localFiles));
+      if (!fileAttachmentHydratedRef.current) {
+        queuePendingFileAttachments(pendingFileAttachmentGroupsRef.current, key, localFiles);
+        return;
+      }
+      void fileAttachmentStoreRef.current?.remember(key, localFiles).catch(() => {
+        // A local file write never changes the accepted Codex turn.
+      });
+    } catch {
+      // Blob failures leave the durable Codex message intact and disable local download only.
+    }
+  }, []);
+
   const showToast = useCallback((message: string, tone: ToastMessage["tone"] = "error") => {
     const id = ++toastIdRef.current;
     dispatch({ type: "toast", toast: { id, tone, message } });
     window.setTimeout(() => dispatch({ type: "removeToast", id }), 5_500);
   }, []);
 
-  const removeImagePreviewsForThread = useCallback((threadId: string): void => {
+  const removeLocalAttachmentsForThread = useCallback((threadId: string): void => {
     removedImagePreviewThreadIdsRef.current.add(threadId);
     for (const key of [...pendingImagePreviewGroupsRef.current.keys()]) {
       if (sessionImagePreviewThreadId(key) === threadId) {
@@ -419,6 +564,19 @@ export default function App() {
     }
     void imagePreviewStoreRef.current?.removeThread(threadId).catch(() => {
       // The Codex thread is already deleted; local preview cleanup is best-effort.
+    });
+    removedFileAttachmentThreadIdsRef.current.add(threadId);
+    for (const key of [...pendingFileAttachmentGroupsRef.current.keys()]) {
+      if (sessionFileAttachmentThreadId(key) === threadId) {
+        pendingFileAttachmentGroupsRef.current.delete(key);
+      }
+    }
+    const fileRegistry = fileAttachmentRegistryRef.current;
+    if (fileRegistry && fileAttachmentsMountedRef.current) {
+      setFileAttachments(fileRegistry.removeThread(threadId));
+    }
+    void fileAttachmentStoreRef.current?.removeThread(threadId).catch(() => {
+      // The Codex thread is already deleted; local file cleanup is best-effort.
     });
   }, []);
 
@@ -579,7 +737,7 @@ export default function App() {
           });
           pendingCanonicalThreadIdsRef.current.delete(threadId);
           invalidateSelectedThread(threadId);
-          removeImagePreviewsForThread(threadId);
+          removeLocalAttachmentsForThread(threadId);
           dispatch({ type: "deleteThread", threadId });
         }
         return;
@@ -710,7 +868,7 @@ export default function App() {
     captureThreadCwdAuthorityRevision,
     invalidateSelectedThread,
     rememberAuthoritativeThreadCwd,
-    removeImagePreviewsForThread,
+    removeLocalAttachmentsForThread,
   ]);
 
   const onNotification = useCallback((message: NotificationMessage) => {
@@ -1549,7 +1707,11 @@ export default function App() {
     setThreadDialog(null);
   }, [state.currentThread, state.settings.sandbox, threadDialog?.mode]);
 
-  const sendMessage = useCallback(async (text: string, images: readonly File[]) => {
+  const sendMessage = useCallback(async (
+    text: string,
+    images: readonly File[],
+    files: readonly File[],
+  ) => {
     if (state.activeTurnId) {
       throw new Error("A turn is already active; the message was not sent as a new turn");
     }
@@ -1561,7 +1723,8 @@ export default function App() {
       ? threadCwdUpdatesRef.current.get(guardedThreadId)?.revision ?? 0
       : 0;
     const cwd = state.settings.cwd.trim();
-    let uploaded: UploadedAttachment[] = [];
+    let uploadedImages: UploadedAttachment[] = [];
+    let uploadedFiles: UploadedFileAttachment[] = [];
     let turnAccepted = false;
     const assertSelectionUnchanged = (): void => {
       if (selectionGeneration !== selectionGenerationRef.current) {
@@ -1579,7 +1742,11 @@ export default function App() {
     };
     try {
       if (!cwd) throw new Error("Choose an absolute working directory first");
-      uploaded = await uploadImageAttachments(images, token);
+      if (images.length + files.length > MAX_ATTACHMENTS_PER_TURN) {
+        throw new Error(`A turn can include at most ${MAX_ATTACHMENTS_PER_TURN} attachments`);
+      }
+      uploadedImages = await uploadImageAttachments(images, token);
+      uploadedFiles = await uploadFileAttachments(files, token);
       assertSelectionUnchanged();
       if (!thread) {
         const threadStartAuthorityRevision = captureThreadCwdAuthorityRevision();
@@ -1646,8 +1813,12 @@ export default function App() {
         threadId: thread.id,
         input: [
           ...(text ? [{ type: "text", text, text_elements: [] }] : []),
-          ...uploaded.map((attachment) => ({
+          ...uploadedImages.map((attachment) => ({
             type: "localImage",
+            attachmentId: attachment.id,
+          })),
+          ...uploadedFiles.map((attachment) => ({
+            type: "file",
             attachmentId: attachment.id,
           })),
         ],
@@ -1656,14 +1827,18 @@ export default function App() {
       });
       turnAccepted = true;
       const turn = extractTurn(result);
-      if (turn) rememberImagePreviews(thread.id, turn.id, images, uploaded);
+      if (turn) {
+        rememberImagePreviews(thread.id, turn.id, images, uploadedImages);
+        rememberFileAttachments(thread.id, turn.id, files, uploadedFiles);
+      }
       if (turn && selectionGeneration === selectionGenerationRef.current) {
         dispatch({ type: "upsertTurn", turn, threadId: thread.id });
       }
       void refreshThreads();
     } catch (error) {
-      if (!turnAccepted && uploaded.length > 0) {
-        void discardAttachments(uploaded, token);
+      if (!turnAccepted) {
+        if (uploadedImages.length > 0) void discardAttachments(uploadedImages, token);
+        if (uploadedFiles.length > 0) void discardFileAttachments(uploadedFiles, token);
       }
       throw error;
     }
@@ -1672,6 +1847,7 @@ export default function App() {
     nextTurnSettings,
     refreshThreads,
     rememberAuthoritativeThreadCwd,
+    rememberFileAttachments,
     rememberImagePreviews,
     rpc,
     sandboxOverride,
@@ -1772,6 +1948,106 @@ export default function App() {
     }
   }, [rpc, showToast]);
 
+  const forkThread = useCallback(async (threadId: string) => {
+    if (isThreadActive(threadId)) {
+      showToast("Active threads cannot be forked");
+      return;
+    }
+    if (pendingThreadForkIdsRef.current.has(threadId)) {
+      showToast("A fork of this thread is already in progress");
+      return;
+    }
+    pendingThreadForkIdsRef.current.add(threadId);
+    const requestedGeneration = selectionGenerationRef.current;
+    const cwdAuthorityRevision = captureThreadCwdAuthorityRevision();
+    try {
+      const result = await rpc("thread/fork", { threadId });
+      const thread = extractThread(result);
+      if (!thread || thread.id === threadId || thread.forkedFromId !== threadId) {
+        throw new Error("Codex did not return a valid forked thread");
+      }
+      const response = paramsRecord(result);
+      const returnedCwd = thread.cwd ?? readString(response.cwd);
+      const authority = returnedCwd
+        ? rememberAuthoritativeThreadCwd(thread.id, returnedCwd, cwdAuthorityRevision)
+        : threadCwdUpdatesRef.current.get(thread.id);
+      const cwd = authority?.cwd || bootstrap?.defaultCwd || "";
+      const forkedThread = { ...thread, cwd };
+
+      threadListMutationEpochRef.current += 1;
+      rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, forkedThread.id);
+      dispatch({ type: "upsertThread", thread: forkedThread });
+      void refreshThreads();
+
+      if (requestedGeneration !== selectionGenerationRef.current) {
+        showToast("Thread forked", "success");
+        return;
+      }
+
+      const generation = ++selectionGenerationRef.current;
+      selectedThreadIdRef.current = forkedThread.id;
+      nextTurnSettingsInitializedRef.current = true;
+      setDraftThreadConfigured(false);
+      setSandboxOverride(null);
+      setThreadDialog(null);
+      setSidebarOpen(false);
+      setThreadLoadError(null);
+      setResyncError(null);
+      setLoadingThread(true);
+      dispatch({ type: "selectThread", threadId: forkedThread.id });
+
+      try {
+        const page = await requestTurnPage(rpc, {
+          threadId: forkedThread.id,
+          preferredLimit: TURN_PAGE_SIZE,
+        });
+        if (generation !== selectionGenerationRef.current) return;
+        dispatch({
+          type: "setCurrentThread",
+          thread: { ...forkedThread, turns: turnsForDisplay(page, null) },
+          history: { nextCursor: page.nextCursor },
+        });
+        const model = readString(response.model) ?? forkedThread.model ?? configuredDefaults.model;
+        const effort = readString(response.reasoningEffort) ?? (model === configuredDefaults.model
+          ? configuredDefaults.effort
+          : normalizeEffortForModel(models, model, ""));
+        setNextTurnSettings({ model, effort });
+        dispatch({
+          type: "settings",
+          settings: {
+            cwd,
+            model,
+            effort,
+            sandbox: sandboxMode(response.sandbox) ?? "workspace-write",
+          },
+        });
+        showToast("Thread forked", "success");
+      } catch (error) {
+        if (generation === selectionGenerationRef.current) {
+          const message = `Thread forked, but its history could not be loaded: ${errorMessage(error)}`;
+          setThreadLoadError(message);
+          showToast(message);
+        }
+      } finally {
+        if (generation === selectionGenerationRef.current) setLoadingThread(false);
+      }
+    } catch (error) {
+      showToast(`Fork was not confirmed: ${errorMessage(error)}. Refresh threads before trying again.`);
+    } finally {
+      pendingThreadForkIdsRef.current.delete(threadId);
+    }
+  }, [
+    bootstrap,
+    captureThreadCwdAuthorityRevision,
+    configuredDefaults,
+    isThreadActive,
+    models,
+    refreshThreads,
+    rememberAuthoritativeThreadCwd,
+    rpc,
+    showToast,
+  ]);
+
   const archiveThread = useCallback(async (threadId: string) => {
     if (isThreadActive(threadId)) {
       showToast("Active threads cannot be archived");
@@ -1810,13 +2086,13 @@ export default function App() {
       threadListMutationEpochRef.current += 1;
       pendingCanonicalThreadIdsRef.current.delete(threadId);
       invalidateSelectedThread(threadId);
-      removeImagePreviewsForThread(threadId);
+      removeLocalAttachmentsForThread(threadId);
       dispatch({ type: "deleteThread", threadId });
       showToast("Thread permanently deleted", "success");
     } catch (error) {
       showToast(errorMessage(error));
     }
-  }, [invalidateSelectedThread, isThreadActive, removeImagePreviewsForThread, rpc, showToast]);
+  }, [invalidateSelectedThread, isThreadActive, removeLocalAttachmentsForThread, rpc, showToast]);
 
   const resolveRequest = useCallback((id: string | number, result: unknown) => {
     try {
@@ -1883,6 +2159,7 @@ export default function App() {
         onArchive={(threadId) => void archiveThread(threadId)}
         onUnarchive={(threadId) => void unarchiveThread(threadId)}
         onDelete={(threadId) => void deleteThread(threadId)}
+        onFork={(threadId) => void forkThread(threadId)}
         onRename={(threadId, name) => void renameThread(threadId, name)}
         onPin={(threadId, isPinned) => void setThreadPinned(threadId, isPinned)}
         onNew={openNewThread}
@@ -1918,6 +2195,7 @@ export default function App() {
           historyLoading={state.turnHistory.status === "loading"}
           hasMore={state.turnHistory.nextCursor !== null}
           historyError={state.turnHistory.error}
+          fileAttachments={fileAttachments}
           imagePreviews={imagePreviews}
           onDownloadFile={(capability) => downloadFileCapability(capability, token)}
           onLoadEarlier={() => void loadEarlierTurns()}

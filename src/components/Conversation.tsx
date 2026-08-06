@@ -1,6 +1,10 @@
 import { ArrowDown, ArrowUp, Bot, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CodexThread, CodexTurn, FileDownloadHandler } from "../types/protocol";
+import {
+  sessionFileAttachmentKey,
+  type SessionFileAttachmentSnapshot,
+} from "../utils/sessionFileAttachments";
 import { sessionImagePreviewKey, type SessionImagePreviewSnapshot } from "../utils/sessionImagePreviews";
 import { TurnView } from "./TurnView";
 
@@ -12,6 +16,7 @@ interface ConversationProps {
   historyLoading: boolean;
   hasMore: boolean;
   historyError: string | null;
+  fileAttachments?: SessionFileAttachmentSnapshot;
   imagePreviews?: SessionImagePreviewSnapshot;
   onDownloadFile?: FileDownloadHandler;
   onLoadEarlier: () => void;
@@ -52,6 +57,7 @@ export function Conversation({
   historyLoading,
   hasMore,
   historyError,
+  fileAttachments = {},
   imagePreviews = {},
   onDownloadFile,
   onLoadEarlier,
@@ -222,6 +228,7 @@ export function Conversation({
                   key={turn.id}
                   turn={turn}
                   activeReasoningItemIds={activeReasoningItemIdsByTurn[turn.id]}
+                  fileAttachments={thread ? fileAttachments[sessionFileAttachmentKey(thread.id, turn.id)] : undefined}
                   imagePreviewUrls={thread ? imagePreviews[sessionImagePreviewKey(thread.id, turn.id)] : undefined}
                   onDownloadFile={onDownloadFile}
                   onLoadFullDetail={onLoadTurnDetail}

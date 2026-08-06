@@ -2,15 +2,15 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-06
+最后审阅：2026-08-07
 
 ## 当前里程碑
 
-本轮 P1 已完成：运行中的轮次现在支持绑定确切 `expectedTurnId` 的原生文本 steering；
-长历史由整体 DOM 预算约束，并提供已加载轮次的 Earlier/Newer 窗口导航。Steering 保持
-显式确认、审批 owner 和未知结果不重放语义，历史窗口则始终把活跃轮次计入 24 个挂载名额。
-此前完成的线程 cwd 连续性、受限文件交接、网关安全硬化和结构化 Plan 有界恢复继续保持。
-下一项近期工作尚未选定。
+P2 多类型文件输入已完成：输入框通过统一的 `+` 菜单选择图片或普通文件，剪贴板自动区分
+可预览图片与文件卡片。普通文件经受限临时上传和网关构造的 application context 交给 Codex，
+浏览器不能提交路径或 `additionalContext`；成功轮次在同源 IndexedDB 中有界保存本地下载
+副本。此前完成的受限原生 fork、P1 文本 steering 和长历史整体 DOM 预算，以及 cwd 连续性、
+Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继续保持。下一项近期工作尚未选定。
 
 ## 当前基线
 
@@ -19,7 +19,7 @@
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
   包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
   发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。轮次运行时，同一输入框可向提交时
-  捕获的活跃轮次发送纯文本 steering；图片草稿保持不变，但图片、模型和 effort 控件继续
+  捕获的活跃轮次发送纯文本 steering；附件草稿保持不变，但附件、模型和 effort 控件继续
   禁用。未确认成功的普通发送或 steering 会与发送期间继续输入的新草稿分开保留；原轮次
   不再活跃后，失败的 steering 仍保留但不能被错误重试为新轮次。新建线程在首轮期间会
   保留在侧边栏，直到 active 或
@@ -27,10 +27,11 @@
   名称、预览和时间，因此稀疏状态通知不会使条目消失或退化为 UUID。
 - Active/Archived 双视图按精确 cwd 分组，并在每组中先显示置顶线程，再保持其他线程的
   原有顺序。统一线程动作菜单支持桌面端右键、移动端 550 毫秒长按和所有端的 `...`
-  入口；重命名、置顶和取消置顶即使在线程有运行中轮次时也可使用。运行中线程仍不能
-  归档或删除；其他空闲线程可归档，已归档线程可恢复，两类空闲线程均可在明确提示线程
+  入口；重命名、置顶和取消置顶即使在线程有运行中轮次时也可使用。空闲的 Active 或
+  Archived 线程可以 fork；成功后通常选择新线程，若用户在请求期间已经切换则只更新列表。
+  运行中线程仍不能 fork、归档或删除；其他空闲线程可归档，已归档线程可恢复，两类空闲线程均可在明确提示线程
   及其后代会话可能被永久移除后确认删除。来自其他客户端的名称、归档、恢复和删除通知
-  会同步列表与当前选择；删除还会清理该线程在内存和 IndexedDB 中的浏览器本地图片预览。
+  会同步列表与当前选择；删除还会清理该线程在内存和 IndexedDB 中的浏览器本地图片和文件副本。
 - 第四个只读 Skills 标签按 cwd 展示 skill 名称、描述、`user`/`repo`/`system`/`admin`
   作用域和启用状态，并只用计数提示无法加载的条目。目录在首次打开标签时开始加载；手动
   刷新发送 `forceReload: true`，`skills/changed` 通知则使已经加载过的目录重新扫描。
@@ -64,7 +65,8 @@
   模式；已有分页线程仍可通过严格受限的 `thread/items/list` 按升序逐页恢复，默认或
   `legacy` 线程保留单轮完整详情重试。已加载历史通常只挂载最新 24 个轮次，Earlier/Newer
   每次移动 12 个轮次；活跃轮次固定占用其中一个名额。前插历史、新轮次追加、离底浏览和
-  切换线程分别保持可预期的窗口与滚动位置。
+  切换线程分别保持可预期的窗口与滚动位置。`thread/fork` 固定排除初始响应中的完整历史，
+  新线程同样走该分页路径，因此默认和 `paginated` 来源不会因长历史扩大 fork 响应。
 - 流式显示消息、推理、计划、命令输出、文件变更、MCP 调用、网页搜索、轮次 diff，
   并为未知条目提供降级渲染；连续且有内容的历史推理在原位置合并并可展开，进行中轮次底部
   则保留固定的推理状态槽，活动推理显示动画，无活动推理时显示灰态，从而避免推理生命周期
@@ -72,8 +74,10 @@
   可展开查看有界滚动的完整步骤；轮次结束后摘要消失，历史计划仍留在原轮次中。
   实时 Plan 与恢复快照使用同一份严格有界投影；网关按线程与轮次缓存最新完整通知，并将其
   附加到只读轮次响应和生命周期通知。Plan 对象、明确不可恢复的 `null` 和缓存未知的缺失字段
-  分别覆盖、清除或保留浏览器状态，重同步快照也会压过它已覆盖的较早缓冲 Plan。轮次 diff
-  明确呈现为位于轮次末尾的整轮变更汇总；其后的轮次 footer 会显示
+  分别覆盖、清除或保留浏览器状态，重同步快照也会压过它已覆盖的较早缓冲 Plan。成功 fork
+  会把当前进程内来源线程的有界 Plan 记录复制到新线程 ID，保留可恢复与明确不可恢复状态；
+  它仍不把缓存升级为跨进程事实来源。轮次 diff 明确呈现为位于轮次末尾的整轮变更汇总；
+  其后的轮次 footer 会显示
   app-server 原生的开始时间与总耗时，缺失字段则静默省略。流和消息大小均有明确边界。
   完成或重同步返回的非完整轮次快照不会清空已经流式物化的内容，只有明确的 `full` 快照
   可以替换条目。
@@ -106,19 +110,26 @@
   接受空参数并向上游发送无参数请求；结果最多投影 366 个每日 bucket 和 32 个限额 bucket，
   丢弃账户身份、reset-credit 细节和未知字段。`account/rateLimits/updated` 通知使用同样的
   逐字段稀疏投影，三类账户读取错误均使用固定消息脱敏。
+- `thread/fork` 只接受来源线程 ID，网关固定 `on-request`、用户 reviewer 和
+  `excludeTurns: true`，拒绝 rollout path、cwd、模型、权限、instructions、截断点和未知字段。
+  响应必须证明新 ID、来源关系、绝对 cwd、历史模式、sandbox 与审批设置一致；浏览器看不到
+  rollout path、instruction sources、runtime workspace roots 或未知结果字段。成功只认领
+  新线程而不改变来源 owner，失败、断线、畸形结果和 ID 冲突均不认领，也不会自动重放。
 - WebSocket 升级只接受原始 request-target 精确等于 `/ws`，在认证前拒绝 query、fragment、
   归一化路径和 authority/absolute-form 混入。普通 `thread/resume` 不发送 sandbox 覆盖，
   因而保留 `externalSandbox`；显式覆盖先用固定参数探测权威 sandbox，并对不可信响应或并发
   settings 通知失败关闭。同线程的 resume、turn start 和 text steering 串行，未知结果会
   取消已排队后继；thread owner 只在上游返回结构有效的成功结果时同步提交。Steering 响应还
   必须返回与已清洗 `expectedTurnId` 相同的 `turnId`；失败、断线或畸形结果不会抢占旧 owner。
-- 输入框支持选择、粘贴、预览、删除和单独发送 PNG、JPEG、WebP 图片，并只在模型明确
-  声明图片输入能力时开放入口。图片二进制通过复用现有 HTTP 令牌与 Origin/Host 策略的
-  临时附件端点上传，一次性 ID 在网关内重建为官方 `localImage` 路径；数量、字节、并发、
-  存储和生命周期均有边界。成功发送的图片会在 IndexedDB 中保存有界的浏览器本地预览，
-  同一浏览器配置文件通过同一 Origin 可在页面或线程重载以及浏览器重启后恢复可点开的
-  缩略图。本地副本默认 TTL 为 30 天，最多 8 张、共 40 MiB；清除站点数据、浏览器回收
-  存储，或换用其他设备、浏览器、配置文件或 Origin 后，历史图片回退为安全占位符。
+- 输入框的 `+` 菜单支持选择图片或普通文件；剪贴板将 PNG、JPEG、WebP 归入图片预览，
+  其余文件归入带名称和大小的文件卡片。图片入口只在模型明确声明图片输入能力时开放，普通
+  文件不依赖该声明；两类附件合计每轮最多 4 个、每个最多 10 MiB。二进制通过复用现有 HTTP
+  token 与 Origin/Host 策略的临时端点上传；图片 ID 在网关内重建为官方 `localImage`，文件
+  ID 则物化为不含路径的历史 marker 和网关控制的 application `additionalContext`。浏览器
+  不能提交路径、cwd 或 `additionalContext`，数量、字节、并发、存储和租约生命周期均有边界。
+  成功发送的图片预览和普通文件下载副本分别有界保存在同源 IndexedDB；默认 TTL 均为 30 天，
+  各自最多 8 个、共 40 MiB。文件历史元数据必须与本地 Blob 完全匹配才允许下载；清除站点
+  数据、浏览器回收存储，或换用其他设备、浏览器、配置文件或 Origin 后均回退为安全占位符。
 - 有界的浏览器、网关和 app-server 消息；线性 JSONL 累积；背压驱逐；审批重路由；
   以及超大通知无法转发时基于快照的恢复。
 - 强制执行 `on-request` 用户审批、不支持的权限失败时关闭、默认只绑定回环地址、
@@ -133,15 +144,11 @@
 
 ## 未完成事项与边界
 
-原有九条缺口不再作为同等优先级的平铺清单。P1 的 steering 和整体 DOM 预算已经完成；
-其余内容按可实施性规整如下。优先级表示当前建议顺序，不是交付承诺。
+原有九条缺口不再作为同等优先级的平铺清单。P1 的 steering、整体 DOM 预算，以及 P2 fork
+和多类型文件输入已完成；其余内容按可实施性规整如下。优先级表示当前建议顺序，不是交付承诺。
 
 ### 候选实施项目
 
-- **P2，成组分阶段**：先设计持久附件所有权、回收和跨客户端引用，再在同一受限上传基础上
-  扩展通用文件输入；音频输入应复用配额和生命周期机制，但单独验证模型与协议支持。
-- **P2，单独实施**：线程 fork。开始前必须在当前 CLI 上重新核对默认与 `paginated` 历史
-  的能力，不应与 rollback 或 detached review 一次性开放。
 - **P2，单独实施**：跨设备持久消息队列。它需要自己的 ADR，明确幂等键、过期、确认、
   活跃轮次冲突和审批 owner；不能与已经完成且不自动重放的 steering 合并成一种发送语义。
 - **P3，单独实施**：持久 Activity 审计。它需要单独定义数据敏感度、保留期和事实来源，
@@ -167,8 +174,9 @@
 - 按 ADR 0013，文件下载刻意不列目录、不接受浏览器路径，也不导出未出现在合格完成态
   Agent 消息中的文件；capability 保持短期、一次性且只存在于当前服务进程。这是安全范围，
   不是待补功能。
-- 当前图片附件在轮次完成后删除，IndexedDB 预览只服务同一浏览器配置文件和 Origin，并受
-  30 天、8 张/40 MiB 等上限约束。在 P2 持久附件设计被接受前，不把本地预览描述为跨设备存储。
+- 按 ADR 0017，图片和普通文件的服务端副本在轮次完成后删除；IndexedDB 预览或下载副本只服务
+  同一浏览器配置文件和 Origin，并分别受 30 天、8 个/40 MiB 等上限约束。缺少同源本地副本时
+  历史只显示安全占位，不把本地副本描述为跨设备存储或可由 Codex 重新读取的持久附件。
 - 按 ADR 0014，结构化 Plan 恢复刻意使用进程内有界缓存，而不是新的持久会话数据库；它覆盖
   普通断线和 Codex 子进程重启，但不承诺跨网关进程或跨设备重建。这是已接受取舍，不是普通欠账。
 - 浏览器不得提交任意命令或获得隐式 shell。固定操作和 PTY 即使未来实现，也必须保持与
@@ -176,8 +184,8 @@
 
 ## 后续步骤
 
-本轮 P1 里程碑已经完成；下一项尚未选定。优先从上面的 P2 项目中选择一个独立设计或一个
-分阶段组合，不并行引入多个新的持久状态模型。其他候选项保留在 [`ideas.md`](ideas.md) 中，
+本轮 P2 多类型文件输入里程碑已经完成；下一项尚未选定。优先从上面的 P2 项目中选择一个
+独立设计，不并行引入多个新的持久状态模型。其他候选项保留在 [`ideas.md`](ideas.md) 中，
 出现在任一文档中都不代表交付承诺。
 
 ## 风险与注意事项
@@ -187,6 +195,9 @@
 - `paginated` 历史仍是实验性持久化契约。除非 app-server 提供明确的能力声明并完成真实
   首轮验证，否则不要为新线程强制启用；升级 CLI 时仍须重新核对条目分页及相关原生历史
   操作的支持情况。
+- `thread/fork` 必须继续只接受来源线程 ID，并固定排除完整历史与权限覆盖；其无幂等键，
+  断线或超时后的未知结果不得自动重放。CLI 升级时应重新核对参数、来源关系、返回历史模式
+  和 `thread/turns/list` 兼容性，但不能用一次真实 fork 探测来替代能力声明。
 - 富文本渲染必须把所有智能体、命令、diff 和 ANSI 内容视为不可信文本，并限制内存
   和 DOM 增长。
 - 文件下载范围必须继续只由 app-server 权威 `thread.cwd` 和已完成 Agent 消息中的显式
@@ -197,11 +208,11 @@
   命令时才附加它。
 - 网关必须继续把 `config/read` 结果投影为仅包含模型和推理强度；绝不能转发完整的
   Codex 配置。
-- 图片二进制必须继续留在 WebSocket JSON 之外；浏览器不得提供宿主机路径，临时附件
-  的格式校验、配额、一次性消费和清理兜底也不能被绕过。
-- IndexedDB 预览只能保存恢复所需的 thread/turn 组合键、Blob、媒体类型、大小、顺序和
-  生命周期元数据，不能保存 token、宿主机路径、原始文件名或一次性附件 ID；本地存储
-  失败不得影响已接受的轮次。
+- 附件二进制必须继续留在 WebSocket JSON 之外；浏览器不得提供宿主机路径或
+  `additionalContext`，临时附件的格式或元数据校验、配额、一次性消费和清理兜底也不能被绕过。
+- IndexedDB 本地副本只能保存恢复所需的 thread/turn 组合键、Blob、媒体类型、大小、顺序和
+  生命周期元数据；普通文件可以保存显示与下载所需的原始文件名，图片仍不保存原始文件名。
+  两者都不能保存 token、宿主机路径或一次性附件 ID，本地存储失败不得影响已接受的轮次。
 - Skills 和未来的宿主机工具不得绕过网关 allowlist；Skills 目录必须继续剥离 skill
   路径、依赖、`interface.shortDescription` 之外的 interface 元数据和错误文本，不能
   引入路径或命令透传。
@@ -223,20 +234,24 @@
 
 ## 验证
 
-本轮已于 2026-08-06 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+本轮已于 2026-08-07 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.146.0` 完成验证：
 
 - 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
   `ThreadResumeResponse.sandbox`、`ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`、
   `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、
   `TurnSteerParams`、`TurnSteerResponse`、完整快照形式的 `TurnPlanUpdatedNotification`、
-  不含 Plan 的官方 Turn 读取结构，以及通知 envelope 的 `emittedAtMs`；没有创建真实轮次。
+  `ThreadForkParams`、`ThreadForkResponse`、`Thread.historyMode`、不含 Plan 的官方 Turn
+  读取结构，以及通知 envelope 的 `emittedAtMs`。普通文件输入还完成了真实协议验证：
+  `mention` 不适合普通本地文件，而由网关构造的 application `additionalContext` 可让 Codex
+  准确读取受控临时路径；没有仅为自动化检查创建真实轮次或持久测试 fork。
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：35 个测试文件、608 项测试；服务端测试在允许绑定回环
+- `NODE_ENV=test npx vitest run` 通过：37 个测试文件、637 项测试；服务端测试在允许绑定回环
   套接字的环境中运行。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4177
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-p1-visual npm run check:visual`
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-input-visual npm run check:visual`
   针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
-  Usage、文件下载、富内容、推理状态槽、图片、Plan 和运行中 steering 输入区；未发现水平
-  溢出、裁切、内容重叠、console error 或 page error。所有 RPC 和下载均由确定性浏览器
-  夹具拦截，没有创建真实 Codex 轮次。
+  Usage、Agent 输出下载、富内容、推理状态槽、图片、Plan、运行中 steering 输入区，以及新的
+  附件 `+` 菜单和普通文件历史卡片；同源 Blob 缺失时的不可下载状态也保持完整。未发现水平
+  溢出、裁切、内容重叠、console error 或 page error。所有 RPC、上传和下载均由确定性浏览器
+  夹具拦截；线程动作菜单在两种视口均包含且容纳 Fork，没有创建真实 Codex 轮次或 fork。

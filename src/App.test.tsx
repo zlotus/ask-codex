@@ -5,7 +5,9 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { NotificationMessage, ServerRequestMessage } from "./types/protocol";
+import { BrowserFileAttachmentStore } from "./utils/browserFileAttachmentStore";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
+import { sessionFileAttachmentKey } from "./utils/sessionFileAttachments";
 import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
 
 const socket = vi.hoisted(() => ({
@@ -130,6 +132,22 @@ function installRpcFixture() {
         },
       };
     }
+    if (method === "thread/fork") {
+      return {
+        thread: {
+          ...existingThread,
+          id: "thread-fork",
+          name: "Existing thread fork",
+          forkedFromId: "thread-existing",
+          historyMode: "legacy",
+          turns: [],
+        },
+        model: existingThread.model,
+        cwd: existingThread.cwd,
+        sandbox: { type: "workspaceWrite" },
+        reasoningEffort: "high",
+      };
+    }
     if (method === "thread/resume") {
       const request = params as { initialTurnsPage?: unknown };
       return request.initialTurnsPage
@@ -168,7 +186,7 @@ function installBootstrapFixture() {
   return fetchMock;
 }
 
-function delayOpen(indexedDB: IDBFactory): {
+function delayOpen(indexedDB: IDBFactory, delayedDbName: string): {
   factory: IDBFactory;
   ready: Promise<void>;
   release: () => void;
@@ -181,6 +199,7 @@ function delayOpen(indexedDB: IDBFactory): {
   const factory = {
     open(name: string, version?: number) {
       const source = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
+      if (name !== delayedDbName) return source;
       const proxy: Record<string, unknown> = {
         onblocked: null,
         onerror: null,
@@ -1050,6 +1069,28 @@ describe("App thread settings lifecycle", () => {
       threadId: "thread-archived",
     }));
     expect(screen.queryByRole("button", { name: "Archived thread" })).not.toBeInTheDocument();
+  });
+
+  it("forks an idle thread, loads its bounded history, and selects it", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Existing thread" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Fork" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/fork", {
+      threadId: "thread-existing",
+    }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/turns/list", {
+      threadId: "thread-fork",
+      limit: 10,
+      sortDirection: "desc",
+      itemsView: "full",
+    }));
+    expect(await screen.findByTitle("Existing thread fork")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Existing thread fork" }))
+      .toHaveAttribute("aria-current", "page");
   });
 
   it("surfaces bounded thread activity and normalized usage notifications", async () => {
@@ -2210,7 +2251,7 @@ describe("App thread settings lifecycle", () => {
       new NodeBlob([PNG], { type: "image/png" }) as unknown as Blob,
     ]);
     seeder.close();
-    const delayedOpen = delayOpen(indexedDB);
+    const delayedOpen = delayOpen(indexedDB, "ask-codex-image-previews");
     vi.stubGlobal("indexedDB", delayedOpen.factory);
     sessionStorage.setItem("ASK_CODEX_TOKEN", "browser-token");
     const attachmentId = "a".repeat(32);
@@ -2323,6 +2364,108 @@ describe("App thread settings lifecycle", () => {
     persistedStore.close();
   });
 
+  it("uploads an ordinary file by opaque id and keeps a browser-local download copy", async () => {
+    const indexedDB = new FakeIDBFactory();
+    vi.stubGlobal("indexedDB", indexedDB);
+    sessionStorage.setItem("ASK_CODEX_TOKEN", "browser-token");
+    const attachmentId = "f".repeat(32);
+    const file = new NodeFile(
+      ["report contents"],
+      "report.pdf",
+      { type: "application/pdf" },
+    ) as unknown as File;
+    const markerText = "Attached file: report.pdf";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/bootstrap") {
+        return new Response(JSON.stringify({
+          ready: true,
+          defaultCwd: "/workspace/default-one",
+          authRequired: true,
+        }), { status: 200 });
+      }
+      if (url === "/api/file-attachments" && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          attachment: {
+            id: attachmentId,
+            name: file.name,
+            mediaType: file.type,
+            size: file.size,
+            expiresAt: Date.now() + 60_000,
+          },
+        }), { status: 201 });
+      }
+      throw new Error(`Unexpected fetch: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/start"
+        ? Promise.resolve({
+            turn: {
+              id: "turn-file",
+              status: "inProgress",
+              items: [{
+                id: "user-file",
+                type: "userMessage",
+                content: [
+                  { type: "text", text: "Inspect this report", text_elements: [] },
+                  {
+                    type: "text",
+                    text: markerText,
+                    text_elements: [{
+                      byteRange: { start: 0, end: markerText.length },
+                      placeholder: JSON.stringify({
+                        type: "askCodexFile",
+                        name: file.name,
+                        mediaType: file.type,
+                        size: file.size,
+                      }),
+                    }],
+                  },
+                ],
+              }],
+            },
+          })
+        : baseRpc?.(method, params)
+    ));
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add attachment" })).toBeEnabled());
+
+    fireEvent.change(screen.getByLabelText("Choose files"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "Inspect this report" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      input: [
+        { type: "text", text: "Inspect this report", text_elements: [] },
+        { type: "file", attachmentId },
+      ],
+    })));
+    expect(fetchMock).toHaveBeenCalledWith("/api/file-attachments", expect.objectContaining({
+      body: file,
+      headers: expect.objectContaining({
+        Authorization: "Bearer browser-token",
+        "X-Ask-Codex-File-Name": encodeURIComponent(file.name),
+      }),
+    }));
+    expect(await screen.findByRole("button", { name: "Download report.pdf" })).toBeEnabled();
+    expect(document.body).not.toHaveTextContent("/private/");
+
+    const persistedStore = new BrowserFileAttachmentStore({ indexedDB });
+    const storedKey = sessionFileAttachmentKey("thread-new", "turn-file");
+    await waitFor(async () => {
+      expect((await persistedStore.loadAll()).map((entry) => entry.key)).toContain(storedKey);
+    });
+    const stored = (await persistedStore.loadAll()).find((entry) => entry.key === storedKey);
+    expect(stored?.files[0]).toEqual(expect.objectContaining({
+      name: file.name,
+      mediaType: file.type,
+      size: file.size,
+    }));
+    persistedStore.close();
+  });
+
   it("does not block an accepted image turn when browser persistence stalls", async () => {
     const stalledRequest = {} as IDBOpenDBRequest;
     vi.stubGlobal("indexedDB", {
@@ -2369,7 +2512,7 @@ describe("App thread settings lifecycle", () => {
     ));
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add images" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add attachment" })).toBeEnabled());
     const file = new File([PNG], "storage-disabled.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -2675,7 +2818,7 @@ describe("App thread settings lifecycle", () => {
         : baseRpc?.(method, params)
     ));
     render(<App />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add images" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add attachment" })).toBeEnabled());
 
     const file = new File([PNG], "retry-after-error.png", { type: "image/png" });
     fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });

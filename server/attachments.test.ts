@@ -110,6 +110,44 @@ describe("AttachmentStore", () => {
     await expect(lease.release()).resolves.toBeUndefined();
   });
 
+  it("stores ordinary files with bounded display metadata and a server-controlled path", async () => {
+    const store = await createStore({ limits: limits() });
+    const data = Buffer.from("pdf contents");
+    const uploaded = await store.store("owner", {
+      kind: "file",
+      name: "设计-report.pdf",
+      mediaType: "Application/PDF",
+      data,
+    });
+
+    expect(uploaded).toMatchObject({
+      kind: "file",
+      name: "设计-report.pdf",
+      mediaType: "application/pdf",
+      size: data.byteLength,
+    });
+    expect(uploaded).not.toHaveProperty("path");
+    const [lease] = await store.consumeForTurn("owner", [uploaded.id]);
+    expect(lease.path).toMatch(/\.pdf$/);
+    expect(await readFile(lease.path)).toEqual(data);
+    await lease.release();
+
+    for (const name of ["../report.pdf", "folder/report.pdf", "report\n.pdf", ".", ".."]) {
+      await expect(store.store("owner", {
+        kind: "file",
+        name,
+        mediaType: "application/pdf",
+        data,
+      })).rejects.toMatchObject({ code: "invalidPayload", statusCode: 400 });
+    }
+    await expect(store.store("owner", {
+      kind: "file",
+      name: "report.pdf",
+      mediaType: "invalid",
+      data,
+    })).rejects.toMatchObject({ code: "unsupportedMediaType", statusCode: 415 });
+  });
+
   it("accepts only PNG, JPEG, and WebP with matching signatures", async () => {
     const store = await createStore({ limits: limits() });
 

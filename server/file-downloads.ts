@@ -376,13 +376,20 @@ export class FileDownloadStore {
       }
       return true;
     }
-    if (method !== "thread/start" && method !== "thread/resume" && method !== "thread/read") {
+    if (
+      method !== "thread/start" &&
+      method !== "thread/fork" &&
+      method !== "thread/resume" &&
+      method !== "thread/read"
+    ) {
       return true;
     }
 
     const thread = threadFromResult(result);
     const resultThreadId = threadId(thread);
-    const observedThreadId = method === "thread/start" ? resultThreadId : requestedThreadId;
+    const observedThreadId = method === "thread/start" || method === "thread/fork"
+      ? resultThreadId
+      : requestedThreadId;
     if (
       !thread ||
       !observedThreadId ||

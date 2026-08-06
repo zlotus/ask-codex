@@ -310,6 +310,17 @@ function closeRejectedAttachmentRequest(
   response.once("finish", () => request.socket.destroy());
 }
 
+function decodedAttachmentFileName(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1_024) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function fileDownloadHttpError(error: unknown): {
   status: number;
   code: string;
@@ -604,6 +615,7 @@ export class AskCodexServer {
       )) {
         if (
           request.path.startsWith("/api/attachments") ||
+          request.path.startsWith("/api/file-attachments") ||
           request.path.startsWith("/api/file-downloads")
         ) {
           closeRejectedAttachmentRequest(request, response);
@@ -618,6 +630,7 @@ export class AskCodexServer {
       if (!isHttpAuthorized(request, this.config.token)) {
         if (
           request.path.startsWith("/attachments") ||
+          request.path.startsWith("/file-attachments") ||
           request.path.startsWith("/file-downloads")
         ) {
           closeRejectedAttachmentRequest(request, response);
@@ -654,45 +667,46 @@ export class AskCodexServer {
       limit: DEFAULT_ATTACHMENT_STORE_LIMITS.maxAttachmentBytes,
       type: () => true,
     });
+    const guardAttachmentUpload: express.RequestHandler = (request, response, next) => {
+      if (this.inFlightAttachmentUploads >= MAX_IN_FLIGHT_ATTACHMENT_UPLOADS) {
+        closeRejectedAttachmentRequest(request, response);
+        response.status(429).json({
+          error: {
+            code: "tooManyUploads",
+            message: "Too many attachment uploads are in progress",
+          },
+        });
+        return;
+      }
+      const contentLength = request.headers["content-length"];
+      if (
+        contentLength !== undefined &&
+        (!/^\d+$/.test(contentLength) ||
+          Number(contentLength) > DEFAULT_ATTACHMENT_STORE_LIMITS.maxAttachmentBytes)
+      ) {
+        closeRejectedAttachmentRequest(request, response);
+        response.status(413).json({
+          error: {
+            code: "attachmentTooLarge",
+            message: "Attachment exceeds the per-file size limit",
+          },
+        });
+        return;
+      }
+      this.inFlightAttachmentUploads += 1;
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        this.inFlightAttachmentUploads = Math.max(0, this.inFlightAttachmentUploads - 1);
+      };
+      response.once("finish", release);
+      response.once("close", release);
+      next();
+    };
     this.app.post(
       "/api/attachments",
-      (request, response, next) => {
-        if (this.inFlightAttachmentUploads >= MAX_IN_FLIGHT_ATTACHMENT_UPLOADS) {
-          closeRejectedAttachmentRequest(request, response);
-          response.status(429).json({
-            error: {
-              code: "tooManyUploads",
-              message: "Too many attachment uploads are in progress",
-            },
-          });
-          return;
-        }
-        const contentLength = request.headers["content-length"];
-        if (
-          contentLength !== undefined &&
-          (!/^\d+$/.test(contentLength) ||
-            Number(contentLength) > DEFAULT_ATTACHMENT_STORE_LIMITS.maxAttachmentBytes)
-        ) {
-          closeRejectedAttachmentRequest(request, response);
-          response.status(413).json({
-            error: {
-              code: "attachmentTooLarge",
-              message: "Attachment exceeds the per-file size limit",
-            },
-          });
-          return;
-        }
-        this.inFlightAttachmentUploads += 1;
-        let released = false;
-        const release = (): void => {
-          if (released) return;
-          released = true;
-          this.inFlightAttachmentUploads = Math.max(0, this.inFlightAttachmentUploads - 1);
-        };
-        response.once("finish", release);
-        response.once("close", release);
-        next();
-      },
+      guardAttachmentUpload,
       attachmentBody,
       async (request, response) => {
         const mediaType = request.headers["content-type"];
@@ -710,11 +724,38 @@ export class AskCodexServer {
         response.status(201).json({ attachment });
       },
     );
+    this.app.post(
+      "/api/file-attachments",
+      guardAttachmentUpload,
+      attachmentBody,
+      async (request, response) => {
+        const mediaType = request.headers["content-type"];
+        const name = decodedAttachmentFileName(request.headers["x-ask-codex-file-name"]);
+        const data = request.body;
+        if (typeof mediaType !== "string" || !name || !Buffer.isBuffer(data)) {
+          response.status(400).json({
+            error: { code: "invalidPayload", message: "Attachment payload is invalid" },
+          });
+          return;
+        }
+        const attachment = await this.attachments.store(this.attachmentOwnerId, {
+          kind: "file",
+          name,
+          mediaType,
+          data,
+        });
+        response.status(201).json({ attachment });
+      },
+    );
     this.app.delete("/api/attachments/:attachmentId", async (request, response) => {
       await this.attachments.discard(this.attachmentOwnerId, request.params.attachmentId);
       response.status(204).end();
     });
-    this.app.use("/api/attachments", (
+    this.app.delete("/api/file-attachments/:attachmentId", async (request, response) => {
+      await this.attachments.discard(this.attachmentOwnerId, request.params.attachmentId);
+      response.status(204).end();
+    });
+    this.app.use(["/api/attachments", "/api/file-attachments"], (
       error: unknown,
       _request: express.Request,
       response: express.Response,
@@ -1073,8 +1114,14 @@ export class AskCodexServer {
       }
       const codexParams = attachmentLeases.length > 0
         ? materializeTurnStartAttachments(
-            sanitizedParams,
-            attachmentLeases.map((lease) => lease.path),
+          sanitizedParams,
+            attachmentLeases.map((lease) => ({
+              kind: lease.kind,
+              mediaType: lease.mediaType,
+              ...(lease.name === undefined ? {} : { name: lease.name }),
+              path: lease.path,
+              size: lease.size,
+            })),
           )
         : sanitizedParams;
       if (attachmentLeases.length > 0 && existingThreadId) {
@@ -1104,7 +1151,7 @@ export class AskCodexServer {
         rawResult,
         fileDownloadAuthorityRevision,
       );
-      this.turnPlans.observeRpcResult(message.method, sanitizedParams);
+      this.turnPlans.observeRpcResult(message.method, sanitizedParams, rawResult);
       const projectedResult = sanitizeBrowserRpcResult(
         message.method,
         rawResult,
@@ -1148,13 +1195,19 @@ export class AskCodexServer {
     params: unknown,
     requestCodexErrorRevision: number,
   ): Promise<unknown> {
-    if (method === "thread/start") {
+    if (method === "thread/start" || method === "thread/fork") {
       this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
       const result = await this.codex.requestWithResultObserver(method, params, (result) => {
         this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
-        const threadId = threadIdFromStartResult(result);
+        const projectedResult = method === "thread/fork"
+          ? sanitizeBrowserRpcResult(method, result, params)
+          : result;
+        const threadId = threadIdFromStartResult(projectedResult);
         if (!threadId) {
-          throw new Error("Codex app-server returned an invalid thread/start result");
+          throw new Error(`Codex app-server returned an invalid ${method} result`);
+        }
+        if (method === "thread/fork" && this.ownership.get(threadId)) {
+          throw new Error("Codex app-server returned an invalid thread/fork result");
         }
         this.claimThreadOwnership(threadId, client);
       });

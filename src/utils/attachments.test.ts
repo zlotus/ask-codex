@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_IMAGE_BYTES,
+  isValidAttachmentFileName,
   isPotentialImageFile,
+  uploadFileAttachments,
   uploadImageAttachments,
 } from "./attachments";
 
@@ -239,5 +241,75 @@ describe("image attachment uploads", () => {
 
     await rejection;
     expect(requestSignal?.aborted).toBe(true);
+  });
+});
+
+describe("ordinary file attachment uploads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects control characters in otherwise valid attachment names", () => {
+    expect(isValidAttachmentFileName("report.pdf")).toBe(true);
+    expect(isValidAttachmentFileName("bad\u0000name.pdf")).toBe(false);
+    expect(isValidAttachmentFileName("bad\u007fname.pdf")).toBe(false);
+  });
+
+  it("uploads raw bytes with a bounded encoded file name and validates server metadata", async () => {
+    const id = "f".repeat(32);
+    const file = new File(["report"], "设计 report.pdf", { type: "application/pdf" });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      attachment: {
+        id,
+        name: file.name,
+        mediaType: "application/pdf",
+        size: file.size,
+        expiresAt: Date.now() + 60_000,
+      },
+    }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(uploadFileAttachments([file], "secret-token")).resolves.toEqual([
+      expect.objectContaining({ id, name: file.name, size: file.size }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/file-attachments", expect.objectContaining({
+      method: "POST",
+      body: file,
+      headers: expect.objectContaining({
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/pdf",
+        "X-Ask-Codex-File-Name": encodeURIComponent(file.name),
+      }),
+    }));
+  });
+
+  it("rejects unsafe names and cleans up successful peers through the file endpoint", async () => {
+    const id = "g".repeat(32);
+    const first = new File(["one"], "one.txt", { type: "text/plain" });
+    const second = new File(["two"], "two.txt", { type: "text/plain" });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        attachment: {
+          id,
+          name: first.name,
+          mediaType: "text/plain",
+          size: first.size,
+          expiresAt: Date.now() + 60_000,
+        },
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "File rejected" },
+      }), { status: 415 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(uploadFileAttachments([first, second], "token")).rejects.toThrow("two.txt: File rejected");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      `/api/file-attachments/${id}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    await expect(uploadFileAttachments([
+      new File(["bad"], "../bad.txt", { type: "text/plain" }),
+    ], "token")).rejects.toThrow("File name is invalid");
   });
 });

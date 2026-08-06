@@ -2,7 +2,7 @@
 
 [简体中文](ideas.md) | **English**
 
-Last reviewed: 2026-08-06
+Last reviewed: 2026-08-07
 
 These are candidates for future planning, not promises, accepted decisions, or
 an ordered roadmap. Move an idea into `progress.en.md` only when it becomes near
@@ -13,8 +13,9 @@ tracking or durable rationale.
 
 - Optional safe ANSI color rendering for command output; control sequences are
   currently stripped to readable text.
-- Thread fork actions, after rechecking current CLI support for default and
-  paginated history.
+- Defer audio input until Codex audio interfaces mature and its coding-workflow
+  purpose is clear; only then validate protocol and model support, transcoding,
+  quotas, and lifecycle.
 
 ## Navigation And Skills
 

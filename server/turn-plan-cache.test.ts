@@ -326,6 +326,41 @@ describe("TurnPlanCache", () => {
     expect(decorateListedTurn(cache, "thread-b", "turn-shared")).not.toHaveProperty("plan");
   });
 
+  it("copies bounded source snapshots to a structurally linked fork", () => {
+    const cache = new TurnPlanCache();
+    observePlan(cache, "thread-source", "turn-cached", [
+      { step: "Keep structured history", status: "completed" },
+    ]);
+    cache.observeNotification("turn/plan/updated", {
+      threadId: "thread-source",
+      turnId: "turn-unavailable",
+      plan: "invalid",
+    }, BASE_TIMING);
+
+    cache.observeRpcResult(
+      "thread/fork",
+      { threadId: "thread-source" },
+      { thread: { id: "thread-forked", forkedFromId: "thread-source" } },
+    );
+
+    expect(decorateListedTurn(cache, "thread-forked", "turn-cached").plan)
+      .toMatchObject({
+        plan: [{ step: "Keep structured history", status: "completed" }],
+      });
+    expect(decorateListedTurn(cache, "thread-forked", "turn-unavailable"))
+      .toMatchObject({ plan: null, recoveryOmissions: ["turn/plan/updated"] });
+    expect(decorateListedTurn(cache, "thread-source", "turn-cached").plan)
+      .not.toBeNull();
+
+    cache.observeRpcResult(
+      "thread/fork",
+      { threadId: "thread-source" },
+      { thread: { id: "thread-unlinked", forkedFromId: "thread-other" } },
+    );
+    expect(decorateListedTurn(cache, "thread-unlinked", "turn-cached"))
+      .not.toHaveProperty("plan");
+  });
+
   it("decorates turn pages, reads, resumes, initial pages, and turn starts within request scope", () => {
     const cache = new TurnPlanCache();
     observePlan(cache, "thread-rpc", "turn-cached", [

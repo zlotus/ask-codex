@@ -2,18 +2,19 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-06
+Last reviewed: 2026-08-07
 
 ## Current Milestone
 
-This round's P1 work is complete: a running turn now accepts native text
-steering bound to an exact `expectedTurnId`, and long histories use an aggregate
-DOM budget with Earlier/Newer navigation across loaded turns. Steering retains
-explicit confirmation, approval ownership, and no-replay semantics for unknown
-results. The active turn also counts within the 24-turn mount budget. Previously
-completed cwd continuity, constrained file handoff, gateway hardening, and
-bounded structured Plan recovery remain in place. No next near-term item has
-been selected.
+The multi-type file-input P2 item is complete. One `+` menu selects images or
+ordinary files, and clipboard input distinguishes previewable images from file
+cards. Ordinary files reach Codex through constrained temporary uploads and a
+gateway-built application context; the browser cannot submit paths or
+`additionalContext`. Successful turns retain bounded local download copies in
+same-Origin IndexedDB. The earlier constrained native fork, P1 text steering
+and aggregate long-history DOM budget, cwd continuity, Agent-output file
+handoff, gateway hardening, and bounded structured Plan recovery remain in
+place. No next near-term item has been selected.
 
 ## Current Baseline
 
@@ -24,8 +25,8 @@ The implementation currently provides:
   an always-editable responsive multiline composer where Enter inserts a
   newline and either the button or `Ctrl+Enter` sends; `Cmd+Enter` is also
   supported on macOS. While a turn runs, the same composer can send text-only
-  steering to the active turn captured at submission; image drafts remain
-  intact while image, model, and effort controls stay disabled. An unconfirmed
+  steering to the active turn captured at submission; attachment drafts remain
+  intact while attachment, model, and effort controls stay disabled. An unconfirmed
   normal send or steering submission remains separate from text entered while
   it is in flight. After the original turn stops being active, failed steering
   remains visible but cannot be retried incorrectly as a new turn. A newly
@@ -38,13 +39,15 @@ The implementation currently provides:
   within each group while preserving the existing order of the rest. One thread
   action menu opens from desktop right-click, a 550 ms mobile long press, or the
   explicit `...` entry point. Rename, pin, and unpin remain available while a
-  thread has a turn in progress. Threads with active turns still cannot be
-  archived or deleted; other idle threads can be archived, archived threads can
+  thread has a turn in progress. Idle Active or Archived threads can be forked;
+  success normally selects the new thread, while a user selection made during
+  the request is preserved and only the list updates. Threads with active turns
+  still cannot be forked, archived, or deleted; other idle threads can be archived, archived threads can
   be restored, and either kind of idle thread can be deleted after a confirmation
   warns that the thread and descendant sessions may be permanently removed.
   Cross-client name, archive, restore, and delete notifications reconcile the
-  lists and current selection. Deletion also removes that thread's browser-local image
-  previews from memory and IndexedDB.
+  lists and current selection. Deletion also removes that thread's browser-local
+  image and file copies from memory and IndexedDB.
 - A fourth read-only Skills tab groups skill names, descriptions,
   `user`/`repo`/`system`/`admin` scopes, and enabled states by cwd, and reports
   load failures only as a count. The directory starts loading when the tab is
@@ -100,7 +103,9 @@ The implementation currently provides:
   only the latest 24 turns, with Earlier/Newer moving by 12 turns and an active
   turn pinned inside that budget. Prepended history, appended turns, browsing
   away from the bottom, and thread switches preserve predictable windows and
-  scroll positions.
+  scroll positions. `thread/fork` excludes complete history from its initial
+  response and sends the new thread through the same pagination path, so neither
+  default nor `paginated` sources enlarge the fork response with long history.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering. Consecutive
   historical reasoning with content stays grouped and expandable in place,
@@ -115,8 +120,11 @@ The implementation currently provides:
   attaches it to read-only turn results and lifecycle notifications. A Plan
   object, explicit unrecoverable `null`, or absent unknown cache field replaces,
   clears, or preserves browser state respectively; a resync snapshot also
-  supersedes earlier buffered Plans that it covers. A turn diff
-  is explicitly shown as a whole-turn change summary at the end of its turn;
+  supersedes earlier buffered Plans that it covers. A successful fork copies
+  bounded in-process Plan records from the source to the new thread ID,
+  preserving recoverable and explicitly unavailable states without making the
+  cache a cross-process source of truth. A turn diff is explicitly shown as a
+  whole-turn change summary at the end of its turn;
   the following turn footer shows the app-server's native start time and total
   duration, silently omitting missing fields. Stream and message sizes remain
   explicitly bounded. Non-full completion or resync snapshots do not erase
@@ -168,6 +176,14 @@ The implementation currently provides:
   buckets while dropping account identity, reset-credit details, and unknown
   fields. `account/rateLimits/updated` uses the same field-level sparse
   projection, and all three account-read failures use fixed redacted messages.
+- `thread/fork` accepts only a source thread ID. The gateway fixes `on-request`,
+  the user reviewer, and `excludeTurns: true`, rejecting rollout paths, cwd,
+  model, permissions, instructions, cut points, and unknown fields. A response
+  must prove the new ID, source linkage, absolute cwd, history mode, sandbox,
+  and approval settings. The browser never receives rollout paths, instruction
+  sources, runtime workspace roots, or unknown result fields. Success claims
+  only the new thread without changing the source owner; failures, disconnects,
+  malformed results, and ID collisions claim nothing and are never replayed.
 - WebSocket upgrades accept only a raw request-target exactly equal to `/ws`,
   rejecting queries, fragments, normalized paths, and authority or absolute
   forms before authentication. Ordinary `thread/resume` sends no sandbox
@@ -180,18 +196,21 @@ The implementation currently provides:
   A steering response must also return the same `turnId` as the sanitized
   `expectedTurnId`. Failure, disconnect, or a malformed result cannot take
   ownership from the previous browser.
-- Composer support for selecting, pasting, previewing, removing, and sending
-  PNG, JPEG, and WebP images, including image-only turns, with the entry point
-  enabled only when a model explicitly declares image input. Image bytes use
-  a temporary HTTP attachment endpoint governed by the existing HTTP token and
-  Origin/Host policy. One-use IDs are rebuilt into official `localImage` paths
-  at the gateway; count, byte, concurrency, storage, and lifecycle limits are
-  explicit. Successfully sent images retain bounded browser-local previews in
-  IndexedDB. The same browser profile and Origin can restore clickable
-  thumbnails after a page or thread reload and a browser restart. Local copies
-  have a default 30-day TTL and an eight-image/40-MiB limit; clearing site data,
-  browser storage reclamation, or using another device, browser, profile, or
-  Origin makes history fall back to safe placeholders.
+- One composer `+` menu selects images or ordinary files. Clipboard PNG, JPEG,
+  and WebP files become image previews; other files become cards with name and
+  size. Image entry still requires an explicit model image-input declaration,
+  while ordinary files do not. Both kinds share a four-attachment turn limit
+  and a 10-MiB per-file limit. Bytes use temporary HTTP endpoints governed by
+  the existing token and Origin/Host policy. Image IDs become official
+  `localImage` input; file IDs become path-free history markers plus a
+  gateway-controlled application `additionalContext`. The browser cannot submit
+  paths, cwd, or `additionalContext`, and count, byte, concurrency, storage, and
+  lease limits remain explicit. Successfully sent image previews and ordinary
+  file download copies are bounded separately in same-Origin IndexedDB, each
+  with a default 30-day TTL and eight-item/40-MiB limit. File history metadata
+  must exactly match its local Blob before download is enabled. Clearing site
+  data, storage reclamation, or another device, browser, profile, or Origin
+  falls back to safe placeholders.
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
@@ -211,19 +230,12 @@ as executed.
 ## Incomplete Work And Boundaries
 
 The former nine-gap flat list no longer treats unlike items as equal. P1
-steering and the aggregate DOM budget are complete; the remainder is organized
-by actionability below. Priorities are the current recommendation, not delivery
-commitments.
+steering and the aggregate DOM budget, plus P2 fork and multi-type file input,
+are complete. The remainder is organized by actionability below. Priorities are
+the current recommendation, not delivery commitments.
 
 ### Implementation Candidates
 
-- **P2, grouped in phases**: first design persistent attachment ownership,
-  reclamation, and cross-client references, then extend general file input on
-  the same constrained upload foundation. Audio should reuse quota and lifecycle
-  mechanisms but validate model and protocol support separately.
-- **P2, standalone**: thread fork. Recheck default and `paginated` history
-  capability on the current CLI first; do not expose rollback or detached review
-  in the same release by default.
 - **P2, standalone**: a persistent cross-device message queue. It needs its own
   ADR for idempotency keys, expiry, acknowledgement, active-turn conflicts, and
   approval ownership. Do not merge it with completed no-auto-replay steering
@@ -260,10 +272,12 @@ commitments.
   browser paths, or export files absent from qualifying completed Agent messages.
   Capabilities remain short-lived, one-use, and local to the current process.
   This is a security scope, not unfinished functionality.
-- Current image attachments are deleted after turn completion. IndexedDB
-  previews serve only the same browser profile and Origin under the 30-day and
-  eight-image/40-MiB bounds. Until a P2 persistent-attachment design is accepted,
-  local previews are not cross-device storage.
+- Under ADR 0017, server copies of images and ordinary files are deleted after
+  turn completion. IndexedDB previews and download copies serve only the same
+  browser profile and Origin, each under 30-day and eight-item/40-MiB bounds.
+  Without the same-Origin local copy, history shows a safe placeholder. These
+  copies are neither cross-device storage nor persistent attachments that Codex
+  can read again.
 - Under ADR 0014, structured Plan recovery deliberately uses a bounded in-process
   cache rather than a new persistent conversation database. It covers ordinary
   disconnects and Codex child restarts but does not promise reconstruction across
@@ -274,8 +288,8 @@ commitments.
 
 ## Next
 
-This P1 milestone is complete; the next item has not been selected. Prefer one
-standalone P2 design or one phased group rather than introducing several new
+This P2 multi-type file-input milestone is complete; the next item has not been
+selected. Prefer one standalone P2 design rather than introducing several new
 persistent state models at once. Other candidates remain in
 [`ideas.en.md`](ideas.en.md); presence in either document is not a delivery
 commitment.
@@ -288,6 +302,12 @@ commitment.
   force it for new threads until app-server advertises an explicit capability
   and the real first-turn path is verified. CLI upgrades must still recheck item
   pagination and related native-history operations.
+- `thread/fork` must continue accepting only a source thread ID while excluding
+  complete history and permission overrides. It has no idempotency key, so an
+  unknown result after disconnect or timeout must never be replayed automatically.
+  CLI upgrades should recheck parameters, source linkage, returned history mode,
+  and `thread/turns/list` compatibility; a real test fork is not a substitute for
+  an explicit capability declaration.
 - Rich rendering must treat all agent, command, diff, and ANSI content as
   untrusted text and must bound memory and DOM growth.
 - File-download scope must continue to derive jointly from authoritative
@@ -301,13 +321,15 @@ commitment.
   legacy call ids are attached only when they identify one command uniquely.
 - `config/read` results must remain projected at the gateway to model and
   reasoning effort only; never forward the complete Codex configuration.
-- Image bytes must remain outside WebSocket JSON. The browser must not provide
-  host paths, and temporary-attachment format checks, quotas, one-use
-  consumption, and cleanup backstops must remain enforced.
-- IndexedDB previews may store only the thread/turn key, Blobs, media types,
-  sizes, ordering, and lifecycle metadata needed for restoration, never the
-  token, host paths, original filenames, or one-use attachment ids;
-  local-storage failure must not affect an accepted turn.
+- Attachment bytes must remain outside WebSocket JSON. The browser must not
+  provide host paths or `additionalContext`; temporary-attachment format or
+  metadata checks, quotas, one-use consumption, and cleanup backstops must
+  remain enforced.
+- IndexedDB local copies may store only the thread/turn key, Blobs, media types,
+  sizes, ordering, and lifecycle metadata needed for restoration. Ordinary
+  files may retain the original filename required for display and download;
+  images still do not. Neither may store tokens, host paths, or one-use
+  attachment IDs, and local-storage failure must not affect an accepted turn.
 - Skills and future host tools must not bypass the gateway allowlists. The
   Skills directory must continue stripping skill paths, dependencies, interface
   metadata other than the flattened `interface.shortDescription`, and error
@@ -339,7 +361,7 @@ commitment.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-06 with Node.js
+Verification for this round was completed on 2026-08-07 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - Current experimental TypeScript bindings were generated from the installed
@@ -347,17 +369,25 @@ Verification for this round was completed on 2026-08-06 with Node.js
   `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
   `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`,
   `TurnSteerParams`, `TurnSteerResponse`, the complete-snapshot
-  `TurnPlanUpdatedNotification`, official Plan-free Turn read structures, and
-  the notification envelope's `emittedAtMs`. No real turn was created.
+  `TurnPlanUpdatedNotification`, `ThreadForkParams`, `ThreadForkResponse`,
+  `Thread.historyMode`, official Plan-free Turn read structures, and the
+  notification envelope's `emittedAtMs`. Ordinary file input also received live
+  protocol validation: `mention` was unsuitable for an ordinary local file,
+  while gateway-built application `additionalContext` let Codex accurately read
+  a controlled temporary path. No real turn or persistent test fork was created
+  solely for automated checks.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 35 test files and 608 tests. Server tests ran
-  in an environment that permits loopback socket binding.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4177
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-p1-visual npm run
+- `NODE_ENV=test npx vitest run` passed: 37 test files and 637 tests. Server
+  tests ran in an environment that permits loopback socket binding.
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-input-visual npm run
   check:visual` passed against the current production build. Desktop and
   390x844 mobile fixtures covered approvals, project navigation, Activity,
-  Skills, Usage, file downloads, rich content, the fixed reasoning slot, images,
-  Plans, and the running-turn steering composer. There was no horizontal
-  overflow, clipping, content overlap, console error, or page error.
-  Deterministic browser fixtures intercepted every RPC and download and created
-  no real Codex turn.
+  Skills, Usage, Agent-output downloads, rich content, the fixed reasoning slot,
+  images, Plans, the running-turn steering composer, the new attachment `+`
+  menu, and ordinary-file history cards. The unavailable state also remained
+  intact when no same-Origin Blob was present. There was no horizontal overflow,
+  clipping, content overlap, console error, or page error. The thread action
+  menu included and contained Fork in both viewports. Deterministic browser
+  fixtures intercepted every RPC, upload, and download and created no real
+  Codex turn or fork.

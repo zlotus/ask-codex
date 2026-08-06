@@ -12,6 +12,18 @@ const fixtureAttachmentId = "visualfixtureattachmentid0000001";
 const fixtureDownloadCapabilityId = "d".repeat(32);
 const fixtureDownloadHref = "/workspace/ask-codex/docs/progress.md:112";
 
+function fixtureFilePart(name, mediaType, size) {
+  const text = `Attached file: ${name}`;
+  return {
+    type: "text",
+    text,
+    text_elements: [{
+      byteRange: { start: 0, end: Buffer.byteLength(text, "utf8") },
+      placeholder: JSON.stringify({ type: "askCodexFile", name, mediaType, size }),
+    }],
+  };
+}
+
 await mkdir(outputDirectory, { recursive: true });
 
 const browser = await chromium.launch({
@@ -169,7 +181,14 @@ const fixtureTurns = [
       {
         id: "user",
         type: "userMessage",
-        text: "Add a compact renderer with copy, wrapping, and safe large-output handling.",
+        content: [
+          {
+            type: "text",
+            text: "Add a compact renderer with copy, wrapping, and safe large-output handling.",
+            text_elements: [],
+          },
+          fixtureFilePart("renderer-notes.pdf", "application/pdf", 24_832),
+        ],
       },
       {
         id: "agent-code",
@@ -605,6 +624,13 @@ async function inspectRichLayout(page) {
           return Boolean(metadata && status && metadata.left < status.right && metadata.right > status.left &&
             metadata.top < status.bottom && metadata.bottom > status.top);
         }).length,
+      fileCards: document.querySelectorAll(".message-file").length,
+      fileCardsContained: [...document.querySelectorAll(".message-file")].every((element) => {
+        const box = element.getBoundingClientRect();
+        const message = element.closest(".message")?.getBoundingClientRect();
+        return Boolean(message && box.left >= message.left && box.right <= message.right);
+      }),
+      unavailableFileCards: document.querySelectorAll(".message-file__unavailable").length,
     };
   });
 }
@@ -1072,6 +1098,34 @@ async function inspectComposerImage(page) {
   });
 }
 
+async function inspectAttachmentMenu(page, screenshotPath) {
+  const trigger = page.getByRole("button", { name: "Add attachment", exact: true });
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: "Add attachment", exact: true });
+  await menu.waitFor();
+  const layout = await menu.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const composer = element.closest(".composer")?.getBoundingClientRect();
+    const items = [...element.querySelectorAll('[role="menuitem"]')];
+    return {
+      labels: items.map((item) => item.textContent?.trim()),
+      fitsViewport: box.left >= 0 && box.top >= 0 &&
+        box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      containedByComposerWidth: Boolean(composer && box.left >= composer.left && box.right <= composer.right),
+      usableItems: items.every((item) => {
+        const itemBox = item.getBoundingClientRect();
+        return itemBox.width >= 100 && itemBox.height >= 32 &&
+          itemBox.left >= box.left && itemBox.right <= box.right;
+      }),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  await trigger.click();
+  await menu.waitFor({ state: "hidden" });
+  return layout;
+}
+
 async function sendAndInspectFixtureImage(page) {
   await addFixtureImage(page);
   await page.getByRole("button", { name: "Send message" }).click();
@@ -1203,6 +1257,10 @@ try {
     },
   );
 
+  const desktopAttachmentMenu = await inspectAttachmentMenu(
+    page,
+    `${outputDirectory}/desktop-add-menu.png`,
+  );
   await addFixtureImage(page);
   const desktopComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-attachment.png`, fullPage: true });
@@ -1263,6 +1321,10 @@ try {
     }),
   }));
   await page.screenshot({ path: `${outputDirectory}/mobile.png`, fullPage: true });
+  const mobileAttachmentMenu = await inspectAttachmentMenu(
+    page,
+    `${outputDirectory}/mobile-add-menu.png`,
+  );
   await addFixtureImage(page);
   const mobileComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-attachment.png`, fullPage: true });
@@ -1357,6 +1419,7 @@ try {
   const result = {
     desktop: {
       ...desktop,
+      attachmentMenu: desktopAttachmentMenu,
       composerImage: desktopComposerImage,
       sentImage: desktopSentImage,
       reloadedImage: desktopReloadedImage,
@@ -1377,6 +1440,7 @@ try {
     },
     mobile: {
       ...mobileBefore,
+      attachmentMenu: mobileAttachmentMenu,
       composerImage: mobileComposerImage,
       sentImage: mobileSentImage,
       reloadedImage: mobileReloadedImage,
@@ -1448,7 +1512,7 @@ try {
     desktopProjectNavigation.horizontalOverflow ||
     !desktopThreadMenu.fitsViewport ||
     desktopThreadMenu.width > 200 ||
-    desktopThreadMenu.labels.join(",") !== "Rename,Unpin,Archive,Delete" ||
+    desktopThreadMenu.labels.join(",") !== "Rename,Unpin,Fork,Archive,Delete" ||
     !desktopThreadMenu.focusInside ||
     desktopThreadMenu.horizontalOverflow ||
     !desktopRenameDialog.fitsViewport ||
@@ -1507,6 +1571,11 @@ try {
     desktopFileDownload.completion.label !== "progress.md" ||
     !desktopFileDownload.completion.feedbackRemoved ||
     desktopFileDownload.completion.horizontalOverflow ||
+    desktopAttachmentMenu.labels.join(",") !== "Add images,Add files" ||
+    !desktopAttachmentMenu.fitsViewport ||
+    !desktopAttachmentMenu.containedByComposerWidth ||
+    !desktopAttachmentMenu.usableItems ||
+    desktopAttachmentMenu.horizontalOverflow ||
     mobileBefore.horizontalOverflow ||
     !mobileBefore.sidebarHidden ||
     !mobileBefore.toolbarVisible ||
@@ -1552,7 +1621,7 @@ try {
     mobileProjectNavigation.horizontalOverflow ||
     !mobileThreadMenu.fitsViewport ||
     mobileThreadMenu.width > 200 ||
-    mobileThreadMenu.labels.join(",") !== "Rename,Unpin,Archive,Delete" ||
+    mobileThreadMenu.labels.join(",") !== "Rename,Unpin,Fork,Archive,Delete" ||
     !mobileThreadMenu.focusInside ||
     mobileThreadMenu.horizontalOverflow ||
     !mobileDeleteDialog.fitsViewport ||
@@ -1605,6 +1674,11 @@ try {
     mobileFileDownload.completion.label !== "progress.md" ||
     !mobileFileDownload.completion.feedbackRemoved ||
     mobileFileDownload.completion.horizontalOverflow ||
+    mobileAttachmentMenu.labels.join(",") !== "Add images,Add files" ||
+    !mobileAttachmentMenu.fitsViewport ||
+    !mobileAttachmentMenu.containedByComposerWidth ||
+    !mobileAttachmentMenu.usableItems ||
+    mobileAttachmentMenu.horizontalOverflow ||
     !mobileMoreButtonVisible ||
     !result.mobile.sidebarVisible ||
     desktopRich.horizontalOverflow ||
@@ -1628,6 +1702,9 @@ try {
     desktopRich.turnFooters < 2 ||
     desktopRich.turnMetadata < 2 ||
     desktopRich.overlappingTurnFooterContent > 0 ||
+    desktopRich.fileCards !== 1 ||
+    !desktopRich.fileCardsContained ||
+    desktopRich.unavailableFileCards !== 1 ||
     !desktopActiveReasoning.fitsViewport ||
     !desktopActiveReasoning.nonExpandable ||
     desktopActiveReasoning.spinnerAnimation !== "spin" ||
@@ -1682,6 +1759,9 @@ try {
     mobileRich.turnFooters < 2 ||
     mobileRich.turnMetadata < 2 ||
     mobileRich.overlappingTurnFooterContent > 0 ||
+    mobileRich.fileCards !== 1 ||
+    !mobileRich.fileCardsContained ||
+    mobileRich.unavailableFileCards !== 1 ||
     !mobileActiveReasoning.fitsViewport ||
     !mobileActiveReasoning.nonExpandable ||
     mobileActiveReasoning.spinnerAnimation !== "spin" ||

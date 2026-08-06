@@ -12,6 +12,7 @@ import {
   parseServerMessage,
   sandboxMode,
   userMessageContent,
+  userMessageFiles,
   userMessageImages,
 } from "./protocol";
 
@@ -138,6 +139,64 @@ describe("multimodal protocol normalization", () => {
       { type: "localImage", detail: "original" },
       { type: "image", detail: undefined },
     ]);
+  });
+
+  it("recognizes only the complete gateway file marker without retaining a host path", () => {
+    const text = "Attached file: 设计.pdf";
+    const marker = {
+      type: "askCodexFile",
+      name: "设计.pdf",
+      mediaType: "application/pdf",
+      size: 2048,
+    };
+    const filePart = {
+      type: "text",
+      text,
+      text_elements: [{
+        byteRange: { start: 0, end: new TextEncoder().encode(text).byteLength },
+        placeholder: JSON.stringify(marker),
+      }],
+    };
+    const item = { id: "user-file", type: "userMessage", content: [filePart] };
+
+    expect(userMessageFiles(item)).toEqual([{
+      type: "file",
+      name: "设计.pdf",
+      mediaType: "application/pdf",
+      size: 2048,
+    }]);
+    expect(JSON.stringify(userMessageContent(item))).not.toContain("/private");
+    expect(userMessageFiles({
+      ...item,
+      content: [{
+        ...filePart,
+        text_elements: [{
+          ...filePart.text_elements[0],
+          placeholder: JSON.stringify({ ...marker, path: "/private/report.pdf" }),
+        }],
+      }],
+    })).toEqual([]);
+
+    for (const invalidMarker of [
+      { ...marker, name: `${"a".repeat(256)}.pdf` },
+      { ...marker, name: "../report.pdf" },
+      { ...marker, mediaType: "APPLICATION/PDF" },
+      { ...marker, mediaType: "not-a-media-type" },
+      { ...marker, size: 10 * 1024 * 1024 + 1 },
+    ]) {
+      const invalidText = `Attached file: ${invalidMarker.name}`;
+      expect(userMessageFiles({
+        ...item,
+        content: [{
+          type: "text",
+          text: invalidText,
+          text_elements: [{
+            byteRange: { start: 0, end: new TextEncoder().encode(invalidText).byteLength },
+            placeholder: JSON.stringify(invalidMarker),
+          }],
+        }],
+      })).toEqual([]);
+    }
   });
 });
 

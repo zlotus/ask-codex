@@ -363,9 +363,85 @@ export interface UserMessageImage {
   detail?: ImageDetail;
 }
 
+export interface UserMessageFile {
+  type: "file";
+  mediaType: string;
+  name: string;
+  size: number;
+}
+
 export type UserMessageContentPart =
   | { type: "text"; text: string }
-  | UserMessageImage;
+  | UserMessageImage
+  | UserMessageFile;
+
+const USER_MESSAGE_FILE_NAME_BYTES = 255;
+const USER_MESSAGE_FILE_MEDIA_TYPE_CHARACTERS = 127;
+const USER_MESSAGE_FILE_BYTES = 10 * 1024 * 1024;
+const USER_MESSAGE_FILE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+
+function validUserMessageFileName(value: string): boolean {
+  if (
+    !value ||
+    value.trim() !== value ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    new TextEncoder().encode(value).byteLength > USER_MESSAGE_FILE_NAME_BYTES
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return false;
+  }
+  return true;
+}
+
+function userMessageFile(part: Record<string, unknown>): UserMessageFile | undefined {
+  if (part.type !== "text" || typeof part.text !== "string" || !Array.isArray(part.text_elements)) {
+    return undefined;
+  }
+  if (part.text_elements.length !== 1 || !isRecord(part.text_elements[0])) return undefined;
+  const element = part.text_elements[0];
+  if (!isRecord(element.byteRange) || typeof element.placeholder !== "string") return undefined;
+  if (
+    element.byteRange.start !== 0 ||
+    element.byteRange.end !== new TextEncoder().encode(part.text).byteLength
+  ) {
+    return undefined;
+  }
+  let marker: unknown;
+  try {
+    marker = JSON.parse(element.placeholder);
+  } catch {
+    return undefined;
+  }
+  if (
+    !isRecord(marker) ||
+    Object.keys(marker).length !== 4 ||
+    marker.type !== "askCodexFile" ||
+    typeof marker.name !== "string" ||
+    !validUserMessageFileName(marker.name) ||
+    typeof marker.mediaType !== "string" ||
+    marker.mediaType.length > USER_MESSAGE_FILE_MEDIA_TYPE_CHARACTERS ||
+    marker.mediaType !== marker.mediaType.trim().toLowerCase() ||
+    !USER_MESSAGE_FILE_MEDIA_TYPE_PATTERN.test(marker.mediaType) ||
+    !Number.isSafeInteger(marker.size) ||
+    (marker.size as number) < 1 ||
+    (marker.size as number) > USER_MESSAGE_FILE_BYTES ||
+    part.text !== `Attached file: ${marker.name}`
+  ) {
+    return undefined;
+  }
+  return {
+    type: "file",
+    mediaType: marker.mediaType,
+    name: marker.name,
+    size: marker.size as number,
+  };
+}
 
 export function userMessageContent(item: CodexItem): UserMessageContentPart[] {
   if (!Array.isArray(item.content)) return [];
@@ -379,6 +455,10 @@ export function userMessageContent(item: CodexItem): UserMessageContentPart[] {
         : undefined;
       return [{ type: part.type, detail }];
     }
+    if (isRecord(part)) {
+      const file = userMessageFile(part);
+      if (file) return [file];
+    }
     const text = contentPartText(part);
     return text ? [{ type: "text" as const, text }] : [];
   });
@@ -387,6 +467,12 @@ export function userMessageContent(item: CodexItem): UserMessageContentPart[] {
 export function userMessageImages(item: CodexItem): UserMessageImage[] {
   return userMessageContent(item).filter(
     (part): part is UserMessageImage => part.type === "localImage" || part.type === "image",
+  );
+}
+
+export function userMessageFiles(item: CodexItem): UserMessageFile[] {
+  return userMessageContent(item).filter(
+    (part): part is UserMessageFile => part.type === "file",
   );
 }
 

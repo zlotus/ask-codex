@@ -20,6 +20,8 @@ the records relevant to the current task.
 | [0013](0013-thread-working-directory-defaults-and-file-download-scope.en.md) | Accepted | Use the selected thread's Working directory as new-thread context and a constrained file-download scope. |
 | [0014](0014-bounded-structured-plan-recovery.en.md) | Accepted | Recover structured Plans through bounded gateway snapshots with distinct recoverable, unrecoverable, and unknown states. |
 | [0015](0015-explicit-active-turn-steering.en.md) | Accepted | Bind explicit text steering to an exact active turn with strict confirmation, ownership, and no-replay semantics. |
+| [0016](0016-constrained-native-thread-fork.en.md) | Accepted | Expose native fork only by source thread ID with strict parameter, result, ownership, and no-replay semantics. |
+| [0017](0017-constrained-file-input-and-browser-local-copies.en.md) | Accepted | Submit ordinary files through temporary gateway context and retain bounded download copies only in the same-Origin browser. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

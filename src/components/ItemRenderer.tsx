@@ -4,7 +4,9 @@ import {
   Braces,
   ChevronRight,
   Clock3,
+  Download,
   FileCode2,
+  FileText,
   Globe,
   Image as ImageIcon,
   ImagePlus,
@@ -25,6 +27,11 @@ import type {
   FileDownloadHandler,
   PlanStep,
 } from "../types/protocol";
+import { formatAttachmentSize } from "../utils/attachments";
+import {
+  downloadLocalFileAttachment,
+  type LocalFileAttachment,
+} from "../utils/sessionFileAttachments";
 import {
   commandText,
   isRecord,
@@ -49,6 +56,7 @@ const FILE_DOWNLOAD_CAPABILITY_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 interface ItemRendererProps {
   disclosureOpen?: boolean;
+  fileAttachments?: readonly LocalFileAttachment[];
   imagePreviewUrls?: readonly string[];
   item: CodexItem;
   onDownloadFile?: FileDownloadHandler;
@@ -224,10 +232,13 @@ function ExpandableToolActivity({
   );
 }
 
-function UserMessage({ imagePreviewUrls, item }: ItemRendererProps) {
+function UserMessage({ fileAttachments, imagePreviewUrls, item }: ItemRendererProps) {
   const orderedContent = userMessageContent(item);
   const fallbackText = orderedContent.length === 0 ? itemText(item) : "";
-  const imageCount = orderedContent.filter((part) => part.type !== "text").length;
+  const imageCount = orderedContent.filter((part) => (
+    part.type === "image" || part.type === "localImage"
+  )).length;
+  const fileCount = orderedContent.filter((part) => part.type === "file").length;
   return (
     <article className="message message--user">
       <div className="message-role"><User size={14} aria-hidden="true" />You</div>
@@ -235,11 +246,56 @@ function UserMessage({ imagePreviewUrls, item }: ItemRendererProps) {
       {imageCount > 0 && (
         <span className="sr-only" aria-label={`${imageCount} image attachment${imageCount === 1 ? "" : "s"}`} />
       )}
+      {fileCount > 0 && (
+        <span className="sr-only" aria-label={`${fileCount} file attachment${fileCount === 1 ? "" : "s"}`} />
+      )}
       {orderedContent.map((part, index) => {
         if (part.type === "text") return <Markdown key={`text:${index}`}>{part.text}</Markdown>;
+        if (part.type === "file") {
+          const fileIndex = orderedContent
+            .slice(0, index + 1)
+            .filter((candidate) => candidate.type === "file").length - 1;
+          const candidate = fileIndex >= 0 ? fileAttachments?.[fileIndex] : undefined;
+          const localFile = candidate &&
+            candidate.name === part.name &&
+            candidate.mediaType === part.mediaType &&
+            candidate.size === part.size
+            ? candidate
+            : undefined;
+          return (
+            <div className="message-file" key={`file:${part.name}:${index}`}>
+              <span className="message-file__icon" aria-hidden="true">
+                <FileText size={18} />
+              </span>
+              <span className="message-file__copy">
+                <strong title={part.name}>{part.name}</strong>
+                <small>{formatAttachmentSize(part.size)}</small>
+              </span>
+              {localFile ? (
+                <button
+                  type="button"
+                  className="message-file__download"
+                  title={`Download ${part.name}`}
+                  aria-label={`Download ${part.name}`}
+                  onClick={() => downloadLocalFileAttachment(localFile)}
+                >
+                  <Download size={15} aria-hidden="true" />
+                </button>
+              ) : (
+                <span
+                  className="message-file__unavailable"
+                  title="Local copy unavailable in this browser"
+                  aria-label={`${part.name} is unavailable for download in this browser`}
+                >
+                  <Download size={15} aria-hidden="true" />
+                </span>
+              )}
+            </div>
+          );
+        }
         const imageNumber = orderedContent
           .slice(0, index + 1)
-          .filter((candidate) => candidate.type !== "text").length;
+          .filter((candidate) => candidate.type === "image" || candidate.type === "localImage").length;
         const localImageIndex = orderedContent
           .slice(0, index + 1)
           .filter((candidate) => candidate.type === "localImage").length - 1;

@@ -1,7 +1,8 @@
 import { AlertTriangle, ChevronRight, GitCompareArrows, LoaderCircle } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { CodexItem, CodexTurn, FileDownloadHandler } from "../types/protocol";
-import { errorMessage, userMessageImages } from "../utils/protocol";
+import type { LocalFileAttachment } from "../utils/sessionFileAttachments";
+import { errorMessage, userMessageFiles, userMessageImages } from "../utils/protocol";
 import { ActivityGroup } from "./ActivityGroup";
 import { DiffViewer } from "./DiffViewer";
 import { ItemRenderer, ReasoningGroup } from "./ItemRenderer";
@@ -12,6 +13,7 @@ import { hasVisibleReasoning, isToolActivityItem } from "./activityUtils";
 
 interface TurnViewProps {
   activeReasoningItemIds?: readonly string[];
+  fileAttachments?: readonly LocalFileAttachment[];
   imagePreviewUrls?: readonly string[];
   turn: CodexTurn;
   onDownloadFile?: FileDownloadHandler;
@@ -29,6 +31,7 @@ interface ActivityDisclosureState {
 function renderItems(
   items: CodexItem[],
   disclosure: ActivityDisclosureState,
+  fileAttachments: readonly LocalFileAttachment[],
   imagePreviewUrls: readonly string[],
   onDownloadFile?: FileDownloadHandler,
 ) {
@@ -36,6 +39,7 @@ function renderItems(
   let activityRun: ReactNode[] = [];
   let activityRunId: string | null = null;
   let index = 0;
+  let fileOffset = 0;
   let previewOffset = 0;
 
   const appendActivity = (id: string, node: ReactNode) => {
@@ -77,10 +81,14 @@ function renderItems(
         : 0;
       const itemPreviewUrls = imagePreviewUrls.slice(previewOffset, previewOffset + localImageCount);
       previewOffset += localImageCount;
+      const fileCount = item.type === "userMessage" ? userMessageFiles(item).length : 0;
+      const itemFileAttachments = fileAttachments.slice(fileOffset, fileOffset + fileCount);
+      fileOffset += fileCount;
       rendered.push((
         <ItemRenderer
           key={item.id}
           item={item}
+          fileAttachments={itemFileAttachments}
           imagePreviewUrls={itemPreviewUrls}
           onDownloadFile={onDownloadFile}
         />
@@ -128,6 +136,7 @@ function renderItems(
 
 export function TurnView({
   activeReasoningItemIds = [],
+  fileAttachments = [],
   imagePreviewUrls = [],
   turn,
   onDownloadFile,
@@ -207,7 +216,7 @@ export function TurnView({
         </div>
       )}
       {turn.plan && <PlanView plan={turn.plan} />}
-      {renderItems(turn.items, disclosure, imagePreviewUrls, onDownloadFile)}
+      {renderItems(turn.items, disclosure, fileAttachments, imagePreviewUrls, onDownloadFile)}
       {turn.error != null && (
         <div className="turn-error" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />

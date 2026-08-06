@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleAlert,
   Folder,
+  GitFork,
   KeyRound,
   Menu,
   MessageSquarePlus,
@@ -56,6 +57,7 @@ export interface SidebarProps {
   onArchive: (threadId: string) => void;
   onUnarchive: (threadId: string) => void;
   onDelete: (threadId: string) => void;
+  onFork: (threadId: string) => void;
   onRename: (threadId: string, name: string) => void;
   onPin: (threadId: string, pinned: boolean) => void;
   onSkillsView: () => void;
@@ -96,7 +98,7 @@ interface LongPressState {
 const LONG_PRESS_MS = 550;
 const LONG_PRESS_MOVE_PX = 10;
 const ACTION_MENU_WIDTH = 188;
-const ACTION_MENU_HEIGHT = 228;
+const ACTION_MENU_HEIGHT = 268;
 
 interface ThreadGroup {
   cwd: string;
@@ -868,6 +870,21 @@ export function Sidebar(props: SidebarProps) {
             onClick={() => {
               if (menuThreadActive) return;
               const threadId = actionMenu.thread.id;
+              setActionMenu(null);
+              props.onFork(threadId);
+            }}
+          >
+            <GitFork size={15} aria-hidden="true" />
+            Fork
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={menuThreadActive}
+            aria-describedby={menuThreadActive ? activeActionReasonId : undefined}
+            onClick={() => {
+              if (menuThreadActive) return;
+              const threadId = actionMenu.thread.id;
               const menuView = actionMenu.view;
               setActionMenu(null);
               if (menuView === "archived") props.onUnarchive(threadId);
@@ -894,7 +911,7 @@ export function Sidebar(props: SidebarProps) {
           </button>
           {menuThreadActive && (
             <p id={activeActionReasonId} className="thread-action-menu__note">
-              Finish the active turn before archiving or deleting this thread.
+              Finish the active turn before forking, archiving, or deleting this thread.
             </p>
           )}
         </div>
