@@ -15,12 +15,14 @@ const MIN_TEXTAREA_HEIGHT = 32;
 const MAX_TEXTAREA_HEIGHT = 128;
 
 interface ComposerProps {
+  activeTurnId?: string | null;
   disabled: boolean;
   running: boolean;
   settings: ThreadSettings;
   models: ModelInfo[];
   onSettingsChange: (settings: Partial<ThreadSettings>) => void;
   onSend: (text: string, images: readonly File[]) => Promise<void> | void;
+  onSteer?: (text: string, expectedTurnId: string) => Promise<void> | void;
   onStop: () => Promise<void> | void;
 }
 
@@ -33,6 +35,8 @@ interface DraftImage {
 interface DraftSubmission {
   error?: string;
   images: DraftImage[];
+  mode: "start" | "steer";
+  expectedTurnId?: string;
   text: string;
 }
 
@@ -51,12 +55,14 @@ function clipboardFiles(data: DataTransfer): File[] {
 }
 
 export function Composer({
+  activeTurnId = null,
   disabled,
   running,
   settings,
   models,
   onSettingsChange,
   onSend,
+  onSteer,
   onStop,
 }: ComposerProps) {
   const [value, setValue] = useState("");
@@ -75,10 +81,14 @@ export function Composer({
   const effortKnown = !settings.effort || efforts.some((option) => option.reasoningEffort === settings.effort);
   const imageInputSupported = selectedModel?.inputModalities?.includes("image") === true;
   const sending = inFlightSubmission !== null;
-  const controlsDisabled = disabled || running || sending || failedSubmission !== null;
-  const canSubmit = !controlsDisabled &&
-    (Boolean(value.trim()) || images.length > 0) &&
-    (images.length === 0 || imageInputSupported);
+  const controlsDisabled = disabled || sending || failedSubmission !== null;
+  const turnControlsDisabled = controlsDisabled || running;
+  const canSteer = running && Boolean(activeTurnId) && Boolean(onSteer);
+  const canSubmit = !controlsDisabled && (canSteer
+    ? Boolean(value.trim())
+    : !running &&
+      (Boolean(value.trim()) || images.length > 0) &&
+      (images.length === 0 || imageInputSupported));
 
   useEffect(() => {
     imagesRef.current = images;
@@ -113,7 +123,7 @@ export function Composer({
   }, [value]);
 
   const addImages = (files: readonly File[]): number => {
-    if (controlsDisabled || files.length === 0) return 0;
+    if (turnControlsDisabled || files.length === 0) return 0;
     const accepted: DraftImage[] = [];
     let error = "";
     for (const file of files) {
@@ -156,7 +166,7 @@ export function Composer({
   };
 
   const removeImage = (id: number) => {
-    if (running || sending) return;
+    if (sending) return;
     setImages((current) => {
       const removed = current.find((image) => image.id === id);
       if (removed) revokePreview(removed.previewUrl);
@@ -168,7 +178,14 @@ export function Composer({
   const sendSubmission = async (submission: DraftSubmission) => {
     setInFlightSubmission(submission);
     try {
-      await onSend(submission.text, submission.images.map((image) => image.file));
+      if (submission.mode === "steer") {
+        if (!submission.expectedTurnId || !onSteer) {
+          throw new Error("The active turn is no longer available; nothing was sent");
+        }
+        await onSteer(submission.text, submission.expectedTurnId);
+      } else {
+        await onSend(submission.text, submission.images.map((image) => image.file));
+      }
       for (const image of submission.images) revokePreview(image.previewUrl);
       setFailedSubmission((current) => current === submission ? null : current);
       setImageError("");
@@ -182,14 +199,12 @@ export function Composer({
 
   const submit = async () => {
     const text = value.trim();
-    if (
-      (!text && images.length === 0) ||
-      controlsDisabled ||
-      (images.length > 0 && !imageInputSupported)
-    ) return;
-    const submission = { text, images };
+    if (!canSubmit) return;
+    const submission: DraftSubmission = canSteer
+      ? { mode: "steer", text, images: [], expectedTurnId: activeTurnId! }
+      : { mode: "start", text, images };
     setValue("");
-    setImages([]);
+    if (submission.mode === "start") setImages([]);
     await sendSubmission(submission);
   };
 
@@ -213,7 +228,7 @@ export function Composer({
                   className="composer-attachment-remove"
                   title={`Remove ${image.file.name || "image"}`}
                   aria-label={`Remove ${image.file.name || "image"}`}
-                  disabled={running || sending}
+                  disabled={sending}
                   onClick={() => removeImage(image.id)}
                 >
                   <X size={13} aria-hidden="true" />
@@ -244,26 +259,30 @@ export function Composer({
               ));
             if (addImages(pastedImages) > 0) event.preventDefault();
           }}
-          placeholder={running ? "Codex is working…" : "Ask Codex (Ctrl+Enter to send)"}
+          placeholder={running
+            ? "Guide active turn (Ctrl+Enter to steer)"
+            : "Ask Codex (Ctrl+Enter to send)"}
           aria-label="Message Codex"
           maxLength={MAX_COMPOSER_CHARACTERS}
           rows={1}
         />
         <span className="sr-only" aria-live="polite">
           {sending
-            ? inFlightSubmission?.images.length ? "Uploading images" : "Sending message"
+            ? inFlightSubmission?.mode === "steer"
+              ? "Steering active turn"
+              : inFlightSubmission?.images.length ? "Uploading images" : "Sending message"
             : images.length > 0
               ? `${images.length} image${images.length === 1 ? "" : "s"} selected`
               : ""}
         </span>
-        <div className="composer-footer" aria-label="Next turn settings">
+        <div className="composer-footer" aria-label={running ? "Active turn controls" : "Next turn settings"}>
           <input
             ref={fileInputRef}
             hidden
             type="file"
             accept={SUPPORTED_IMAGE_TYPES.join(",")}
             multiple
-            disabled={controlsDisabled || !imageInputSupported}
+            disabled={turnControlsDisabled || !imageInputSupported}
             aria-label="Choose images"
             tabIndex={-1}
             onChange={(event) => {
@@ -271,21 +290,34 @@ export function Composer({
               event.target.value = "";
             }}
           />
-          <button
-            type="button"
-            className="composer-image-action"
-            title={imageInputSupported ? "Add images" : "Selected model does not support images"}
-            aria-label="Add images"
-            disabled={controlsDisabled || !imageInputSupported}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <ImagePlus size={15} aria-hidden="true" />
-          </button>
+          {running ? (
+            <button
+              type="button"
+              className="composer-image-action composer-action--stop"
+              title="Stop turn"
+              aria-label="Stop turn"
+              disabled={disabled || sending}
+              onClick={() => void onStop()}
+            >
+              <Square size={14} fill="currentColor" aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="composer-image-action"
+              title={imageInputSupported ? "Add images" : "Selected model does not support images"}
+              aria-label="Add images"
+              disabled={turnControlsDisabled || !imageInputSupported}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <ImagePlus size={15} aria-hidden="true" />
+            </button>
+          )}
           <label className="composer-setting" title="Model for the next turn">
             <Sparkles size={12} aria-hidden="true" />
             <select
               aria-label="Model for next turn"
-              disabled={controlsDisabled || (!settings.model && models.length === 0)}
+              disabled={turnControlsDisabled || (!settings.model && models.length === 0)}
               value={settings.model}
               onChange={(event) => {
                 const model = event.target.value;
@@ -308,7 +340,7 @@ export function Composer({
             <Gauge size={12} aria-hidden="true" />
             <select
               aria-label="Reasoning effort for next turn"
-              disabled={controlsDisabled || (!settings.effort && efforts.length === 0)}
+              disabled={turnControlsDisabled || (!settings.effort && efforts.length === 0)}
               value={settings.effort}
               onChange={(event) => onSettingsChange({ effort: event.target.value })}
             >
@@ -322,37 +354,31 @@ export function Composer({
             </select>
           </label>
         </div>
-        {running ? (
-          <button
-            type="button"
-            className="composer-action composer-action--stop"
-            title="Stop turn"
-            aria-label="Stop turn"
-            disabled={disabled || sending}
-            onClick={() => void onStop()}
-          >
-            <Square size={14} fill="currentColor" aria-hidden="true" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="composer-action"
-            title="Send message"
-            aria-label="Send message"
-            disabled={!canSubmit}
-            onClick={() => void submit()}
-          >
-            {sending
-              ? <LoaderCircle className="composer-spinner" size={16} aria-hidden="true" />
-              : <Send size={16} aria-hidden="true" />}
-          </button>
-        )}
+        <button
+          type="button"
+          className="composer-action"
+          title={running ? "Steer active turn" : "Send message"}
+          aria-label={running ? "Steer active turn" : "Send message"}
+          disabled={!canSubmit}
+          onClick={() => void submit()}
+        >
+          {sending
+            ? <LoaderCircle className="composer-spinner" size={16} aria-hidden="true" />
+            : <Send size={16} aria-hidden="true" />}
+        </button>
       </div>
       {failedSubmission && (
         <div className="composer-failed-submission" role="alert">
           <span className="composer-failed-copy">
-            <strong>Message not confirmed</strong>
+            <strong>{failedSubmission.mode === "steer" ? "Guidance not confirmed" : "Message not confirmed"}</strong>
             {failedSubmission.error && <span className="composer-failed-error">{failedSubmission.error}</span>}
+            {failedSubmission.mode === "steer" && (
+              !running || activeTurnId !== failedSubmission.expectedTurnId
+            ) && (
+              <span className="composer-failed-error">
+                The original turn is no longer active; this guidance cannot be retried.
+              </span>
+            )}
             <span className="composer-failed-preview">
               {failedSubmission.text
                 ? `${failedSubmission.text.slice(0, 160)}${failedSubmission.text.length > 160 ? "..." : ""}`
@@ -365,9 +391,11 @@ export function Composer({
           <button
             type="button"
             className="composer-failed-action"
-            title="Retry unconfirmed message"
-            aria-label="Retry unconfirmed message"
-            disabled={disabled || running || sending}
+            title={failedSubmission.mode === "steer" ? "Retry unconfirmed guidance" : "Retry unconfirmed message"}
+            aria-label={failedSubmission.mode === "steer" ? "Retry unconfirmed guidance" : "Retry unconfirmed message"}
+            disabled={disabled || sending || (failedSubmission.mode === "start"
+              ? running
+              : !running || activeTurnId !== failedSubmission.expectedTurnId)}
             onClick={() => void sendSubmission(failedSubmission)}
           >
             {sending
@@ -377,8 +405,8 @@ export function Composer({
           <button
             type="button"
             className="composer-failed-action"
-            title="Discard unconfirmed message"
-            aria-label="Discard unconfirmed message"
+            title={failedSubmission.mode === "steer" ? "Discard unconfirmed guidance" : "Discard unconfirmed message"}
+            aria-label={failedSubmission.mode === "steer" ? "Discard unconfirmed guidance" : "Discard unconfirmed message"}
             disabled={sending}
             onClick={discardFailedSubmission}
           >

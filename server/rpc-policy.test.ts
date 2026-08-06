@@ -909,4 +909,127 @@ describe("browser RPC policy", () => {
       [field]: value,
     })).toThrow(`turn/start ${field} must be a string`);
   });
+
+  it("rebuilds bounded text-only steering input and projects its matching turn id", () => {
+    const params = {
+      threadId: "thread-1",
+      expectedTurnId: "turn-1",
+      input: [{
+        type: "text",
+        text: "Check the focused test first",
+        text_elements: [{
+          byteRange: { start: 10, end: 17 },
+          placeholder: "focused",
+        }],
+      }],
+    };
+
+    expect(ALLOWED_BROWSER_RPC_METHODS.has("turn/steer")).toBe(true);
+    const sanitized = sanitizeBrowserRpcParams("turn/steer", params);
+    expect(sanitized).toEqual(params);
+    expect(sanitized).not.toBe(params);
+    expect(sanitizeBrowserRpcResult("turn/steer", {
+      turnId: "turn-1",
+      privateMetadata: "must not reach the browser",
+    }, sanitized)).toEqual({ turnId: "turn-1" });
+  });
+
+  it.each([
+    [null, "params must be an object"],
+    [
+      { expectedTurnId: "turn-1", input: [{ type: "text", text: "Continue" }] },
+      "threadId must be a non-empty string",
+    ],
+    [
+      { threadId: "thread-1", input: [{ type: "text", text: "Continue" }] },
+      "expectedTurnId must be a non-empty string",
+    ],
+    [
+      { threadId: "thread-1", expectedTurnId: "turn-1", input: [] },
+      "input must be a non-empty array",
+    ],
+    [
+      { threadId: "thread-1", expectedTurnId: "turn-1", input: "Continue" },
+      "input must be a non-empty array",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [
+          { type: "text", text: "First" },
+          { type: "text", text: "Second" },
+        ],
+      },
+      "input must contain exactly one text item",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "   " }],
+      },
+      "input[0].text must be a non-empty string",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "localImage", path: "/private/image.png" }],
+      },
+      "input[0] must be text",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "Continue", path: "/private/file" }],
+      },
+      "does not allow param: path",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{
+          type: "text",
+          text: "Continue",
+          text_elements: [{ byteRange: { start: 0, end: 8 }, placeholder: null, path: "/tmp" }],
+        }],
+      },
+      "does not allow param: path",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "Continue" }],
+        additionalContext: { private: { text: "secret" } },
+      },
+      "does not allow param: additionalContext",
+    ],
+    [
+      {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "Continue" }],
+        clientUserMessageId: "browser-chosen-id",
+      },
+      "does not allow param: clientUserMessageId",
+    ],
+  ])("rejects unsafe turn/steer params %#", (params, message) => {
+    expect(() => sanitizeBrowserRpcParams("turn/steer", params)).toThrow(message);
+  });
+
+  it.each([
+    [undefined, { turnId: "turn-1" }],
+    [{ threadId: "thread-1", expectedTurnId: "turn-1", input: [] }, null],
+    [{ threadId: "thread-1", expectedTurnId: "turn-1", input: [] }, {}],
+    [{ threadId: "thread-1", expectedTurnId: "turn-1", input: [] }, { turnId: "" }],
+    [{ threadId: "thread-1", expectedTurnId: "turn-1", input: [] }, { turnId: 1 }],
+    [{ threadId: "thread-1", expectedTurnId: "turn-1", input: [] }, { turnId: "turn-2" }],
+  ])("fails closed for an invalid or mismatched turn/steer result %#", (params, result) => {
+    expect(() => sanitizeBrowserRpcResult("turn/steer", result, params))
+      .toThrow("Codex app-server returned an invalid turn/steer result");
+  });
 });

@@ -1050,6 +1050,31 @@ pre {
   background: #f7f6f2;
 }
 
+.conversation-window-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+}
+
+.conversation-window-nav--earlier {
+  margin: -14px 0 12px;
+}
+
+.conversation-window-nav--newer {
+  margin: -8px 0 22px;
+}
+
+.conversation-window-nav .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  color: #59625b;
+  background: #f7f6f2;
+}
+
 .conversation-empty .empty-mark {
   width: 42px;
   height: 42px;

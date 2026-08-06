@@ -145,6 +145,9 @@ function installRpcFixture() {
     if (method === "turn/start") {
       return { turn: { id: "turn-new", status: "inProgress", items: [] } };
     }
+    if (method === "turn/steer") {
+      return { turnId: (params as { expectedTurnId?: string } | undefined)?.expectedTurnId };
+    }
     return {};
   });
 }
@@ -402,6 +405,162 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       cwd: "/workspace/updated",
     }));
+  });
+
+  it("steers the exact active turn without starting another turn", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+    const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start").length;
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "  focus on the failing test  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("turn/steer", {
+      threadId: existingThread.id,
+      expectedTurnId: "turn-new",
+      input: [{ type: "text", text: "focus on the failing test", text_elements: [] }],
+    }));
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(turnStarts);
+  });
+
+  it("keeps later typing when the steered turn completes before the response", async () => {
+    let resolveSteer!: (value: unknown) => void;
+    const pendingSteer = new Promise<unknown>((resolve) => {
+      resolveSteer = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/steer" ? pendingSteer : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "steer snapshot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith(
+      "turn/steer",
+      expect.objectContaining({ expectedTurnId: "turn-new" }),
+    ));
+    fireEvent.change(textarea, { target: { value: "draft after steering" } });
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "full", items: [] },
+      },
+    }));
+
+    await act(async () => {
+      resolveSteer({ turnId: "turn-new" });
+      await pendingSteer;
+    });
+
+    expect(textarea).toHaveValue("draft after steering");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  it("retries failed steering only against its captured active turn", async () => {
+    let steerAttempts = 0;
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "turn/steer") {
+        steerAttempts += 1;
+        if (steerAttempts === 1) return Promise.reject(new Error("Connection closed"));
+        return Promise.resolve({ turnId: "turn-new" });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start").length;
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "retry guidance" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Steer active turn" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Guidance not confirmed");
+    fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed guidance" }));
+    await waitFor(() => expect(socket.rpc.mock.calls.filter(([method]) => (
+      method === "turn/steer"
+    ))).toHaveLength(2));
+    for (const [, params] of socket.rpc.mock.calls.filter(([method]) => method === "turn/steer")) {
+      expect(params).toEqual({
+        threadId: existingThread.id,
+        expectedTurnId: "turn-new",
+        input: [{ type: "text", text: "retry guidance", text_elements: [] }],
+      });
+    }
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(turnStarts);
+  });
+
+  it("keeps failed guidance and disables retry after its turn completes", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/steer"
+        ? Promise.reject(new Error("Connection closed"))
+        : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "original guidance" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Steer active turn" }));
+    await screen.findByText("Guidance not confirmed");
+    fireEvent.change(textarea, { target: { value: "later draft" } });
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "full", items: [] },
+      },
+    }));
+
+    const recovery = screen.getByRole("alert");
+    expect(recovery).toHaveTextContent("original guidance");
+    expect(recovery).toHaveTextContent("The original turn is no longer active");
+    expect(screen.getByRole("button", { name: "Retry unconfirmed guidance" })).toBeDisabled();
+    expect(textarea).toHaveValue("later draft");
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+  });
+
+  it("keeps steering disabled while the connection is unavailable", async () => {
+    installBootstrapFixture();
+    const view = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    view.rerender(<App />);
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "keep this guidance" } });
+    expect(screen.getByRole("button", { name: "Steer active turn" })).toBeDisabled();
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    expect(socket.rpc.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(0);
+    expect(textarea).toHaveValue("keep this guidance");
   });
 
   it("does not let a late resume result overwrite a cwd update", async () => {

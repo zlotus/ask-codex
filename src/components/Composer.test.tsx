@@ -105,6 +105,156 @@ describe("Composer", () => {
     expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
   });
 
+  it.each(["ctrlKey", "metaKey"] as const)(
+    "steers the captured active turn with %s and Enter",
+    async (modifier) => {
+      const onSend = vi.fn();
+      const onSteer = vi.fn();
+      render(
+        <Composer
+          activeTurnId="turn-active"
+          disabled={false}
+          running
+          settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+          models={models}
+          onSettingsChange={vi.fn()}
+          onSend={onSend}
+          onSteer={onSteer}
+          onStop={vi.fn()}
+        />,
+      );
+
+      const textarea = screen.getByLabelText("Message Codex");
+      expect(textarea).toHaveAttribute("placeholder", "Guide active turn (Ctrl+Enter to steer)");
+      expect(screen.getByRole("button", { name: "Stop turn" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Steer active turn" })).toBeDisabled();
+      expect(screen.getByLabelText("Choose images")).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Add images" })).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Model for next turn")).toBeDisabled();
+      expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
+
+      fireEvent.change(textarea, { target: { value: "  adjust the active work  " } });
+      const shortcut = createEvent.keyDown(textarea, { key: "Enter", [modifier]: true });
+      fireEvent(textarea, shortcut);
+
+      expect(shortcut.defaultPrevented).toBe(true);
+      await waitFor(() => expect(onSteer).toHaveBeenCalledWith(
+        "adjust the active work",
+        "turn-active",
+      ));
+      expect(onSend).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves images and later typing when the active turn completes before steering responds", async () => {
+    let resolveSteer!: () => void;
+    const onSend = vi.fn();
+    const onSteer = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSteer = resolve;
+    }));
+    const settings = {
+      cwd: "/workspace",
+      model: "model-a",
+      effort: "high",
+      sandbox: "workspace-write" as const,
+    };
+    const props = {
+      disabled: false,
+      settings,
+      models,
+      onSettingsChange: vi.fn(),
+      onSend,
+      onSteer,
+      onStop: vi.fn(),
+    };
+    const { rerender } = render(<Composer {...props} activeTurnId={null} running={false} />);
+    const image = new File([new Uint8Array([1, 2, 3])], "keep.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [image] } });
+
+    rerender(<Composer {...props} activeTurnId="turn-active" running />);
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "steer snapshot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+    expect(onSteer).toHaveBeenCalledWith("steer snapshot", "turn-active");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText("keep.png")).toBeInTheDocument();
+    expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:keep.png");
+
+    fireEvent.change(textarea, { target: { value: "draft for the next turn" } });
+    rerender(<Composer {...props} activeTurnId={null} running={false} />);
+    await act(async () => resolveSteer());
+
+    expect(textarea).toHaveValue("draft for the next turn");
+    expect(screen.getByText("keep.png")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  it("manually retries failed guidance against the same captured turn", async () => {
+    const onSend = vi.fn();
+    const onSteer = vi.fn()
+      .mockRejectedValueOnce(new Error("Connection closed"))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <Composer
+        activeTurnId="turn-active"
+        disabled={false}
+        running
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={onSend}
+        onSteer={onSteer}
+        onStop={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "retry this guidance" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+    const recovery = await screen.findByRole("alert");
+    expect(recovery).toHaveTextContent("Guidance not confirmed");
+    expect(recovery).toHaveTextContent("retry this guidance");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry unconfirmed guidance" }));
+    await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(2));
+    expect(onSteer).toHaveBeenNthCalledWith(1, "retry this guidance", "turn-active");
+    expect(onSteer).toHaveBeenNthCalledWith(2, "retry this guidance", "turn-active");
+    expect(onSend).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("Guidance not confirmed")).not.toBeInTheDocument());
+  });
+
+  it("keeps failed guidance but disables retry after the captured turn changes", async () => {
+    const onSend = vi.fn();
+    const onSteer = vi.fn().mockRejectedValue(new Error("Connection closed"));
+    const props = {
+      disabled: false,
+      running: true,
+      settings: { cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" as const },
+      models,
+      onSettingsChange: vi.fn(),
+      onSend,
+      onSteer,
+      onStop: vi.fn(),
+    };
+    const { rerender } = render(<Composer {...props} activeTurnId="turn-original" />);
+
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "original guidance" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+    await screen.findByText("Guidance not confirmed");
+    fireEvent.change(textarea, { target: { value: "later draft" } });
+
+    rerender(<Composer {...props} activeTurnId="turn-replacement" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("original guidance");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The original turn is no longer active; this guidance cannot be retried.",
+    );
+    expect(screen.getByRole("button", { name: "Retry unconfirmed guidance" })).toBeDisabled();
+    expect(textarea).toHaveValue("later draft");
+    expect(onSteer).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("keeps text editable while actions are disabled and never sends from Enter", () => {
     const onSend = vi.fn();
     render(

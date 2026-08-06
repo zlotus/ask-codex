@@ -18,6 +18,7 @@
 | [0012](0012-read-only-connection-recovery.md) | 已接受 | 通过只读快照恢复连接，不后台认领线程或重放未确认写请求。 |
 | [0013](0013-thread-working-directory-defaults-and-file-download-scope.md) | 已接受 | 将所选线程的 Working directory 用作新线程默认上下文和受限文件下载范围。 |
 | [0014](0014-bounded-structured-plan-recovery.md) | 已接受 | 通过有界网关快照恢复结构化 Plan，并区分可恢复、不可恢复和未知状态。 |
+| [0015](0015-explicit-active-turn-steering.md) | 已接受 | 将显式文本 steering 绑定到确切活跃轮次，并保持严格确认、owner 和不重放语义。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

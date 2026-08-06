@@ -1,8 +1,31 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CodexTurn } from "../types/protocol";
 import { Conversation } from "./Conversation";
 
 const FILE_CAPABILITY_ID = "a".repeat(32);
+
+const conversationProps = {
+  loading: false,
+  loadError: null,
+  historyLoading: false,
+  hasMore: false,
+  historyError: null,
+  onLoadEarlier: vi.fn(),
+  onLoadTurnDetail: vi.fn(),
+  onRetryThread: vi.fn(),
+};
+
+function turnRange(first: number, last: number): CodexTurn[] {
+  return Array.from({ length: last - first + 1 }, (_, offset) => {
+    const number = first + offset;
+    return {
+      id: `turn-${number}`,
+      status: "completed",
+      items: [{ id: `message-${number}`, type: "agentMessage", text: `Turn message ${number}` }],
+    };
+  });
+}
 
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "scrollTo", {
@@ -236,5 +259,152 @@ describe("Conversation history recovery", () => {
 
     expect(screen.getByRole("button", { name: "Detail unavailable" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("transport limits");
+  });
+});
+
+describe("Conversation turn mounting budget", () => {
+  it("mounts only the latest 24 turns and navigates between loaded windows", () => {
+    const { container } = render(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-window", turns: turnRange(1, 40) }}
+      />,
+    );
+
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+    expect(container.querySelector('[data-turn-id="turn-16"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-17"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-40"]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+    expect(container.querySelector('[data-turn-id="turn-4"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-5"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-28"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-29"]')).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show newer loaded turns" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+
+    expect(container.querySelector('[data-turn-id="turn-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-25"]')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show newer loaded turns" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show newer loaded turns" }));
+
+    expect(container.querySelector('[data-turn-id="turn-1"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-40"]')).toBeInTheDocument();
+  });
+
+  it("keeps the active turn mounted while browsing the earliest loaded turns", () => {
+    const turns = turnRange(1, 40);
+    turns[39] = { ...turns[39], status: "inProgress" };
+    const { container } = render(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-active", turns }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+    expect(container.querySelector('[data-turn-id="turn-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-40"]')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show newer loaded turns" })).toBeInTheDocument();
+  });
+
+  it("reveals a newly prepended history page after Load earlier is used", () => {
+    const onLoadEarlier = vi.fn();
+    const { container, rerender } = render(
+      <Conversation
+        {...conversationProps}
+        hasMore
+        onLoadEarlier={onLoadEarlier}
+        thread={{ id: "thread-prepend", turns: turnRange(11, 34) }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier turns" }));
+    expect(onLoadEarlier).toHaveBeenCalledOnce();
+
+    rerender(
+      <Conversation
+        {...conversationProps}
+        hasMore
+        onLoadEarlier={onLoadEarlier}
+        thread={{ id: "thread-prepend", turns: turnRange(1, 34) }}
+      />,
+    );
+
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+    expect(container.querySelector('[data-turn-id="turn-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-24"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-34"]')).not.toBeInTheDocument();
+  });
+
+  it("follows a new turn at the bottom but preserves a reader's older window", () => {
+    const { container, rerender } = render(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-follow", turns: turnRange(1, 30) }}
+      />,
+    );
+    const scroll = container.querySelector(".conversation-scroll");
+    if (!(scroll instanceof HTMLElement)) throw new Error("Expected conversation scroller");
+
+    rerender(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-follow", turns: turnRange(1, 31) }}
+      />,
+    );
+
+    expect(container.querySelector('[data-turn-id="turn-31"]')).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, value: 100 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    fireEvent.scroll(scroll);
+
+    rerender(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-follow", turns: turnRange(1, 32) }}
+      />,
+    );
+
+    expect(container.querySelector('[data-turn-id="turn-8"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-32"]')).not.toBeInTheDocument();
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+  });
+
+  it("resets to the latest window when switching threads", () => {
+    const { container, rerender } = render(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-first", turns: turnRange(1, 40) }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier loaded turns" }));
+    expect(container.querySelector('[data-turn-id="turn-1"]')).toBeInTheDocument();
+
+    rerender(
+      <Conversation
+        {...conversationProps}
+        thread={{ id: "thread-second", turns: turnRange(101, 140) }}
+      />,
+    );
+
+    expect(container.querySelectorAll("[data-turn-id]")).toHaveLength(24);
+    expect(container.querySelector('[data-turn-id="turn-101"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-117"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-turn-id="turn-140"]')).toBeInTheDocument();
   });
 });

@@ -1550,6 +1550,9 @@ export default function App() {
   }, [state.currentThread, state.settings.sandbox, threadDialog?.mode]);
 
   const sendMessage = useCallback(async (text: string, images: readonly File[]) => {
+    if (state.activeTurnId) {
+      throw new Error("A turn is already active; the message was not sent as a new turn");
+    }
     const selectionGeneration = selectionGenerationRef.current;
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
@@ -1673,8 +1676,50 @@ export default function App() {
     rpc,
     sandboxOverride,
     state.currentThread,
+    state.activeTurnId,
     state.settings,
     token,
+  ]);
+
+  const steerMessage = useCallback(async (text: string, expectedTurnId: string) => {
+    const thread = state.currentThread;
+    const activeTurn = thread?.turns?.find((turn) => (
+      turn.id === state.activeTurnId && turn.status === "inProgress"
+    ));
+    if (
+      connection !== "connected" ||
+      loadingThread ||
+      resyncing ||
+      resyncError !== null ||
+      threadLoadError !== null
+    ) {
+      throw new Error("The connection is not ready; guidance was not sent");
+    }
+    if (
+      !thread ||
+      thread.id !== state.selectedThreadId ||
+      state.activeTurnId !== expectedTurnId ||
+      activeTurn?.id !== expectedTurnId
+    ) {
+      throw new Error("The original turn is no longer active; guidance was not sent");
+    }
+    const guidance = text.trim();
+    if (!guidance) throw new Error("Guidance must not be empty");
+    await rpc("turn/steer", {
+      threadId: thread.id,
+      expectedTurnId,
+      input: [{ type: "text", text: guidance, text_elements: [] }],
+    });
+  }, [
+    connection,
+    loadingThread,
+    resyncError,
+    resyncing,
+    rpc,
+    state.activeTurnId,
+    state.currentThread,
+    state.selectedThreadId,
+    threadLoadError,
   ]);
 
   const stopTurn = useCallback(async () => {
@@ -1894,6 +1939,7 @@ export default function App() {
           onReject={rejectRequest}
         />
         <Composer
+          activeTurnId={activeTurn?.id ?? null}
           disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           settings={composerSettings}
@@ -1906,6 +1952,7 @@ export default function App() {
             }));
           }}
           onSend={sendMessage}
+          onSteer={steerMessage}
           onStop={stopTurn}
         />
       </section>

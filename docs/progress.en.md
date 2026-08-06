@@ -2,22 +2,18 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-05
+Last reviewed: 2026-08-06
 
 ## Current Milestone
 
-Working-directory continuity, file handoff, and this round of gateway security
-hardening are implemented. A new thread defaults to the exact cwd of the
-currently selected thread, uses the bootstrap initial directory only when
-nothing is selected, and always starts from a `workspace-write` sandbox. Regular
-files explicitly linked by completed Agent messages can be downloaded after
-confirmation. The browser redeems only short-lived, one-use capabilities,
-cannot submit a host path, and the gateway uses no global download-root list.
-The approval-decision, thread-owner, `externalSandbox`, and WebSocket
-request-target gaps are closed. Structured Plans can now recover from bounded
-gateway snapshots across disconnects, read-only resynchronization, thread
-switches, and Codex child-process restarts. The next near-term item has not been
-selected.
+This round's P1 work is complete: a running turn now accepts native text
+steering bound to an exact `expectedTurnId`, and long histories use an aggregate
+DOM budget with Earlier/Newer navigation across loaded turns. Steering retains
+explicit confirmation, approval ownership, and no-replay semantics for unknown
+results. The active turn also counts within the 24-turn mount budget. Previously
+completed cwd continuity, constrained file handoff, gateway hardening, and
+bounded structured Plan recovery remain in place. No next near-term item has
+been selected.
 
 ## Current Baseline
 
@@ -27,8 +23,13 @@ The implementation currently provides:
   and refreshing native Codex threads, with a 44-pixel conversation header and
   an always-editable responsive multiline composer where Enter inserts a
   newline and either the button or `Ctrl+Enter` sends; `Cmd+Enter` is also
-  supported on macOS. Unconfirmed sends remain separate from drafts typed while
-  a send is in flight. A newly created thread remains in the sidebar throughout
+  supported on macOS. While a turn runs, the same composer can send text-only
+  steering to the active turn captured at submission; image drafts remain
+  intact while image, model, and effort controls stay disabled. An unconfirmed
+  normal send or steering submission remains separate from text entered while
+  it is in flight. After the original turn stops being active, failed steering
+  remains visible but cannot be retried incorrectly as a new turn. A newly
+  created thread remains in the sidebar throughout
   its first turn until the canonical active or archived list confirms its
   metadata. Concurrent list refreshes apply only the latest result, and turn
   completion hydrates the name, preview, and time so a sparse status notification
@@ -95,7 +96,11 @@ The implementation currently provides:
   default history contract for new threads instead of Ask Codex forcing the
   experimental `paginated` mode. Existing paginated threads can still recover
   through a narrowly allowed ascending `thread/items/list`; default or `legacy`
-  threads retain the one-turn full-detail retry.
+  threads retain the one-turn full-detail retry. Loaded history normally mounts
+  only the latest 24 turns, with Earlier/Newer moving by 12 turns and an active
+  turn pinned inside that budget. Prepended history, appended turns, browsing
+  away from the bottom, and thread switches preserve predictable windows and
+  scroll positions.
 - Streamed messages, reasoning, plans, command output, file changes, MCP calls,
   web searches, turn diffs, and unknown-item fallback rendering. Consecutive
   historical reasoning with content stays grouped and expandable in place,
@@ -168,11 +173,13 @@ The implementation currently provides:
   forms before authentication. Ordinary `thread/resume` sends no sandbox
   override and therefore preserves `externalSandbox`; an explicit override
   first probes the authoritative sandbox with fixed parameters and fails closed
-  on an untrusted result or concurrent settings notification. Resume and turn
-  start operations for one thread are serialized, indeterminate results cancel
-  already queued successors, and thread ownership is committed synchronously
-  only after a structurally valid upstream success. Failure, disconnect, or a
-  malformed result cannot take ownership from the previous browser.
+  on an untrusted result or concurrent settings notification. Resume, turn
+  start, and text steering operations for one thread are serialized;
+  indeterminate results cancel already queued successors, and thread ownership
+  is committed synchronously only after a structurally valid upstream success.
+  A steering response must also return the same `turnId` as the sanitized
+  `expectedTurnId`. Failure, disconnect, or a malformed result cannot take
+  ownership from the previous browser.
 - Composer support for selecting, pasting, previewing, removing, and sending
   PNG, JPEG, and WebP images, including image-only turns, with the entry point
   enabled only when a model explicitly declares image input. Image bytes use
@@ -201,59 +208,77 @@ device can pull the latest `origin/main` and resume from `Next` without relying
 on prior chat history; only checks explicitly listed under `Verification` count
 as executed.
 
-## Known Gaps
+## Incomplete Work And Boundaries
+
+The former nine-gap flat list no longer treats unlike items as equal. P1
+steering and the aggregate DOM budget are complete; the remainder is organized
+by actionability below. Priorities are the current recommendation, not delivery
+commitments.
+
+### Implementation Candidates
+
+- **P2, grouped in phases**: first design persistent attachment ownership,
+  reclamation, and cross-client references, then extend general file input on
+  the same constrained upload foundation. Audio should reuse quota and lifecycle
+  mechanisms but validate model and protocol support separately.
+- **P2, standalone**: thread fork. Recheck default and `paginated` history
+  capability on the current CLI first; do not expose rollback or detached review
+  in the same release by default.
+- **P2, standalone**: a persistent cross-device message queue. It needs its own
+  ADR for idempotency keys, expiry, acknowledgement, active-turn conflicts, and
+  approval ownership. Do not merge it with completed no-auto-replay steering
+  into one send semantic.
+- **P3, standalone**: a persistent Activity audit. Its data sensitivity,
+  retention, and sources of truth need a separate definition; it cannot simply
+  reuse the bounded structured Plan recovery cache.
+- **P3, separate security project**: fixed host actions may expose only
+  server-configured action IDs. Do not bundle an embedded PTY with them; it is
+  currently unscheduled and requires its own isolation boundary and threat model.
+
+### Upstream Or Protocol Limits
 
 - Default and existing `legacy` threads have no official migration path and do
-  not support `thread/items/list`; they remain summary-only when a full single
-  turn still exceeds the gateway limit. A paginated thread also cannot recover
-  an item that by itself exceeds 1 MiB by shrinking the page further.
+  not support `thread/items/list`; they remain summary-only when a full turn
+  exceeds the gateway limit. A paginated item larger than 1 MiB cannot be
+  recovered by shrinking its page further.
 - When last verified with Codex CLI 0.145.0, paginated threads did not support
-  fork, rollback, or detached review. Ask Codex does not currently expose those
-  operations, but the restriction still applies to another client operating on
-  the same native thread.
-- Loaded history pages remain mounted. Heavy closed disclosures are lazy and
-  Markdown/diff work is bounded, but very long manually expanded histories do
-  not yet use viewport virtualization or an aggregate DOM budget.
-- When last verified with Codex CLI 0.145.0, completed `commandExecution`
-  history did not contain approval reasons. Ask Codex can retain reasons
-  captured during the current browser session and through in-session resync,
-  but cannot reconstruct them after a page reload or on another device from
-  native thread history alone.
-- Activity's recent-event ring exists only in the current page and is not a
-  persistent audit log. Realtime visibility is limited to threads the current
-  Ask Codex app-server process can list or broadcast; another CLI or IDE
-  process does not share its item-level live stream. `account/usage/read` and
-  account rate limits may also be unavailable for a sign-in mode or service,
-  and this data is not an API bill or exact USD cost. Thread fork remains
-  unavailable.
-- Image attachments are deleted after a turn completes. Normal subsequent
-  Codex context is unaffected, but another native client cannot use the deleted
-  `localImage.path` to edit history and reattach the original image; persistent
-  attachment ownership and garbage collection are not designed. Browser-local
-  previews are not cross-device attachment storage: they are available only in
-  the same browser profile and Origin and may become placeholders because of
-  the 30-day TTL, eight-image/40-MiB limit, site-data clearing, or browser
-  reclamation. General file and audio input are also not exposed.
-- File downloads cannot list directories, accept a browser-selected path,
-  preview arbitrary formats, or export a file absent from qualifying completed
-  Agent content. A capability is short-lived, one-use, and local to the current
-  server process; after restart, expiry, or first consumption, qualifying
-  history must be read again to obtain a new one.
-- The current Codex CLI's official Turn and read responses contain no structured
-  Plan. The Plan cache exists only in the current Ask Codex gateway process and
-  has entry, aggregate-byte, and per-response budgets. After a gateway restart,
-  record eviction, or a notification lost before reaching the gateway, a new
-  page or another device cannot reconstruct that Plan from native history. A
-  browser that already observed one preserves its last state when the snapshot
-  field is absent, but cannot prove that state is still current.
-- Turn steering, persistent cross-device message queues, fixed host actions,
-  and an embedded PTY are not implemented.
+  rollback or detached review. Recheck these native-history actions after
+  relevant CLI upgrades; the client cannot synthesize equivalent capabilities.
+- Completed native `commandExecution` history does not contain approval reasons.
+  The current browser session can preserve reasons it observed, but a reload or
+  another device cannot reconstruct them from thread history.
+- Other CLI or IDE app-server processes do not share item-level realtime
+  Activity. Account usage and limits may also be unavailable for a sign-in mode
+  or service and are not an API bill or exact USD cost.
+- Official Turn and read results contain no structured Plan. After a gateway
+  restart, cache eviction, or a notification lost before reaching the gateway,
+  the current protocol cannot reconstruct that Plan from native history.
+
+### Accepted Boundaries
+
+- Under ADR 0013, file downloads intentionally do not list directories, accept
+  browser paths, or export files absent from qualifying completed Agent messages.
+  Capabilities remain short-lived, one-use, and local to the current process.
+  This is a security scope, not unfinished functionality.
+- Current image attachments are deleted after turn completion. IndexedDB
+  previews serve only the same browser profile and Origin under the 30-day and
+  eight-image/40-MiB bounds. Until a P2 persistent-attachment design is accepted,
+  local previews are not cross-device storage.
+- Under ADR 0014, structured Plan recovery deliberately uses a bounded in-process
+  cache rather than a new persistent conversation database. It covers ordinary
+  disconnects and Codex child restarts but does not promise reconstruction across
+  gateway processes or devices. This is an accepted tradeoff, not ordinary debt.
+- The browser cannot submit arbitrary commands or gain an implicit shell. Fixed
+  actions and a PTY, even if implemented later, require explicit authorization
+  and isolation boundaries separate from Codex approval.
 
 ## Next
 
-This near-term milestone is complete; the next item has not been selected.
-Candidates remain in [`ideas.en.md`](ideas.en.md), and their presence there is
-not a delivery commitment.
+This P1 milestone is complete; the next item has not been selected. Prefer one
+standalone P2 design or one phased group rather than introducing several new
+persistent state models at once. Other candidates remain in
+[`ideas.en.md`](ideas.en.md); presence in either document is not a delivery
+commitment.
 
 ## Risks And Watchpoints
 
@@ -262,7 +287,7 @@ not a delivery commitment.
 - `paginated` history remains an experimental persistence contract. Do not
   force it for new threads until app-server advertises an explicit capability
   and the real first-turn path is verified. CLI upgrades must still recheck item
-  pagination plus fork, rollback, and detached review support.
+  pagination and related native-history operations.
 - Rich rendering must treat all agent, command, diff, and ANSI content as
   untrusted text and must bound memory and DOM growth.
 - File-download scope must continue to derive jointly from authoritative
@@ -291,6 +316,10 @@ not a delivery commitment.
   redirect approval requests away from the browser that started or resumed it.
   Ordinary reconnection and Codex restart may retry bounded read-only requests,
   never unconfirmed writes.
+- `turn/steer` must remain bound to the `expectedTurnId` captured at submission,
+  accept only field-rebuilt text input, and fail closed when the response
+  `turnId` differs. Recovery must not replay steering automatically, and a
+  failed retry must not degrade into `turn/start`.
 - `turn/plan/updated` is a complete snapshot. JSONL and WebSocket arrival order
   must remain authoritative, and realtime delivery and cached recovery must use
   the same field projection and resource bounds. `emittedAtMs` and
@@ -310,24 +339,25 @@ not a delivery commitment.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-05 with Node.js
+Verification for this round was completed on 2026-08-06 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
 
 - Current experimental TypeScript bindings were generated from the installed
   CLI and compared for `ThreadResumeResponse.sandbox`,
   `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
-  `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`, the
-  complete-snapshot `TurnPlanUpdatedNotification`, official Plan-free Turn read
-  structures, and the notification envelope's `emittedAtMs`. No real turn was
-  created.
+  `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`,
+  `TurnSteerParams`, `TurnSteerResponse`, the complete-snapshot
+  `TurnPlanUpdatedNotification`, official Plan-free Turn read structures, and
+  the notification envelope's `emittedAtMs`. No real turn was created.
 - `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npm test` passed: 35 test files and 569 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 35 test files and 608 tests. Server tests ran
   in an environment that permits loopback socket binding.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4176
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-plan-recovery-visual npm run
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4177
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-p1-visual npm run
   check:visual` passed against the current production build. Desktop and
   390x844 mobile fixtures covered approvals, project navigation, Activity,
   Skills, Usage, file downloads, rich content, the fixed reasoning slot, images,
-  and the composer. There was no horizontal overflow, clipping, content overlap,
-  console error, or page error. Deterministic browser fixtures intercepted every
-  RPC and download and created no real Codex turn.
+  Plans, and the running-turn steering composer. There was no horizontal
+  overflow, clipping, content overlap, console error, or page error.
+  Deterministic browser fixtures intercepted every RPC and download and created
+  no real Codex turn.

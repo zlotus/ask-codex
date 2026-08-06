@@ -34,6 +34,13 @@ class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGatewa
     if (method === "turn/start") {
       return { turn: { id: "turn-with-attachments", status: "inProgress", items: [] } };
     }
+    if (method === "turn/steer") {
+      const expectedTurnId = typeof params === "object" && params !== null &&
+          "expectedTurnId" in params && typeof params.expectedTurnId === "string"
+        ? params.expectedTurnId
+        : "turn-steered";
+      return { turnId: expectedTurnId };
+    }
     if (method === "thread/resume") {
       const threadId = typeof params === "object" && params !== null &&
           "threadId" in params && typeof params.threadId === "string"
@@ -1854,7 +1861,7 @@ describe("AskCodexServer", () => {
       .toBe(false);
   });
 
-  it.each(["thread/resume", "turn/start"] as const)(
+  it.each(["thread/resume", "turn/start", "turn/steer"] as const)(
     "changes approval ownership only after a successful %s RPC",
     async (method) => {
       const gateway = new FakeGateway();
@@ -1880,7 +1887,13 @@ describe("AskCodexServer", () => {
 
       const params = method === "thread/resume"
         ? { threadId: "thread-owned" }
-        : {
+        : method === "turn/steer"
+          ? {
+              threadId: "thread-owned",
+              expectedTurnId: "turn-owned",
+              input: [{ type: "text", text: "steer", text_elements: [] }],
+            }
+          : {
             threadId: "thread-owned",
             input: [{ type: "text", text: "hello", text_elements: [] }],
           };
@@ -1966,7 +1979,9 @@ describe("AskCodexServer", () => {
       ));
       resolveSuccessfulClaim?.(method === "thread/resume"
         ? { thread: { id: "thread-owned" }, sandbox: { type: "workspaceWrite" } }
-        : { turn: { id: "turn-owned", status: "inProgress", items: [] } });
+        : method === "turn/steer"
+          ? { turnId: "turn-owned" }
+          : { turn: { id: "turn-owned", status: "inProgress", items: [] } });
       await waitForMessage(
         challenger.messages,
         (message) => message.type === "rpcResult" && message.id === "successful-claim",
@@ -1987,6 +2002,158 @@ describe("AskCodexServer", () => {
         .toBe(false);
     },
   );
+
+  it("does not claim steering ownership after its requester disconnects", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const owner = connect(url, "test-token");
+    const challenger = connect(url, "test-token");
+    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
+    await waitForMessage(owner.messages, (message) => message.type === "status");
+    await waitForMessage(challenger.messages, (message) => message.type === "status");
+
+    owner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "steer-disconnect-owner",
+      method: "thread/start",
+      params: { cwd: process.cwd() },
+    }));
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "rpcResult" && message.id === "steer-disconnect-owner",
+    );
+
+    let resolveSteer: ((result: unknown) => void) | undefined;
+    gateway.request.mockImplementationOnce(async () => (
+      await new Promise<unknown>((resolve) => {
+        resolveSteer = resolve;
+      })
+    ));
+    challenger.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "steer-before-disconnect",
+      method: "turn/steer",
+      params: {
+        threadId: "thread-owned",
+        expectedTurnId: "turn-active",
+        input: [{ type: "text", text: "Continue with tests", text_elements: [] }],
+      },
+    }));
+    await vi.waitFor(() => expect(resolveSteer).toBeTypeOf("function"));
+
+    const closed = once(challenger.socket, "close");
+    challenger.socket.close();
+    await closed;
+    resolveSteer?.({ turnId: "turn-active" });
+    await vi.waitFor(() => expect(
+      (service as unknown as { totalInFlightRpc: number }).totalInFlightRpc
+    ).toBe(0));
+
+    gateway.emit(
+      "request",
+      95,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-owned", command: "true" },
+    );
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "request" && message.id === 95,
+    );
+  });
+
+  it("fails closed on a mismatched steering result and cancels queued ownership RPCs", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const owner = connect(url, "test-token");
+    const challenger = connect(url, "test-token");
+    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
+    await waitForMessage(owner.messages, (message) => message.type === "status");
+    await waitForMessage(challenger.messages, (message) => message.type === "status");
+
+    owner.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "mismatched-steer-owner",
+      method: "thread/start",
+      params: { cwd: process.cwd() },
+    }));
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "rpcResult" && message.id === "mismatched-steer-owner",
+    );
+
+    let resolveSteer: ((result: unknown) => void) | undefined;
+    gateway.request.mockImplementationOnce(async () => (
+      await new Promise<unknown>((resolve) => {
+        resolveSteer = resolve;
+      })
+    ));
+    challenger.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "mismatched-steer",
+      method: "turn/steer",
+      params: {
+        threadId: "thread-owned",
+        expectedTurnId: "turn-active",
+        input: [{ type: "text", text: "Continue with tests", text_elements: [] }],
+      },
+    }));
+    await vi.waitFor(() => expect(resolveSteer).toBeTypeOf("function"));
+
+    challenger.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "resume-after-mismatched-steer",
+      method: "thread/resume",
+      params: { threadId: "thread-owned" },
+    }));
+    await vi.waitFor(() => expect(
+      (service as unknown as { totalInFlightRpc: number }).totalInFlightRpc
+    ).toBe(2));
+    resolveSteer?.({ turnId: "turn-other" });
+
+    await Promise.all([
+      expect(waitForMessage(
+        challenger.messages,
+        (message) => message.type === "rpcError" && message.id === "mismatched-steer",
+      )).resolves.toEqual({
+        type: "rpcError",
+        id: "mismatched-steer",
+        error: {
+          code: -32_000,
+          message: "Codex app-server returned an invalid turn/steer result",
+        },
+      }),
+      expect(waitForMessage(
+        challenger.messages,
+        (message) => message.type === "rpcError" &&
+          message.id === "resume-after-mismatched-steer",
+      )).resolves.toEqual({
+        type: "rpcError",
+        id: "resume-after-mismatched-steer",
+        error: {
+          code: -32_000,
+          message: "thread/resume was canceled because an earlier thread operation " +
+            "had an indeterminate result",
+        },
+      }),
+    ]);
+    expect(gateway.request.mock.calls.filter(([method]) => method === "thread/resume"))
+      .toHaveLength(0);
+
+    gateway.emit(
+      "request",
+      96,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-owned", command: "true" },
+    );
+    await waitForMessage(
+      owner.messages,
+      (message) => message.type === "request" && message.id === 96,
+    );
+  });
 
   it("does not claim ownership for a malformed top-level turn/start id", async () => {
     const gateway = new FakeGateway();
@@ -2056,7 +2223,7 @@ describe("AskCodexServer", () => {
     ));
   });
 
-  it.each(["thread/start", "thread/resume", "turn/start"] as const)(
+  it.each(["thread/start", "thread/resume", "turn/start", "turn/steer"] as const)(
     "claims ownership synchronously with a successful %s result",
     async (method) => {
       const gateway = new FakeGateway();
@@ -2087,7 +2254,9 @@ describe("AskCodexServer", () => {
       ) => {
         const result = method === "turn/start"
           ? { turn: { id: "turn-synchronous-owner", status: "inProgress", items: [] } }
-          : {
+          : method === "turn/steer"
+            ? { turnId: "turn-synchronous-owner" }
+            : {
               thread: { id: "thread-owned" },
               sandbox: { type: "workspaceWrite" },
             };
@@ -2106,10 +2275,18 @@ describe("AskCodexServer", () => {
         method,
         params: method === "thread/start"
           ? { cwd: process.cwd() }
-          : method === "thread/resume" ? { threadId: "thread-owned" } : {
-              threadId: "thread-owned",
-              input: [{ type: "text", text: "hello", text_elements: [] }],
-            },
+          : method === "thread/resume"
+            ? { threadId: "thread-owned" }
+            : method === "turn/steer"
+              ? {
+                  threadId: "thread-owned",
+                  expectedTurnId: "turn-synchronous-owner",
+                  input: [{ type: "text", text: "steer", text_elements: [] }],
+                }
+              : {
+                  threadId: "thread-owned",
+                  input: [{ type: "text", text: "hello", text_elements: [] }],
+                },
       }));
 
       await waitForMessage(
@@ -2765,6 +2942,71 @@ describe("AskCodexServer", () => {
         (entry) => entry.type === "rpcResult" && entry.id === "serialized-full-access",
       ),
     ]);
+  });
+
+  it("serializes turn/steer with an in-flight ownership RPC for the same thread", async () => {
+    const gateway = new FakeGateway();
+    const requestResolvers: Array<(result: unknown) => void> = [];
+    gateway.request.mockImplementation(async (method) => {
+      if (method !== "turn/start" && method !== "turn/steer") return { ok: true };
+      return await new Promise<unknown>((resolveRequest) => {
+        requestResolvers.push(resolveRequest);
+      });
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const starter = connect(url, "test-token");
+    const steerer = connect(url, "test-token");
+    await Promise.all([once(starter.socket, "open"), once(steerer.socket, "open")]);
+    await waitForMessage(starter.messages, (entry) => entry.type === "status");
+    await waitForMessage(steerer.messages, (entry) => entry.type === "status");
+
+    starter.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "steer-serialized-start",
+      method: "turn/start",
+      params: {
+        threadId: "thread-steer-serialized",
+        input: [{ type: "text", text: "Start", text_elements: [] }],
+      },
+    }));
+    await vi.waitFor(() => expect(requestResolvers).toHaveLength(1));
+    steerer.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "steer-serialized-next",
+      method: "turn/steer",
+      params: {
+        threadId: "thread-steer-serialized",
+        expectedTurnId: "turn-steer-serialized",
+        input: [{ type: "text", text: "Adjust", text_elements: [] }],
+      },
+    }));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(requestResolvers).toHaveLength(1);
+
+    requestResolvers[0]?.({
+      turn: { id: "turn-steer-serialized", status: "inProgress", items: [] },
+    });
+    await waitForMessage(
+      starter.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "steer-serialized-start",
+    );
+    await vi.waitFor(() => expect(requestResolvers).toHaveLength(2));
+    expect(gateway.request.mock.calls.map(([method]) => method)).toEqual([
+      "turn/start",
+      "turn/steer",
+    ]);
+
+    requestResolvers[1]?.({ turnId: "turn-steer-serialized" });
+    await expect(waitForMessage(
+      steerer.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "steer-serialized-next",
+    )).resolves.toEqual({
+      type: "rpcResult",
+      id: "steer-serialized-next",
+      result: { turnId: "turn-steer-serialized" },
+    });
   });
 
   it("serializes different ownership-changing RPCs for the same thread", async () => {

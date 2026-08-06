@@ -18,6 +18,7 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "thread/items/list",
   "skills/list",
   "turn/start",
+  "turn/steer",
   "turn/interrupt",
   "model/list",
   "config/read",
@@ -29,6 +30,7 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
 const MAX_CONFIG_VALUE_CHARACTERS = 512;
 const MAX_LOCAL_IMAGES_PER_TURN = 4;
 const MAX_THREAD_ID_CHARACTERS = 256;
+const MAX_TURN_ID_CHARACTERS = 256;
 const MAX_THREAD_NAME_CHARACTERS = 200;
 const MAX_SKILLS_CWDS = 16;
 const MAX_SKILLS_CWD_CHARACTERS = 4_096;
@@ -534,6 +536,28 @@ function sanitizeTextElements(method: string, value: unknown): unknown[] {
   });
 }
 
+function sanitizeTextUserInput(
+  method: string,
+  item: Record<string, unknown>,
+  index: number,
+  requireContent = false,
+): Record<string, unknown> {
+  if (typeof item.text !== "string") {
+    throw new ClientInputError(`${method} input[${index}].text must be a string`);
+  }
+  if (requireContent && item.text.trim().length === 0) {
+    throw new ClientInputError(
+      `${method} input[${index}].text must be a non-empty string`,
+    );
+  }
+  assertOnlyKeys(method, item, ["type", "text", "text_elements"]);
+  return {
+    type: "text",
+    text: item.text,
+    text_elements: sanitizeTextElements(method, item.text_elements),
+  };
+}
+
 function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   const method = "turn/start";
   const input = paramsObject(method, params);
@@ -541,7 +565,6 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   if (!Array.isArray(input.input) || input.input.length === 0) {
     throw new ClientInputError(`${method} input must be a non-empty array`);
   }
-
   let imageCount = 0;
   const attachmentIds = new Set<string>();
   const sanitizedInput = input.input.map((item, index) => {
@@ -549,15 +572,7 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
       throw new ClientInputError(`${method} input[${index}] must be an object`);
     }
     if (item.type === "text") {
-      if (typeof item.text !== "string") {
-        throw new ClientInputError(`${method} input[${index}].text must be a string`);
-      }
-      assertOnlyKeys(method, item, ["type", "text", "text_elements"]);
-      return {
-        type: "text",
-        text: item.text,
-        text_elements: sanitizeTextElements(method, item.text_elements),
-      };
+      return sanitizeTextUserInput(method, item, index);
     }
     if (item.type !== "localImage") {
       throw new ClientInputError(`${method} input[${index}] must be text or an uploaded image`);
@@ -596,6 +611,42 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   assignDefined(output, "model", optionalString(method, input, "model"));
   assignDefined(output, "effort", optionalString(method, input, "effort"));
   return output;
+}
+
+function sanitizeTurnSteer(params: unknown): Record<string, unknown> {
+  const method = "turn/steer";
+  const input = paramsObject(method, params);
+  assertOnlyKeys(method, input, ["threadId", "expectedTurnId", "input"]);
+  if (!Array.isArray(input.input) || input.input.length === 0) {
+    throw new ClientInputError(`${method} input must be a non-empty array`);
+  }
+  if (input.input.length !== 1) {
+    throw new ClientInputError(`${method} input must contain exactly one text item`);
+  }
+
+  return {
+    threadId: requiredBoundedString(
+      method,
+      input,
+      "threadId",
+      MAX_THREAD_ID_CHARACTERS,
+    ),
+    expectedTurnId: requiredBoundedString(
+      method,
+      input,
+      "expectedTurnId",
+      MAX_TURN_ID_CHARACTERS,
+    ),
+    input: input.input.map((item, index) => {
+      if (!isRecord(item)) {
+        throw new ClientInputError(`${method} input[${index}] must be an object`);
+      }
+      if (item.type !== "text") {
+        throw new ClientInputError(`${method} input[${index}] must be text`);
+      }
+      return sanitizeTextUserInput(method, item, index, true);
+    }),
+  };
 }
 
 export function attachmentIdsFromTurnStart(params: unknown): string[] {
@@ -671,6 +722,8 @@ export function sanitizeBrowserRpcParams(method: string, params: unknown): unkno
       return sanitizeSkillsList(params);
     case "turn/start":
       return sanitizeTurnStart(params);
+    case "turn/steer":
+      return sanitizeTurnSteer(params);
     case "turn/interrupt": {
       const input = paramsObject(method, params);
       assertOnlyKeys(method, input, ["threadId", "turnId"]);
@@ -1087,7 +1140,11 @@ export function sanitizeBrowserNotificationParams(method: string, params: unknow
     : sanitizeBrowserVisibleValue(params);
 }
 
-export function sanitizeBrowserRpcResult(method: string, result: unknown): unknown {
+export function sanitizeBrowserRpcResult(
+  method: string,
+  result: unknown,
+  params?: unknown,
+): unknown {
   switch (method) {
     case "config/read": {
       const config = isRecord(result) && isRecord(result.config) ? result.config : {};
@@ -1108,6 +1165,20 @@ export function sanitizeBrowserRpcResult(method: string, result: unknown): unkno
       return projectAccountUsageResult(result);
     case "account/rateLimits/read":
       return projectAccountRateLimitsResult(result);
+    case "turn/steer": {
+      const expectedTurnId = isRecord(params) ? params.expectedTurnId : undefined;
+      const turnId = isRecord(result) ? result.turnId : undefined;
+      if (
+        typeof expectedTurnId !== "string" ||
+        expectedTurnId.length === 0 ||
+        typeof turnId !== "string" ||
+        turnId.length === 0 ||
+        turnId !== expectedTurnId
+      ) {
+        throw new Error("Codex app-server returned an invalid turn/steer result");
+      }
+      return { turnId };
+    }
     default:
       return sanitizeBrowserVisibleValue(result);
   }

@@ -1105,7 +1105,11 @@ export class AskCodexServer {
         fileDownloadAuthorityRevision,
       );
       this.turnPlans.observeRpcResult(message.method, sanitizedParams);
-      const projectedResult = sanitizeBrowserRpcResult(message.method, rawResult);
+      const projectedResult = sanitizeBrowserRpcResult(
+        message.method,
+        rawResult,
+        sanitizedParams,
+      );
       const fileDecoratedResult = canDecorateFileDownloads
           ? this.fileDownloads.decorateRpcResult(
             message.method,
@@ -1157,7 +1161,11 @@ export class AskCodexServer {
       this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
       return result;
     }
-    if (method !== "thread/resume" && method !== "turn/start") {
+    if (
+      method !== "thread/resume" &&
+      method !== "turn/start" &&
+      method !== "turn/steer"
+    ) {
       return this.codex.request(method, params);
     }
 
@@ -1207,8 +1215,12 @@ export class AskCodexServer {
           ) {
             throw new ClientInputError("thread/resume did not apply the requested sandbox");
           }
-        } else if (!turnIdFromStartResult(result)) {
-          throw new Error("Codex app-server returned an invalid turn/start result");
+        } else if (method === "turn/start") {
+          if (!turnIdFromStartResult(result)) {
+            throw new Error("Codex app-server returned an invalid turn/start result");
+          }
+        } else {
+          sanitizeBrowserRpcResult(method, result, params);
         }
         this.claimThreadOwnership(threadId, client);
       });

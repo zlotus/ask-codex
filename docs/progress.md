@@ -2,16 +2,15 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-05
+最后审阅：2026-08-06
 
 ## 当前里程碑
 
-线程工作目录的连续性、文件交接和本轮网关安全硬化已经完成。新线程默认继承当前所选线程的
-精确 cwd，没有选择时才使用 bootstrap 初始目录，并始终从 `workspace-write` 沙箱开始。
-已完成 Agent 消息明确链接的 cwd 内普通文件可以通过二次确认下载；浏览器只兑换短期一次性
-capability，不能提交宿主机路径，网关也不使用全局下载根列表。审批决策、线程 owner、
-`externalSandbox` 和 WebSocket request-target 的安全欠账已关闭。结构化 Plan 现在也能从
-有界网关快照跨断线、只读重同步、切换线程和 Codex 子进程重启恢复。下一项近期工作尚未选定。
+本轮 P1 已完成：运行中的轮次现在支持绑定确切 `expectedTurnId` 的原生文本 steering；
+长历史由整体 DOM 预算约束，并提供已加载轮次的 Earlier/Newer 窗口导航。Steering 保持
+显式确认、审批 owner 和未知结果不重放语义，历史窗口则始终把活跃轮次计入 24 个挂载名额。
+此前完成的线程 cwd 连续性、受限文件交接、网关安全硬化和结构化 Plan 有界恢复继续保持。
+下一项近期工作尚未选定。
 
 ## 当前基线
 
@@ -19,8 +18,11 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
 
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
   包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
-  发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。未确认成功的发送会与发送期间
-  继续输入的新草稿分开保留。新建线程在首轮期间会保留在侧边栏，直到 active 或
+  发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。轮次运行时，同一输入框可向提交时
+  捕获的活跃轮次发送纯文本 steering；图片草稿保持不变，但图片、模型和 effort 控件继续
+  禁用。未确认成功的普通发送或 steering 会与发送期间继续输入的新草稿分开保留；原轮次
+  不再活跃后，失败的 steering 仍保留但不能被错误重试为新轮次。新建线程在首轮期间会
+  保留在侧边栏，直到 active 或
   archived 官方列表确认其元数据；并发列表刷新只采用最新结果，轮次完成后会主动补全
   名称、预览和时间，因此稀疏状态通知不会使条目消失或退化为 UUID。
 - Active/Archived 双视图按精确 cwd 分组，并在每组中先显示置顶线程，再保持其他线程的
@@ -60,7 +62,9 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
 - 通过 `thread/turns/list` 增量加载近期轮次，支持自适应分页大小、可重试的更早页面和
   摘要降级。新线程由 app-server 选择默认历史契约，不再强制实验性的 `paginated`
   模式；已有分页线程仍可通过严格受限的 `thread/items/list` 按升序逐页恢复，默认或
-  `legacy` 线程保留单轮完整详情重试。
+  `legacy` 线程保留单轮完整详情重试。已加载历史通常只挂载最新 24 个轮次，Earlier/Newer
+  每次移动 12 个轮次；活跃轮次固定占用其中一个名额。前插历史、新轮次追加、离底浏览和
+  切换线程分别保持可预期的窗口与滚动位置。
 - 流式显示消息、推理、计划、命令输出、文件变更、MCP 调用、网页搜索、轮次 diff，
   并为未知条目提供降级渲染；连续且有内容的历史推理在原位置合并并可展开，进行中轮次底部
   则保留固定的推理状态槽，活动推理显示动画，无活动推理时显示灰态，从而避免推理生命周期
@@ -105,8 +109,9 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
 - WebSocket 升级只接受原始 request-target 精确等于 `/ws`，在认证前拒绝 query、fragment、
   归一化路径和 authority/absolute-form 混入。普通 `thread/resume` 不发送 sandbox 覆盖，
   因而保留 `externalSandbox`；显式覆盖先用固定参数探测权威 sandbox，并对不可信响应或并发
-  settings 通知失败关闭。同线程的 resume/turn start 串行，未知结果会取消已排队后继；
-  thread owner 只在上游返回结构有效的成功结果时同步提交，失败、断线或畸形结果不会抢占旧 owner。
+  settings 通知失败关闭。同线程的 resume、turn start 和 text steering 串行，未知结果会
+  取消已排队后继；thread owner 只在上游返回结构有效的成功结果时同步提交。Steering 响应还
+  必须返回与已清洗 `expectedTurnId` 相同的 `turnId`；失败、断线或畸形结果不会抢占旧 owner。
 - 输入框支持选择、粘贴、预览、删除和单独发送 PNG、JPEG、WebP 图片，并只在模型明确
   声明图片输入能力时开放入口。图片二进制通过复用现有 HTTP 令牌与 Origin/Host 策略的
   临时附件端点上传，一次性 ID 在网关内重建为官方 `localImage` 路径；数量、字节、并发、
@@ -126,48 +131,62 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
 在不依赖之前聊天记录的情况下按“后续步骤”继续；只有“验证”中明确列出的检查才视为已经
 执行。
 
-## 已知缺口
+## 未完成事项与边界
 
-- 默认或现有 `legacy` 线程没有官方迁移方式，也不支持 `thread/items/list`；如果它的单轮
-  完整载荷仍超过网关上限，就只能保留摘要。分页线程中的单个条目若自身超过 1 MiB，
-  同样无法通过缩小页面恢复。
-- 上次在 Codex CLI 0.145.0 上验证时，分页线程不支持 fork、rollback 和 detached
-  review。Ask Codex 当前没有公开这些操作，但其他客户端操作同一原生线程时仍受此限制。
-- 已加载的历史页面会一直挂载。内容较重但已折叠的区域采用惰性处理，Markdown/diff
-  工作量也有边界，但在手动展开大量历史时，尚未使用视口虚拟化或整体 DOM 预算。
-- 上次在 Codex CLI 0.145.0 上验证时，已完成的 `commandExecution` 历史不包含审批
-  理由。Ask Codex 可以保留当前浏览器会话期间捕获的理由，并在会话内重新同步时保留
-  它们，但页面刷新后或换到另一台设备时，无法从原生线程历史重建这些理由。
-- Activity 的近期事件环只存在于当前页面内，并不是持久审计日志。实时状态范围限于当前
-  Ask Codex app-server 进程能够列出或广播的线程；其他 CLI/IDE 进程不会共享逐项实时流。
-  `account/usage/read` 和账户速率限制也可能因认证方式或服务端支持情况不可用，并且这些
-  数据不是 API 账单或精确美元成本。线程 fork 仍未开放。
-- 图片附件会在轮次完成后删除。Codex 的正常后续上下文不受影响，但其他原生客户端无法
-  再使用已删除的 `localImage.path` 编辑历史并重新附加原图片；持久附件所有权和回收
-  尚未设计。浏览器本地预览不是跨设备附件存储，只在同一浏览器配置文件和 Origin 中
-  可用，并可能因 30 天 TTL、8 张/40 MiB 上限、站点数据清理或浏览器回收而变成占位符。
-  通用文件和音频输入也未开放。
-- 文件下载不会列目录、接受浏览器指定路径、预览任意格式，或导出没有出现在合格完成态
-  Agent 消息中的文件。capability 只存在于当前服务进程且短期一次有效；服务重启、过期或
-  首次消费后，需要重新读取合格历史才能获得新 capability。
-- 当前 Codex CLI 的官方 Turn 和读取响应不含结构化 Plan。Plan 缓存只存在于当前 Ask Codex
-  网关进程并受条目、总字节和单次响应预算限制；网关进程重启、记录逐出或通知在抵达网关前
-  丢失后，新页面或另一设备无法从原生历史重建该 Plan。已有浏览器在快照字段缺失时会保留
-  自己最后观察到的状态，但不能据此证明它仍是最新状态。
-- 轮次 steering、跨设备持久消息队列、固定宿主机操作和嵌入式 PTY 尚未实现。
+原有九条缺口不再作为同等优先级的平铺清单。P1 的 steering 和整体 DOM 预算已经完成；
+其余内容按可实施性规整如下。优先级表示当前建议顺序，不是交付承诺。
+
+### 候选实施项目
+
+- **P2，成组分阶段**：先设计持久附件所有权、回收和跨客户端引用，再在同一受限上传基础上
+  扩展通用文件输入；音频输入应复用配额和生命周期机制，但单独验证模型与协议支持。
+- **P2，单独实施**：线程 fork。开始前必须在当前 CLI 上重新核对默认与 `paginated` 历史
+  的能力，不应与 rollback 或 detached review 一次性开放。
+- **P2，单独实施**：跨设备持久消息队列。它需要自己的 ADR，明确幂等键、过期、确认、
+  活跃轮次冲突和审批 owner；不能与已经完成且不自动重放的 steering 合并成一种发送语义。
+- **P3，单独实施**：持久 Activity 审计。它需要单独定义数据敏感度、保留期和事实来源，
+  不能直接复用结构化 Plan 的有界恢复缓存。
+- **P3，独立安全项目**：固定宿主机操作只能暴露服务端配置的操作 ID。嵌入式 PTY 不与其
+  捆绑，当前不排期；若以后实施，必须另建隔离边界和威胁模型。
+
+### 上游或协议限制
+
+- 默认和现有 `legacy` 线程没有官方迁移方式，也不支持 `thread/items/list`；单轮完整载荷
+  超过网关上限时只能保留摘要。分页线程的单个条目若自身超过 1 MiB，也无法靠缩小页面恢复。
+- 上次在 Codex CLI 0.145.0 上验证时，分页线程不支持 rollback 和 detached review。
+  这些原生历史操作必须在每次相关 CLI 升级后重新核对，客户端不能自行补出等价能力。
+- 已完成的 `commandExecution` 原生历史不包含审批理由。当前浏览器会话可以保留已捕获理由，
+  但页面刷新或换设备后无法从线程历史重建。
+- 其他 CLI/IDE app-server 进程不共享逐项实时 Activity 流；账户用量和限额也可能因认证方式
+  或服务端支持而不可用，并且不是 API 账单或精确美元成本。
+- 官方 Turn 和读取响应不含结构化 Plan。网关重启、缓存逐出或通知抵达网关前丢失后，
+  当前协议不能从原生历史重建 Plan。
+
+### 已接受边界
+
+- 按 ADR 0013，文件下载刻意不列目录、不接受浏览器路径，也不导出未出现在合格完成态
+  Agent 消息中的文件；capability 保持短期、一次性且只存在于当前服务进程。这是安全范围，
+  不是待补功能。
+- 当前图片附件在轮次完成后删除，IndexedDB 预览只服务同一浏览器配置文件和 Origin，并受
+  30 天、8 张/40 MiB 等上限约束。在 P2 持久附件设计被接受前，不把本地预览描述为跨设备存储。
+- 按 ADR 0014，结构化 Plan 恢复刻意使用进程内有界缓存，而不是新的持久会话数据库；它覆盖
+  普通断线和 Codex 子进程重启，但不承诺跨网关进程或跨设备重建。这是已接受取舍，不是普通欠账。
+- 浏览器不得提交任意命令或获得隐式 shell。固定操作和 PTY 即使未来实现，也必须保持与
+  Codex 审批分离的明确授权和隔离边界。
 
 ## 后续步骤
 
-本轮近期里程碑已经完成；下一项尚未选定。候选项保留在 [`ideas.md`](ideas.md) 中，
-出现在该文档中并不代表交付承诺。
+本轮 P1 里程碑已经完成；下一项尚未选定。优先从上面的 P2 项目中选择一个独立设计或一个
+分阶段组合，不并行引入多个新的持久状态模型。其他候选项保留在 [`ideas.md`](ideas.md) 中，
+出现在任一文档中都不代表交付承诺。
 
 ## 风险与注意事项
 
 - 已安装的 Codex CLI 定义持续演进的协议。协议工作必须比较生成的 bindings，并同时
   更新规范化逻辑和测试。
 - `paginated` 历史仍是实验性持久化契约。除非 app-server 提供明确的能力声明并完成真实
-  首轮验证，否则不要为新线程强制启用；升级 CLI 时仍须重新核对条目分页以及 fork、
-  rollback 和 detached review 的支持情况。
+  首轮验证，否则不要为新线程强制启用；升级 CLI 时仍须重新核对条目分页及相关原生历史
+  操作的支持情况。
 - 富文本渲染必须把所有智能体、命令、diff 和 ANSI 内容视为不可信文本，并限制内存
   和 DOM 增长。
 - 文件下载范围必须继续只由 app-server 权威 `thread.cwd` 和已完成 Agent 消息中的显式
@@ -188,6 +207,9 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
   引入路径或命令透传。
 - 自动恢复和只读视图不得声称拥有线程，也不得把审批请求从启动或恢复该线程的浏览器
   重定向出去。普通重连和 Codex 重启只能自动重试有界只读请求，不得重放未确认写操作。
+- `turn/steer` 必须继续绑定提交时捕获的 `expectedTurnId`，只允许文本并逐字段重建输入；
+  响应 `turnId` 不匹配时失败关闭。断线恢复不得自动重放 steering，失败重试也不得退化为
+  `turn/start`。
 - `turn/plan/updated` 是完整快照，必须继续以 JSONL/WebSocket 到达顺序为权威，并让实时通知
   与缓存恢复使用同一份逐字段投影和资源上限。`emittedAtMs` 与 `gatewayReceivedAtMs` 只能
   用于诊断，不能用于重排 Plan 状态。
@@ -201,20 +223,20 @@ capability，不能提交宿主机路径，网关也不使用全局下载根列�
 
 ## 验证
 
-本轮已于 2026-08-05 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+本轮已于 2026-08-06 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.146.0` 完成验证：
 
 - 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
   `ThreadResumeResponse.sandbox`、`ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`、
-  `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、完整快照形式的
-  `TurnPlanUpdatedNotification`、不含 Plan 的官方 Turn 读取结构，以及通知 envelope 的
-  `emittedAtMs`；没有创建真实轮次。
+  `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、
+  `TurnSteerParams`、`TurnSteerResponse`、完整快照形式的 `TurnPlanUpdatedNotification`、
+  不含 Plan 的官方 Turn 读取结构，以及通知 envelope 的 `emittedAtMs`；没有创建真实轮次。
 - `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npm test` 通过：35 个测试文件、569 项测试；服务端测试在允许绑定回环
+- `NODE_ENV=test npm test` 通过：35 个测试文件、608 项测试；服务端测试在允许绑定回环
   套接字的环境中运行。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4176
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-plan-recovery-visual npm run check:visual`
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4177
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-p1-visual npm run check:visual`
   针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
-  Usage、文件下载、富内容、推理状态槽、图片和输入区；未发现水平溢出、裁切、内容重叠、
-  console error 或 page error。所有 RPC 和下载均由确定性浏览器夹具拦截，没有创建真实
-  Codex 轮次。
+  Usage、文件下载、富内容、推理状态槽、图片、Plan 和运行中 steering 输入区；未发现水平
+  溢出、裁切、内容重叠、console error 或 page error。所有 RPC 和下载均由确定性浏览器
+  夹具拦截，没有创建真实 Codex 轮次。
