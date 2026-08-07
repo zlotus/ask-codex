@@ -3,15 +3,55 @@
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_BROWSER_RPC_METHODS,
+  MESSAGE_QUEUE_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
   materializeTurnStartAttachments,
   sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
   sanitizeBrowserVisibleValue,
+  sanitizeMessageQueueRpcParams,
 } from "./rpc-policy.js";
 
 describe("browser RPC policy", () => {
+  it("rebuilds the local message queue RPCs without upstream parameters", () => {
+    expect([...MESSAGE_QUEUE_BROWSER_RPC_METHODS]).toEqual([
+      "messageQueue/list",
+      "messageQueue/enqueue",
+      "messageQueue/cancel",
+      "messageQueue/send",
+    ]);
+    expect(sanitizeMessageQueueRpcParams("messageQueue/list", {
+      threadId: "thread-1",
+    })).toEqual({ threadId: "thread-1" });
+    expect(sanitizeMessageQueueRpcParams("messageQueue/enqueue", {
+      threadId: "thread-1",
+      text: "  Continue later  ",
+      expectedLastTurnId: "turn-1",
+    })).toEqual({
+      threadId: "thread-1",
+      text: "Continue later",
+      expectedLastTurnId: "turn-1",
+    });
+    expect(sanitizeMessageQueueRpcParams("messageQueue/send", {
+      id: "a".repeat(32),
+      revision: 3,
+      confirmReview: true,
+    })).toEqual({ id: "a".repeat(32), revision: 3, confirmReview: true });
+  });
+
+  it.each([
+    ["messageQueue/enqueue", { threadId: "thread-1", text: "", expectedLastTurnId: null }],
+    ["messageQueue/enqueue", { threadId: "thread-1", text: "send", expectedLastTurnId: null, cwd: "/tmp" }],
+    ["messageQueue/enqueue", { threadId: "thread-1", text: "send", expectedLastTurnId: null, model: "private" }],
+    ["messageQueue/send", { id: "short", revision: 1 }],
+    ["messageQueue/send", { id: "a".repeat(32), revision: 0 }],
+    ["messageQueue/send", { id: "a".repeat(32), revision: 1, confirmReview: "yes" }],
+    ["messageQueue/cancel", { id: "a".repeat(32), revision: 1, threadId: "thread-1" }],
+  ])("rejects unsafe local queue params for %s %#", (method, params) => {
+    expect(() => sanitizeMessageQueueRpcParams(method, params)).toThrow();
+  });
+
   it("exposes a minimal fork request and fixes approval ownership settings", () => {
     expect(ALLOWED_BROWSER_RPC_METHODS.has("thread/fork")).toBe(true);
     expect(sanitizeBrowserRpcParams("thread/fork", {

@@ -1,7 +1,8 @@
 import { isAbsolute } from "node:path";
 
 import { FILE_DOWNLOADS_ITEM_FIELD } from "./file-downloads.js";
-import { ClientInputError } from "./security.js";
+import { MAX_MESSAGE_QUEUE_TEXT_BYTES } from "./message-queue.js";
+import { ClientInputError, MethodNotAllowedError } from "./security.js";
 import { isRecord } from "./types.js";
 
 export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
@@ -28,6 +29,13 @@ export const ALLOWED_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
   "account/usage/read",
 ]);
 
+export const MESSAGE_QUEUE_BROWSER_RPC_METHODS: ReadonlySet<string> = new Set([
+  "messageQueue/list",
+  "messageQueue/enqueue",
+  "messageQueue/cancel",
+  "messageQueue/send",
+]);
+
 const MAX_CONFIG_VALUE_CHARACTERS = 512;
 const MAX_LOCAL_IMAGES_PER_TURN = 4;
 const MAX_ATTACHMENTS_PER_TURN = 4;
@@ -47,6 +55,7 @@ const MAX_RATE_LIMIT_ID_CHARACTERS = 128;
 const MAX_RATE_LIMIT_NAME_CHARACTERS = 256;
 const MAX_DECIMAL_CHARACTERS = 64;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const MESSAGE_QUEUE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 const SANDBOX_MODES = new Set([
   "read-only",
@@ -688,6 +697,81 @@ function sanitizeTurnSteer(params: unknown): Record<string, unknown> {
       }
       return sanitizeTextUserInput(method, item, index, true);
     }),
+  };
+}
+
+export function sanitizeMessageQueueRpcParams(
+  method: string,
+  params: unknown,
+): Record<string, unknown> {
+  if (!MESSAGE_QUEUE_BROWSER_RPC_METHODS.has(method)) {
+    throw new MethodNotAllowedError(method);
+  }
+  const input = paramsObject(method, params);
+  if (method === "messageQueue/list") {
+    assertOnlyKeys(method, input, ["threadId"]);
+    return {
+      threadId: requiredBoundedString(
+        method,
+        input,
+        "threadId",
+        MAX_THREAD_ID_CHARACTERS,
+      ),
+    };
+  }
+  if (method === "messageQueue/enqueue") {
+    assertOnlyKeys(method, input, ["threadId", "text", "expectedLastTurnId"]);
+    const text = requiredString(method, input, "text").trim();
+    if (!text || Buffer.byteLength(text, "utf8") > MAX_MESSAGE_QUEUE_TEXT_BYTES) {
+      throw new ClientInputError(
+        `${method} text must be non-empty and at most ${MAX_MESSAGE_QUEUE_TEXT_BYTES} UTF-8 bytes`,
+      );
+    }
+    if (!Object.hasOwn(input, "expectedLastTurnId")) {
+      throw new ClientInputError(`${method} expectedLastTurnId is required`);
+    }
+    const expectedLastTurnId = input.expectedLastTurnId === null
+      ? null
+      : requiredBoundedString(
+          method,
+          input,
+          "expectedLastTurnId",
+          MAX_TURN_ID_CHARACTERS,
+        );
+    return {
+      threadId: requiredBoundedString(
+        method,
+        input,
+        "threadId",
+        MAX_THREAD_ID_CHARACTERS,
+      ),
+      text,
+      expectedLastTurnId,
+    };
+  }
+
+  assertOnlyKeys(
+    method,
+    input,
+    method === "messageQueue/send" ? ["id", "revision", "confirmReview"] : ["id", "revision"],
+  );
+  const id = requiredString(method, input, "id");
+  if (!MESSAGE_QUEUE_ID_PATTERN.test(id)) {
+    throw new ClientInputError(`${method} id is invalid`);
+  }
+  if (!Number.isSafeInteger(input.revision) || (input.revision as number) <= 0) {
+    throw new ClientInputError(`${method} revision must be a positive safe integer`);
+  }
+  if (method === "messageQueue/cancel") {
+    return { id, revision: input.revision };
+  }
+  if (input.confirmReview !== undefined && typeof input.confirmReview !== "boolean") {
+    throw new ClientInputError(`${method} confirmReview must be a boolean`);
+  }
+  return {
+    id,
+    revision: input.revision,
+    confirmReview: input.confirmReview === true,
   };
 }
 

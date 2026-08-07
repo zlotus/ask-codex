@@ -1,4 +1,5 @@
 import type { CodexThread, NotificationMessage } from "../types/protocol";
+import { parsePlanRevision } from "./protocol";
 
 const DEFAULT_MAX_MESSAGES = 128;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -143,7 +144,12 @@ function planNotificationCoveredBySnapshot(
   const params = message.params as Record<string, unknown>;
   if (params.threadId !== snapshot.id || typeof params.turnId !== "string") return false;
   const turn = snapshot.turns?.find((candidate) => candidate.id === params.turnId);
-  return turn !== undefined && Object.hasOwn(turn, "plan");
+  if (turn === undefined || !Object.hasOwn(turn, "plan")) return false;
+  const notificationRevision = parsePlanRevision(params.askCodexPlanRevision);
+  const snapshotRevision = parsePlanRevision(turn.askCodexPlanRevision);
+  return notificationRevision !== undefined &&
+    snapshotRevision !== undefined &&
+    notificationRevision <= snapshotRevision;
 }
 
 export function filterSnapshotCoveredNotifications(

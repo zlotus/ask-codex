@@ -11,6 +11,28 @@ const fixtureImage = Buffer.from(
 const fixtureAttachmentId = "visualfixtureattachmentid0000001";
 const fixtureDownloadCapabilityId = "d".repeat(32);
 const fixtureDownloadHref = "/workspace/ask-codex/docs/progress.md:112";
+const fixtureQueuedMessages = [{
+  id: "q".repeat(32),
+  threadId: "019-visual-thread",
+  text: "Run the release checklist after the current review is complete.",
+  expectedLastTurnId: "turn-newest",
+  status: "queued",
+  revision: 1,
+  createdAt: 1_800_000_101_000,
+  updatedAt: 1_800_000_101_000,
+  expiresAt: 1_800_604_901_000,
+}, {
+  id: "r".repeat(32),
+  threadId: "019-visual-thread",
+  text: "Reconcile the updated context before sending this queued follow-up.",
+  expectedLastTurnId: "turn-older",
+  status: "needsReview",
+  revision: 3,
+  createdAt: 1_800_000_102_000,
+  updatedAt: 1_800_000_103_000,
+  expiresAt: 1_800_604_902_000,
+  reviewReason: "contextChanged",
+}];
 
 function fixtureFilePart(name, mediaType, size) {
   const text = `Attached file: ${name}`;
@@ -337,6 +359,8 @@ async function installFixture(page) {
         };
       } else if (message.method === "config/read") {
         result = { model: "gpt-5-codex", effort: "high" };
+      } else if (message.method === "messageQueue/list") {
+        result = { revision: 4, items: fixtureQueuedMessages };
       } else if (message.method === "account/rateLimits/read") {
         result = {
           rateLimits: {
@@ -872,6 +896,53 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
   return { collapsed, expanded, dismissed: true };
 }
 
+async function inspectMessageQueueDock(page, screenshotPath) {
+  const dock = page.getByRole("region", { name: "Message queue" });
+  await dock.waitFor();
+  await dock.getByText("Context changed", { exact: true }).waitFor();
+  const expanded = await dock.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
+    const body = element.querySelector(".message-queue-dock__body");
+    const rows = [...element.querySelectorAll(".message-queue-item")];
+    const actions = [...element.querySelectorAll(".message-queue-dock__icon")]
+      .map((button) => button.getBoundingClientRect());
+    const statusText = [...element.querySelectorAll(".message-queue-item__status")]
+      .map((status) => status.textContent?.trim());
+    return {
+      fitsViewport: box.left >= 0 && box.right <= window.innerWidth,
+      composerVisible: Boolean(composer && composer.top >= box.bottom - 1 && composer.bottom <= window.innerHeight),
+      bodyScrollableWhenNeeded: body ? ["auto", "scroll"].includes(window.getComputedStyle(body).overflowY) : false,
+      rows: rows.length,
+      actionsUsable: actions.length === 5 && actions.every((action) => action.width >= 32 && action.height >= 32),
+      statusText,
+      textContained: rows.every((row) => {
+        const rowBox = row.getBoundingClientRect();
+        const text = row.querySelector(".message-queue-item__text")?.getBoundingClientRect();
+        return Boolean(text && text.left >= rowBox.left && text.right <= rowBox.right);
+      }),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  const toggle = dock.getByRole("button", { name: /Collapse message queue/ });
+  await toggle.click();
+  await page.locator(".message-queue-dock__body").waitFor({ state: "hidden" });
+  const collapsed = await dock.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
+    return {
+      bodyHidden: !element.querySelector(".message-queue-dock__body"),
+      composerVisible: Boolean(composer && composer.top >= box.bottom - 1 && composer.bottom <= window.innerHeight),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await dock.getByRole("button", { name: /Expand message queue/ }).click();
+  await page.locator(".message-queue-dock__body").waitFor({ state: "visible" });
+  return { expanded, collapsed };
+}
+
 async function inspectThreadDialog(page) {
   const dialog = page.locator(".thread-settings-dialog");
   await dialog.waitFor();
@@ -1244,6 +1315,10 @@ try {
   await page.getByRole("tab", { name: "Active", exact: true }).click();
 
   await selectFixture(page);
+  const desktopMessageQueue = await inspectMessageQueueDock(
+    page,
+    `${outputDirectory}/desktop-message-queue.png`,
+  );
   await page.getByRole("button", { name: "Usage and limits", exact: true }).click();
   const desktopUsage = await inspectUsageDialog(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-usage.png`, fullPage: true });
@@ -1375,6 +1450,10 @@ try {
   await page.getByRole("tab", { name: "Active", exact: true }).click();
   await page.waitForTimeout(850);
   await selectFixture(page);
+  const mobileMessageQueue = await inspectMessageQueueDock(
+    page,
+    `${outputDirectory}/mobile-message-queue.png`,
+  );
   await page.getByRole("button", { name: "Usage and limits", exact: true }).click();
   const mobileUsage = await inspectUsageDialog(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-usage.png`, fullPage: true });
@@ -1431,6 +1510,7 @@ try {
       archivedVisible: desktopArchivedVisible,
       skills: desktopSkills,
       activity: desktopActivity,
+      messageQueue: desktopMessageQueue,
       usage: desktopUsage,
       fileDownload: desktopFileDownload,
       rich: desktopRich,
@@ -1450,6 +1530,7 @@ try {
       deleteThreadDialog: mobileDeleteDialog,
       skills: mobileSkills,
       activity: mobileActivity,
+      messageQueue: mobileMessageQueue,
       usage: mobileUsage,
       fileDownload: mobileFileDownload,
       moreButtonVisible: mobileMoreButtonVisible,
@@ -1542,6 +1623,17 @@ try {
     !desktopActivity.hasRecent ||
     !desktopActivity.contentContained ||
     desktopActivity.horizontalOverflow ||
+    !desktopMessageQueue.expanded.fitsViewport ||
+    !desktopMessageQueue.expanded.composerVisible ||
+    !desktopMessageQueue.expanded.bodyScrollableWhenNeeded ||
+    desktopMessageQueue.expanded.rows !== 2 ||
+    !desktopMessageQueue.expanded.actionsUsable ||
+    desktopMessageQueue.expanded.statusText.join(",") !== "Queued,Context changed" ||
+    !desktopMessageQueue.expanded.textContained ||
+    desktopMessageQueue.expanded.horizontalOverflow ||
+    !desktopMessageQueue.collapsed.bodyHidden ||
+    !desktopMessageQueue.collapsed.composerVisible ||
+    desktopMessageQueue.collapsed.horizontalOverflow ||
     !desktopUsage.fitsViewport ||
     desktopUsage.sections.join(",") !== "Current thread,Rate limits,Account activity" ||
     desktopUsage.progressBars < 3 ||
@@ -1645,6 +1737,17 @@ try {
     !mobileActivity.hasRecent ||
     !mobileActivity.contentContained ||
     mobileActivity.horizontalOverflow ||
+    !mobileMessageQueue.expanded.fitsViewport ||
+    !mobileMessageQueue.expanded.composerVisible ||
+    !mobileMessageQueue.expanded.bodyScrollableWhenNeeded ||
+    mobileMessageQueue.expanded.rows !== 2 ||
+    !mobileMessageQueue.expanded.actionsUsable ||
+    mobileMessageQueue.expanded.statusText.join(",") !== "Queued,Context changed" ||
+    !mobileMessageQueue.expanded.textContained ||
+    mobileMessageQueue.expanded.horizontalOverflow ||
+    !mobileMessageQueue.collapsed.bodyHidden ||
+    !mobileMessageQueue.collapsed.composerVisible ||
+    mobileMessageQueue.collapsed.horizontalOverflow ||
     !mobileUsage.fitsViewport ||
     mobileUsage.sections.join(",") !== "Current thread,Rate limits,Account activity" ||
     mobileUsage.progressBars < 3 ||

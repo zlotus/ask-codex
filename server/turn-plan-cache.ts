@@ -58,6 +58,7 @@ interface CacheRecord {
   turnId: string;
   plan: CachedTurnPlan | null;
   unavailable: boolean;
+  revision: number;
   bytes: number;
 }
 
@@ -99,14 +100,16 @@ function cacheRecord(
   turnId: string,
   plan: CachedTurnPlan | null,
   unavailable: boolean,
+  revision: number,
 ): CacheRecord {
   const bytes = utf8Bytes(cacheKey(threadId, turnId)) + utf8Bytes(JSON.stringify({
     threadId,
     turnId,
     plan,
     unavailable,
+    revision,
   })) + 64;
-  return { threadId, turnId, plan, unavailable, bytes };
+  return { threadId, turnId, plan, unavailable, revision, bytes };
 }
 
 function clonePlan(plan: CachedTurnPlan): CachedTurnPlan {
@@ -122,10 +125,12 @@ function livePlanParams(
   threadId: string,
   turnId: string,
   plan: CachedTurnPlan,
+  revision: number,
 ): Record<string, unknown> {
   return {
     threadId,
     turnId,
+    askCodexPlanRevision: revision,
     ...(plan.explanation === undefined ? {} : { explanation: plan.explanation }),
     plan: plan.plan.map((step) => ({ ...step })),
   };
@@ -145,6 +150,7 @@ export class TurnPlanCache {
   private readonly limits: TurnPlanCacheLimits;
   private readonly records = new Map<string, CacheRecord>();
   private totalBytes = 0;
+  private planRevision = 0;
 
   constructor(limits: Partial<TurnPlanCacheLimits> = {}) {
     this.limits = {
@@ -232,20 +238,21 @@ export class TurnPlanCache {
       };
     }
 
+    const revision = this.capturePlanRevision();
     const plan = this.parsePlan(params, timing);
     if (!plan) {
-      this.remember(cacheRecord(threadId, turnId, null, true));
+      this.remember(cacheRecord(threadId, turnId, null, true, revision));
       return { projectedParams: {}, recoveryRequired: true, threadId, turnId };
     }
 
-    const record = cacheRecord(threadId, turnId, plan, false);
+    const record = cacheRecord(threadId, turnId, plan, false, revision);
     if (record.bytes > this.limits.maxSnapshotBytes || record.bytes > this.limits.maxTotalBytes) {
-      this.remember(cacheRecord(threadId, turnId, null, true));
+      this.remember(cacheRecord(threadId, turnId, null, true, revision));
       return { projectedParams: {}, recoveryRequired: true, threadId, turnId };
     }
     this.remember(record);
     return {
-      projectedParams: livePlanParams(threadId, turnId, plan),
+      projectedParams: livePlanParams(threadId, turnId, plan, revision),
       recoveryRequired: false,
     };
   }
@@ -277,6 +284,7 @@ export class TurnPlanCache {
         record.turnId,
         record.plan ? clonePlan(record.plan) : null,
         record.unavailable,
+        record.revision,
       ));
     }
   }
@@ -397,6 +405,7 @@ export class TurnPlanCache {
     if (record.plan && !duplicate &&
       budget.remainingPlans > 0 && budget.remainingBytes >= record.bytes) {
       value.plan = clonePlan(record.plan);
+      value.askCodexPlanRevision = record.revision;
       budget.remainingPlans -= 1;
       budget.remainingBytes -= record.bytes;
       const omissions = recoveryOmissions(value.recoveryOmissions, false);
@@ -406,9 +415,19 @@ export class TurnPlanCache {
     }
 
     value.plan = null;
+    if (record.unavailable) value.askCodexPlanRevision = record.revision;
+    else delete value.askCodexPlanRevision;
     if (record.unavailable || record.plan) {
       value.recoveryOmissions = recoveryOmissions(value.recoveryOmissions, true);
     }
+  }
+
+  private capturePlanRevision(): number {
+    if (this.planRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("turn plan revision exhausted");
+    }
+    this.planRevision += 1;
+    return this.planRevision;
   }
 
   private get(threadId: string, turnId: string): CacheRecord | undefined {

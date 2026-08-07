@@ -21,6 +21,8 @@
 | [0015](0015-explicit-active-turn-steering.md) | 已接受 | 将显式文本 steering 绑定到确切活跃轮次，并保持严格确认、owner 和不重放语义。 |
 | [0016](0016-constrained-native-thread-fork.md) | 已接受 | 仅按来源线程 ID 开放原生 fork，并严格约束参数、结果、owner 与不重放语义。 |
 | [0017](0017-constrained-file-input-and-browser-local-copies.md) | 已接受 | 通过临时网关上下文提交普通文件，并仅在同源浏览器中有界保留下载副本。 |
+| [0018](0018-server-persistent-explicit-message-queue.md) | 已接受 | 将跨设备文字保存为服务端持久 outbox，并只允许已同步浏览器显式且不重放地消费。 |
+| [0019](0019-monotonic-plan-revisions-during-resync.md) | 已接受 | 用网关单调 revision 防止较旧重同步快照吞掉同步期间到达的新 Plan。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

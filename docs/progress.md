@@ -6,11 +6,13 @@
 
 ## 当前里程碑
 
-P2 多类型文件输入已完成：输入框通过统一的 `+` 菜单选择图片或普通文件，剪贴板自动区分
-可预览图片与文件卡片。普通文件经受限临时上传和网关构造的 application context 交给 Codex，
-浏览器不能提交路径或 `additionalContext`；成功轮次在同源 IndexedDB 中有界保存本地下载
-副本。此前完成的受限原生 fork、P1 文本 steering 和长历史整体 DOM 预算，以及 cwd 连续性、
-Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继续保持。下一项近期工作尚未选定。
+P2 跨设备持久消息队列已完成：一个设备可把已有线程的纯文本保存到网关 outbox，另一台已认证
+设备只在用户显式操作后发送或取消。队列以 revision 阻止同网关并发双发，发送前核对线程状态
+与最后轮次，未知 `turn/start` 结果进入不可重放的 `indeterminate`；不使用实验性 Codex API。
+同时修复了 Working -> Retry -> Sync 窗口中旧重同步快照可能吞掉较新 Plan 通知的竞态，以
+网关单调 revision 裁决覆盖关系。此前完成的多类型文件输入、受限原生 fork、文本 steering、
+长历史整体 DOM 预算、cwd 连续性、Agent 输出文件交接和网关安全硬化继续保持。下一候选是
+P3 持久 Activity 审计，尚未开始。
 
 ## 当前基线
 
@@ -32,6 +34,12 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
   运行中线程仍不能 fork、归档或删除；其他空闲线程可归档，已归档线程可恢复，两类空闲线程均可在明确提示线程
   及其后代会话可能被永久移除后确认删除。来自其他客户端的名称、归档、恢复和删除通知
   会同步列表与当前选择；删除还会清理该线程在内存和 IndexedDB 中的浏览器本地图片和文件副本。
+- 输入框可把当前已有线程的非空纯文本加入服务端持久 outbox，队列面板按线程显示并在其他
+  已认证浏览器发生变化时重新读取。只有完成只读同步且线程空闲的浏览器显式点击后才发送；
+  队列不会在启动、重连、Codex ready、定时器或活跃轮次中后台消费，也不转换为 steering。
+  发送前稳定读取线程状态与最后轮次；上下文变化、忙碌、不可用或已知拒绝进入二次确认，
+  可能已经执行但未取得有效结果的写入进入不可重放的 `indeterminate`。网关以原子 JSON 文件
+  持久化有界状态，保留 `externalSandbox` 和人工审批，并把成功发送的浏览器设为审批 owner。
 - 第四个只读 Skills 标签按 cwd 展示 skill 名称、描述、`user`/`repo`/`system`/`admin`
   作用域和启用状态，并只用计数提示无法加载的条目。目录在首次打开标签时开始加载；手动
   刷新发送 `forceReload: true`，`skills/changed` 通知则使已经加载过的目录重新扫描。
@@ -74,7 +82,8 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
   可展开查看有界滚动的完整步骤；轮次结束后摘要消失，历史计划仍留在原轮次中。
   实时 Plan 与恢复快照使用同一份严格有界投影；网关按线程与轮次缓存最新完整通知，并将其
   附加到只读轮次响应和生命周期通知。Plan 对象、明确不可恢复的 `null` 和缓存未知的缺失字段
-  分别覆盖、清除或保留浏览器状态，重同步快照也会压过它已覆盖的较早缓冲 Plan。成功 fork
+  分别覆盖、清除或保留浏览器状态。网关为实时 Plan 与缓存快照附加同进程单调 revision；
+  重同步只丢弃 revision 已被快照覆盖的缓冲通知，较新的通知继续按到达顺序应用。成功 fork
   会把当前进程内来源线程的有界 Plan 记录复制到新线程 ID，保留可恢复与明确不可恢复状态；
   它仍不把缓存升级为跨进程事实来源。轮次 diff 明确呈现为位于轮次末尾的整轮变更汇总；
   其后的轮次 footer 会显示
@@ -144,13 +153,12 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
 
 ## 未完成事项与边界
 
-原有九条缺口不再作为同等优先级的平铺清单。P1 的 steering、整体 DOM 预算，以及 P2 fork
-和多类型文件输入已完成；其余内容按可实施性规整如下。优先级表示当前建议顺序，不是交付承诺。
+原有九条缺口不再作为同等优先级的平铺清单。P1 的 steering、整体 DOM 预算，以及 P2 fork、
+多类型文件输入和跨设备持久消息队列已完成；其余内容按可实施性规整如下。优先级表示当前建议
+顺序，不是交付承诺。
 
 ### 候选实施项目
 
-- **P2，单独实施**：跨设备持久消息队列。它需要自己的 ADR，明确幂等键、过期、确认、
-  活跃轮次冲突和审批 owner；不能与已经完成且不自动重放的 steering 合并成一种发送语义。
 - **P3，单独实施**：持久 Activity 审计。它需要单独定义数据敏感度、保留期和事实来源，
   不能直接复用结构化 Plan 的有界恢复缓存。
 - **P3，独立安全项目**：固定宿主机操作只能暴露服务端配置的操作 ID。嵌入式 PTY 不与其
@@ -179,14 +187,16 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
   历史只显示安全占位，不把本地副本描述为跨设备存储或可由 Codex 重新读取的持久附件。
 - 按 ADR 0014，结构化 Plan 恢复刻意使用进程内有界缓存，而不是新的持久会话数据库；它覆盖
   普通断线和 Codex 子进程重启，但不承诺跨网关进程或跨设备重建。这是已接受取舍，不是普通欠账。
+- 按 ADR 0018，跨设备队列只持久化纯文本并由已同步浏览器显式消费。它不自动执行、不重放
+  未知结果、不支持附件，也不是两个网关或两台宿主机之间的共享数据库。
 - 浏览器不得提交任意命令或获得隐式 shell。固定操作和 PTY 即使未来实现，也必须保持与
   Codex 审批分离的明确授权和隔离边界。
 
 ## 后续步骤
 
-本轮 P2 多类型文件输入里程碑已经完成；下一项尚未选定。优先从上面的 P2 项目中选择一个
-独立设计，不并行引入多个新的持久状态模型。其他候选项保留在 [`ideas.md`](ideas.md) 中，
-出现在任一文档中都不代表交付承诺。
+本轮 P2 跨设备持久消息队列和 Plan 重同步竞态修复已经完成。下一候选是 P3 持久 Activity
+审计：先定义敏感数据范围、事实来源、保留期与查询边界，再决定存储；尚未进入实现。其他候选
+保留在 [`ideas.md`](ideas.md) 中，出现在任一文档中都不代表交付承诺。
 
 ## 风险与注意事项
 
@@ -222,8 +232,12 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
   响应 `turnId` 不匹配时失败关闭。断线恢复不得自动重放 steering，失败重试也不得退化为
   `turn/start`。
 - `turn/plan/updated` 是完整快照，必须继续以 JSONL/WebSocket 到达顺序为权威，并让实时通知
-  与缓存恢复使用同一份逐字段投影和资源上限。`emittedAtMs` 与 `gatewayReceivedAtMs` 只能
-  用于诊断，不能用于重排 Plan 状态。
+  与缓存恢复使用同一份逐字段投影和资源上限。重同步只能用同网关单调 revision 证明通知已被
+  快照覆盖；缺失 revision 时必须保守重放。`emittedAtMs` 与 `gatewayReceivedAtMs` 只能用于
+  诊断，不能用于重排 Plan 状态。
+- 持久消息队列必须继续显式消费、按 item revision 并发控制，并在写结果未知时保持
+  `indeterminate`。不得因重连、启动或 Codex ready 自动发送，也不得把 `clientUserMessageId`
+  字段存在本身当作已证明的幂等保证。队列文件含用户明文，必须保持单进程、权限和容量边界。
 - sandbox probe 与实际 override 是两个独立的 app-server RPC；当前协议没有 CAS 或 revision
   条件写接口，其他 Codex 进程仍可能在两次调用之间改变 sandbox。网关会串行本进程请求、
   监测 probe 期间的 settings 通知并复核最终响应，以缩小窗口并对不一致失败关闭，但不能
@@ -235,23 +249,29 @@ Agent 输出文件交接、网关安全硬化和结构化 Plan 有界恢复继�
 ## 验证
 
 本轮已于 2026-08-07 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
-`0.146.0` 完成验证：
+`0.147.0` 完成验证：
 
-- 从已安装 CLI 生成当前 experimental TypeScript bindings，并核对
+- 从已安装 CLI 分别生成当前 stable 和 experimental TypeScript bindings，并核对
   `ThreadResumeResponse.sandbox`、`ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`、
   `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、
   `TurnSteerParams`、`TurnSteerResponse`、完整快照形式的 `TurnPlanUpdatedNotification`、
   `ThreadForkParams`、`ThreadForkResponse`、`Thread.historyMode`、不含 Plan 的官方 Turn
-  读取结构，以及通知 envelope 的 `emittedAtMs`。普通文件输入还完成了真实协议验证：
+  读取结构，以及通知 envelope 的 `emittedAtMs`。队列还核对了 stable
+  `TurnStartParams.clientUserMessageId` 与 `thread/inject_items`，确认 schema 没有给出足以授权
+  未知写重放的幂等作用域、持久期和冲突语义，因此实现未提交前者，也未调用后者。普通文件
+  输入此前还完成了真实协议验证：
   `mention` 不适合普通本地文件，而由网关构造的 application `additionalContext` 可让 Codex
   准确读取受控临时路径；没有仅为自动化检查创建真实轮次或持久测试 fork。
-- `npm run typecheck`、`npm run lint` 和 `npm run build` 通过。
-- `NODE_ENV=test npx vitest run` 通过：37 个测试文件、637 项测试；服务端测试在允许绑定回环
-  套接字的环境中运行。
+- `npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
+- `NODE_ENV=test npm test` 通过：40 个测试文件、672 项测试；服务端测试在允许绑定回环套接字
+  的环境中运行。队列覆盖原子持久化、损坏和配额失败关闭、重启恢复、跨客户端 revision、
+  忙线程、上下文变化、未知发送结果、审批 owner 以及浏览器状态；Plan 覆盖同步竞态的 revision
+  比较与缺失 revision 的保守重放。
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-input-visual npm run check:visual`
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-message-queue-visual npm run check:visual`
   针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
   Usage、Agent 输出下载、富内容、推理状态槽、图片、Plan、运行中 steering 输入区，以及新的
-  附件 `+` 菜单和普通文件历史卡片；同源 Blob 缺失时的不可下载状态也保持完整。未发现水平
-  溢出、裁切、内容重叠、console error 或 page error。所有 RPC、上传和下载均由确定性浏览器
-  夹具拦截；线程动作菜单在两种视口均包含且容纳 Fork，没有创建真实 Codex 轮次或 fork。
+  跨设备队列、附件 `+` 菜单和普通文件历史卡片；队列展开和折叠时按钮、状态文字与输入框均
+  保持可用，同源 Blob 缺失时的不可下载状态也保持完整。未发现水平溢出、裁切、内容重叠、
+  console error 或 page error。所有 RPC、上传和下载均由确定性浏览器夹具拦截；线程动作菜单
+  在两种视口均包含且容纳 Fork，没有创建真实 Codex 轮次或 fork。

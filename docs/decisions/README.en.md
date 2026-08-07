@@ -22,6 +22,8 @@ the records relevant to the current task.
 | [0015](0015-explicit-active-turn-steering.en.md) | Accepted | Bind explicit text steering to an exact active turn with strict confirmation, ownership, and no-replay semantics. |
 | [0016](0016-constrained-native-thread-fork.en.md) | Accepted | Expose native fork only by source thread ID with strict parameter, result, ownership, and no-replay semantics. |
 | [0017](0017-constrained-file-input-and-browser-local-copies.en.md) | Accepted | Submit ordinary files through temporary gateway context and retain bounded download copies only in the same-Origin browser. |
+| [0018](0018-server-persistent-explicit-message-queue.en.md) | Accepted | Persist cross-device text in a server outbox and consume it only through an explicitly synchronized browser without replay. |
+| [0019](0019-monotonic-plan-revisions-during-resync.en.md) | Accepted | Use monotonic gateway revisions so an older resync snapshot cannot swallow a newer buffered Plan. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

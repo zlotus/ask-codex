@@ -105,6 +105,60 @@ describe("Composer", () => {
     expect(screen.getByLabelText("Reasoning effort for next turn")).toBeDisabled();
   });
 
+  it("queues plain text during an active turn without steering it", async () => {
+    const onEnqueue = vi.fn().mockResolvedValue(undefined);
+    const onSteer = vi.fn();
+    render(
+      <Composer
+        activeTurnId="turn-active"
+        disabled={false}
+        running
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onEnqueue={onEnqueue}
+        onSteer={onSteer}
+        onStop={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "  send this after the turn  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+
+    await waitFor(() => expect(onEnqueue).toHaveBeenCalledWith("send this after the turn"));
+    expect(onSteer).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Message Codex")).toHaveValue("");
+  });
+
+  it("keeps later typing separate while a queue request is in flight", async () => {
+    let resolveQueue!: () => void;
+    const onEnqueue = vi.fn(() => new Promise<void>((resolve) => {
+      resolveQueue = resolve;
+    }));
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onEnqueue={onEnqueue}
+        onStop={vi.fn()}
+      />,
+    );
+    const textarea = screen.getByLabelText("Message Codex");
+    fireEvent.change(textarea, { target: { value: "queued snapshot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    fireEvent.change(textarea, { target: { value: "later draft" } });
+    await act(async () => resolveQueue());
+
+    expect(onEnqueue).toHaveBeenCalledWith("queued snapshot");
+    expect(textarea).toHaveValue("later draft");
+  });
+
   it.each(["ctrlKey", "metaKey"] as const)(
     "steers the captured active turn with %s and Enter",
     async (modifier) => {

@@ -423,6 +423,7 @@ describe("appReducer", () => {
           status: "inProgress",
           items: [],
           plan: { plan: [{ step: "Old step", status: "inProgress" }] },
+          askCodexPlanRevision: 3,
           recoveryOmissions: ["turn/plan/updated", "turn/diff/updated"],
         }],
       },
@@ -441,6 +442,7 @@ describe("appReducer", () => {
             emittedAtMs: 1_800_000_000_100,
             gatewayReceivedAtMs: 1_800_000_000_125,
           },
+          askCodexPlanRevision: 4,
         }],
       },
     });
@@ -452,6 +454,7 @@ describe("appReducer", () => {
     });
     expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
       .toEqual(["turn/diff/updated"]);
+    expect(reconciled.currentThread?.turns?.[0]?.askCodexPlanRevision).toBe(4);
   });
 
   it("clears a stale plan for an authoritative null snapshot", () => {
@@ -464,6 +467,7 @@ describe("appReducer", () => {
           status: "inProgress",
           items: [],
           plan: { plan: [{ step: "Stale step", status: "inProgress" }] },
+          askCodexPlanRevision: 4,
           recoveryOmissions: ["turn/plan/updated", "turn/diff/updated"],
         }],
       },
@@ -478,11 +482,13 @@ describe("appReducer", () => {
           itemsView: "full",
           items: [],
           plan: null,
+          askCodexPlanRevision: 5,
         }],
       },
     });
 
     expect(reconciled.currentThread?.turns?.[0]?.plan).toBeNull();
+    expect(reconciled.currentThread?.turns?.[0]?.askCodexPlanRevision).toBe(5);
     expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
       .toEqual(["turn/diff/updated"]);
   });
@@ -531,6 +537,7 @@ describe("appReducer", () => {
           status: "inProgress",
           items: [],
           plan: { plan: [{ step: "Live step", status: "inProgress" }] },
+          askCodexPlanRevision: 6,
           recoveryOmissions: ["turn/plan/updated"],
         }],
       },
@@ -553,6 +560,7 @@ describe("appReducer", () => {
     });
     expect(reconciled.currentThread?.turns?.[0]?.recoveryOmissions)
       .toEqual(["turn/plan/updated"]);
+    expect(reconciled.currentThread?.turns?.[0]?.askCodexPlanRevision).toBe(6);
   });
 
   it("uses summary state without replacing full items or uncovered live turns", () => {
@@ -1704,6 +1712,7 @@ describe("appReducer", () => {
       threadId: "thread-1",
       turnId: "turn-1",
       plan: { plan: [{ step: "Run tests", status: "in_progress" }] },
+      askCodexPlanRevision: 9,
     });
     const diffed = appReducer(planned, {
       type: "setTurnDiff",
@@ -1712,7 +1721,18 @@ describe("appReducer", () => {
     });
 
     expect(diffed.currentThread?.turns?.[0]?.plan?.plan[0]?.step).toBe("Run tests");
+    expect(diffed.currentThread?.turns?.[0]?.askCodexPlanRevision).toBe(9);
     expect(diffed.currentThread?.turns?.[0]?.diff).toContain("fixed");
+
+    const unversioned = appReducer(diffed, {
+      type: "setTurnPlan",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      plan: { plan: [{ step: "Legacy update", status: "inProgress" }] },
+    });
+    expect(unversioned.currentThread?.turns?.[0]).not.toHaveProperty(
+      "askCodexPlanRevision",
+    );
   });
 
   it("ignores a plan update scoped to a different thread", () => {

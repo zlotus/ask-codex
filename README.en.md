@@ -80,6 +80,12 @@ accepts arbitrary paths.
   Enter inserts a newline; send with the button or `Ctrl+Enter`, with
   `Cmd+Enter` also supported on macOS. Unconfirmed sends remain separate from
   new typing so an asynchronous failure cannot overwrite the active draft.
+- Queue plain text for an existing thread in the server-persistent message
+  outbox, then explicitly send or cancel it from another authenticated device.
+  Reconnect, startup, and busy threads never execute queued text automatically,
+  and queue items never become steering. The gateway checks thread state and
+  the last turn before sending; an uncertain write can only be removed after
+  native history is checked and is never replayed automatically.
 - Select or paste PNG, JPEG, and WebP images, preview them, and send them with
   text or on their own. After a successful send, the browser retains bounded,
   clickable thumbnails locally. The same browser profile and Origin can restore
@@ -114,7 +120,7 @@ accepts arbitrary paths.
 
 - Node.js 22.12 or newer.
 - A recent Codex CLI with the documented app-server interface; the current
-  implementation is verified with 0.146.0.
+  implementation is verified with 0.147.0.
 - An existing Codex login. Run `codex login` first if needed.
 
 The app-server WebSocket transport is experimental. Ask Codex uses the more
@@ -150,7 +156,13 @@ Configuration:
 | `ASK_CODEX_WORKSPACE` | server working directory | Initial absolute Codex working directory |
 | `ASK_CODEX_TOKEN` | unset | Browser access token; required for non-loopback binds |
 | `ASK_CODEX_PUBLIC_ORIGIN` | unset | Exact external origin allowed through a trusted reverse proxy; requires `ASK_CODEX_TOKEN` |
+| `ASK_CODEX_QUEUE_PATH` | `$XDG_STATE_HOME/ask-codex/message-queue.json`, or `~/.local/state/ask-codex/message-queue.json` without XDG state | Absolute JSON path for the cross-device text queue; exactly one gateway process may use it |
 | `CODEX_BIN` | `codex` | Codex CLI executable |
+
+The queue stores plaintext with the permissions of the operating-system account
+running Ask Codex; its directory and file are created as `0700` and `0600`.
+It stores no token, attachment, path, or approval content. Two gateway processes
+must not share one queue file.
 
 ## Remote Access
 

@@ -52,6 +52,9 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 - 轮次运行、断线或重同步期间仍可继续编辑文字草稿；回车只换行，可点击发送按钮或按
   `Ctrl+Enter` 发送，macOS 同时支持 `Cmd+Enter`。未确认成功的发送与新输入分开保留，
   避免异步失败覆盖正在编辑的内容。
+- 将已有线程的纯文本加入服务端持久消息队列，并在另一台已认证设备上显式发送或取消。
+  队列不会在重连、启动或线程忙碌时自动执行，也不会转换为 steering；发送前会核对线程
+  状态与最后轮次。写入结果不确定的项目只能在核对原生历史后移除，绝不自动重放。
 - 选择或粘贴 PNG、JPEG、WebP 图片，预览后随文本或单独发送；发送成功后，浏览器会在
   本地有界保留可点开的缩略图。同一浏览器配置文件通过同一 Origin 可在页面或线程重载
   以及浏览器重启后恢复仍有效的预览；本地副本默认保留 30 天，最多 8 张、共 40 MiB。
@@ -79,7 +82,7 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 ## 环境要求
 
 - Node.js 22.12 或更高版本。
-- 支持有文档记录的 app-server 接口的较新 Codex CLI；当前实现已使用 0.146.0 验证。
+- 支持有文档记录的 app-server 接口的较新 Codex CLI；当前实现已使用 0.147.0 验证。
 - 已完成 Codex 登录；如尚未登录，请先运行 `codex login`。
 
 app-server 自带的 WebSocket 传输仍属于实验功能。Ask Codex 在自己的浏览器网关后
@@ -115,7 +118,11 @@ ASK_CODEX_WORKSPACE=/absolute/path/to/project npm start
 | `ASK_CODEX_WORKSPACE` | 服务进程的工作目录 | Codex 初始绝对工作目录 |
 | `ASK_CODEX_TOKEN` | 未设置 | 浏览器访问令牌；监听非回环地址时必须设置 |
 | `ASK_CODEX_PUBLIC_ORIGIN` | 未设置 | 允许可信反向代理转发的唯一外部 Origin；设置后必须同时设置 `ASK_CODEX_TOKEN` |
+| `ASK_CODEX_QUEUE_PATH` | `$XDG_STATE_HOME/ask-codex/message-queue.json`，未设置 XDG 时为 `~/.local/state/ask-codex/message-queue.json` | 跨设备纯文本消息队列的绝对 JSON 文件路径；只能由一个网关进程使用 |
 | `CODEX_BIN` | `codex` | Codex CLI 可执行文件 |
+
+消息队列以运行 Ask Codex 的操作系统账户权限保存明文，目录和文件分别创建为 `0700` 与
+`0600`。它不保存 token、附件、路径或审批内容；两个网关进程不得共享同一个队列文件。
 
 ## 远程访问
 

@@ -198,6 +198,377 @@ describe("AskCodexServer", () => {
     await Promise.all(services.splice(0).map((service) => service.close()));
   });
 
+  it("persists queue operations across clients and sends exactly one normal text turn", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = typeof params === "object" && params !== null &&
+          "threadId" in params && typeof params.threadId === "string"
+        ? params.threadId
+        : "thread-queue";
+      if (method === "thread/read") {
+        return {
+          thread: {
+            id: threadId,
+            status: { type: "idle" },
+            turns: "includeTurns" in (params as object) &&
+                (params as { includeTurns?: boolean }).includeTurns
+              ? [{ id: "turn-before-queue", status: "completed", items: [] }]
+              : [],
+          },
+        };
+      }
+      if (method === "thread/resume") {
+        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+      }
+      if (method === "turn/start") {
+        return { turn: { id: "turn-from-queue", status: "inProgress", items: [] } };
+      }
+      return { ok: true };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const first = connect(url, "test-token");
+    const second = connect(url, "test-token");
+    await Promise.all([once(first.socket, "open"), once(second.socket, "open")]);
+    await Promise.all([
+      waitForMessage(first.messages, (message) => message.type === "status"),
+      waitForMessage(second.messages, (message) => message.type === "status"),
+    ]);
+
+    first.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "queue-enqueue",
+      method: "messageQueue/enqueue",
+      params: {
+        threadId: "thread-queue",
+        text: "Continue from the persistent queue",
+        expectedLastTurnId: "turn-before-queue",
+      },
+    }));
+    const enqueuedResponse = await waitForMessage(
+      first.messages,
+      (message) => message.type === "rpcResult" && message.id === "queue-enqueue",
+    );
+    const queued = (enqueuedResponse as { result: { item: { id: string; revision: number } } }).result.item;
+    await waitForMessage(
+      second.messages,
+      (message) => message.type === "notification" &&
+        message.method === "messageQueue/changed",
+    );
+
+    second.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "queue-list",
+      method: "messageQueue/list",
+      params: { threadId: "thread-queue" },
+    }));
+    await expect(waitForMessage(
+      second.messages,
+      (message) => message.type === "rpcResult" && message.id === "queue-list",
+    )).resolves.toEqual(expect.objectContaining({
+      result: expect.objectContaining({
+        items: [expect.objectContaining({ id: queued.id, status: "queued" })],
+      }),
+    }));
+
+    second.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "queue-send",
+      method: "messageQueue/send",
+      params: { id: queued.id, revision: queued.revision },
+    }));
+    await expect(waitForMessage(
+      second.messages,
+      (message) => message.type === "rpcResult" && message.id === "queue-send",
+    )).resolves.toEqual(expect.objectContaining({
+      result: {
+        item: expect.objectContaining({ status: "confirmed", confirmedTurnId: "turn-from-queue" }),
+        turn: expect.objectContaining({ id: "turn-from-queue" }),
+      },
+    }));
+
+    gateway.emit(
+      "request",
+      701,
+      "item/commandExecution/requestApproval",
+      { threadId: "thread-queue", command: "true" },
+    );
+    await waitForMessage(
+      second.messages,
+      (message) => message.type === "request" && message.id === 701,
+    );
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(first.messages.some((message) => message.type === "request" && message.id === 701))
+      .toBe(false);
+
+    first.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "queue-stale-send",
+      method: "messageQueue/send",
+      params: { id: queued.id, revision: queued.revision },
+    }));
+    await expect(waitForMessage(
+      first.messages,
+      (message) => message.type === "rpcError" && message.id === "queue-stale-send",
+    )).resolves.toEqual(expect.objectContaining({
+      error: expect.objectContaining({ message: expect.stringContaining("refresh before retrying") }),
+    }));
+
+    expect(gateway.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
+    expect(gateway.request.mock.calls.find(([method]) => method === "turn/start")?.[1]).toEqual({
+      threadId: "thread-queue",
+      input: [{
+        type: "text",
+        text: "Continue from the persistent queue",
+        text_elements: [],
+      }],
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+    });
+    expect(gateway.request.mock.calls.find(([method]) => method === "thread/resume")?.[1]).toEqual({
+      threadId: "thread-queue",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      excludeTurns: true,
+    });
+    expect(gateway.request.mock.calls.some(([method]) => method.startsWith("messageQueue/")))
+      .toBe(false);
+  });
+
+  it("requires a second explicit send after queued thread context changes", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = (params as { threadId: string }).threadId;
+      if (method === "thread/read") {
+        return {
+          thread: {
+            id: threadId,
+            status: { type: "idle" },
+            turns: (params as { includeTurns?: boolean }).includeTurns
+              ? [{ id: "turn-new-context", status: "completed", items: [] }]
+              : [],
+          },
+        };
+      }
+      if (method === "thread/resume") {
+        return { thread: { id: threadId }, sandbox: { type: "externalSandbox" } };
+      }
+      if (method === "turn/start") {
+        return { turn: { id: "turn-after-review", status: "inProgress", items: [] } };
+      }
+      return { ok: true };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "context-enqueue",
+      method: "messageQueue/enqueue",
+      params: { threadId: "thread-context", text: "Review context", expectedLastTurnId: "turn-old" },
+    }));
+    const enqueue = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "context-enqueue",
+    ) as { result: { item: { id: string; revision: number } } };
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "context-first-send",
+      method: "messageQueue/send",
+      params: { id: enqueue.result.item.id, revision: enqueue.result.item.revision },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "context-first-send",
+    );
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "context-list",
+      method: "messageQueue/list",
+      params: { threadId: "thread-context" },
+    }));
+    const list = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "context-list",
+    ) as { result: { items: Array<{ id: string; revision: number; status: string; reviewReason: string }> } };
+    expect(list.result.items[0]).toMatchObject({
+      status: "needsReview",
+      reviewReason: "contextChanged",
+    });
+    const reviewed = list.result.items[0]!;
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "context-confirmed-send",
+      method: "messageQueue/send",
+      params: { id: reviewed.id, revision: reviewed.revision, confirmReview: true },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "context-confirmed-send",
+    );
+    expect(gateway.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
+    expect(gateway.request.mock.calls.find(([method]) => method === "thread/resume")?.[1])
+      .not.toHaveProperty("sandbox");
+  });
+
+  it("keeps a queued message reviewable when the target thread is busy", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = (params as { threadId: string }).threadId;
+      if (method === "thread/read") {
+        return {
+          thread: {
+            id: threadId,
+            status: { type: "active", activeFlags: ["waitingOnApproval"] },
+            turns: (params as { includeTurns?: boolean }).includeTurns
+              ? [{ id: "turn-active", status: "inProgress", items: [] }]
+              : [],
+          },
+        };
+      }
+      return { ok: true };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "busy-enqueue",
+      method: "messageQueue/enqueue",
+      params: { threadId: "thread-busy", text: "Send when idle", expectedLastTurnId: "turn-active" },
+    }));
+    const enqueue = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "busy-enqueue",
+    ) as { result: { item: { id: string; revision: number } } };
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "busy-send",
+      method: "messageQueue/send",
+      params: { id: enqueue.result.item.id, revision: enqueue.result.item.revision },
+    }));
+    await expect(waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "busy-send",
+    )).resolves.toEqual(expect.objectContaining({
+      error: expect.objectContaining({ message: expect.stringContaining("thread is busy") }),
+    }));
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "busy-list",
+      method: "messageQueue/list",
+      params: { threadId: "thread-busy" },
+    }));
+    await expect(waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "busy-list",
+    )).resolves.toEqual(expect.objectContaining({
+      result: expect.objectContaining({
+        items: [expect.objectContaining({ status: "needsReview", reviewReason: "threadBusy" })],
+      }),
+    }));
+    expect(gateway.request.mock.calls.some(([method]) => method === "thread/resume")).toBe(false);
+    expect(gateway.requestWithResultObserver).not.toHaveBeenCalled();
+  });
+
+  it("quarantines an unknown queued turn result and never allows it to be resent", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = (params as { threadId: string }).threadId;
+      if (method === "thread/read") {
+        return {
+          thread: {
+            id: threadId,
+            status: { type: "idle" },
+            turns: (params as { includeTurns?: boolean }).includeTurns
+              ? [{ id: "turn-before-unknown", status: "completed", items: [] }]
+              : [],
+          },
+        };
+      }
+      if (method === "thread/resume") {
+        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+      }
+      return { ok: true };
+    });
+    gateway.requestWithResultObserver.mockImplementation(async (method, params, observer) => {
+      if (method === "turn/start") throw new Error("connection closed before response");
+      const result = await gateway.request(method, params);
+      observer(result);
+      return result;
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "unknown-enqueue",
+      method: "messageQueue/enqueue",
+      params: {
+        threadId: "thread-unknown",
+        text: "Do not replay me",
+        expectedLastTurnId: "turn-before-unknown",
+      },
+    }));
+    const enqueue = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "unknown-enqueue",
+    ) as { result: { item: { id: string; revision: number } } };
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "unknown-send",
+      method: "messageQueue/send",
+      params: { id: enqueue.result.item.id, revision: enqueue.result.item.revision },
+    }));
+    await expect(waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "unknown-send",
+    )).resolves.toEqual(expect.objectContaining({
+      error: expect.objectContaining({ message: expect.stringContaining("indeterminate") }),
+    }));
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "unknown-list",
+      method: "messageQueue/list",
+      params: { threadId: "thread-unknown" },
+    }));
+    const list = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "unknown-list",
+    ) as { result: { items: Array<{ id: string; revision: number; status: string }> } };
+    expect(list.result.items[0]?.status).toBe("indeterminate");
+    const unknown = list.result.items[0]!;
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "unknown-retry",
+      method: "messageQueue/send",
+      params: { id: unknown.id, revision: unknown.revision, confirmReview: true },
+    }));
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcError" && message.id === "unknown-retry",
+    );
+    expect(gateway.requestWithResultObserver.mock.calls.filter(([method]) => method === "turn/start"))
+      .toHaveLength(1);
+  });
+
   it("protects HTTP metadata with token and Origin checks", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
@@ -1257,6 +1628,24 @@ describe("AskCodexServer", () => {
     }
   });
 
+  it("resolves and validates persistent message queue paths", () => {
+    expect(loadConfig({
+      XDG_STATE_HOME: "/var/tmp/ask-codex-state",
+    }, process.cwd()).messageQueuePath).toBe(
+      "/var/tmp/ask-codex-state/ask-codex/message-queue.json",
+    );
+    expect(loadConfig({
+      XDG_STATE_HOME: "/var/tmp/ignored-state",
+      ASK_CODEX_QUEUE_PATH: "/var/tmp/custom-ask-codex-queue.json",
+    }, process.cwd()).messageQueuePath).toBe("/var/tmp/custom-ask-codex-queue.json");
+    expect(() => loadConfig({
+      ASK_CODEX_QUEUE_PATH: "relative/queue.json",
+    }, process.cwd())).toThrow("ASK_CODEX_QUEUE_PATH must be an absolute path");
+    expect(() => loadConfig({
+      XDG_STATE_HOME: "relative/state",
+    }, process.cwd())).toThrow("XDG_STATE_HOME must be an absolute path");
+  });
+
   it.each([
     "/ws?token=test-token",
     "/ws?",
@@ -1709,6 +2098,7 @@ describe("AskCodexServer", () => {
     expect(notificationParams).toEqual({
       threadId: "thread-plan-timing",
       turnId: "turn-plan-timing",
+      askCodexPlanRevision: 1,
       plan: [{ step: "Inspect the flow", status: "inProgress" }],
     });
 
@@ -1813,8 +2203,11 @@ describe("AskCodexServer", () => {
       (message) => message.type === "rpcResult" && message.id === "plan-page",
     );
     const result = response.type === "rpcResult"
-      ? response.result as { data: Array<{ plan: unknown }> }
+      ? response.result as {
+          data: Array<{ askCodexPlanRevision?: number; plan: unknown }>;
+        }
       : undefined;
+    expect(result?.data[0]?.askCodexPlanRevision).toBe(1);
     expect(result?.data[0]?.plan).toEqual({
       explanation: "Recovered from the gateway cache.",
       plan: [

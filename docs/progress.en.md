@@ -6,15 +6,18 @@ Last reviewed: 2026-08-07
 
 ## Current Milestone
 
-The multi-type file-input P2 item is complete. One `+` menu selects images or
-ordinary files, and clipboard input distinguishes previewable images from file
-cards. Ordinary files reach Codex through constrained temporary uploads and a
-gateway-built application context; the browser cannot submit paths or
-`additionalContext`. Successful turns retain bounded local download copies in
-same-Origin IndexedDB. The earlier constrained native fork, P1 text steering
-and aggregate long-history DOM budget, cwd continuity, Agent-output file
-handoff, gateway hardening, and bounded structured Plan recovery remain in
-place. No next near-term item has been selected.
+The persistent cross-device message-queue P2 item is complete. One device can
+save plain text for an existing thread in the gateway outbox, and another
+authenticated device sends or cancels it only after an explicit user action.
+Item revisions prevent concurrent duplicate dispatch within one gateway; thread
+state and the last turn are checked before send, while an unknown `turn/start`
+result becomes non-replayable `indeterminate`. No experimental Codex API is
+used. The Working -> Retry -> Sync race where an older resync snapshot could
+swallow a newer Plan notification is also fixed through monotonic gateway
+revisions. Multi-type file input, constrained native fork, text steering, the
+aggregate long-history DOM budget, cwd continuity, Agent-output handoff, and
+gateway hardening remain in place. Persistent Activity audit is the next P3
+candidate and has not started.
 
 ## Current Baseline
 
@@ -48,6 +51,17 @@ The implementation currently provides:
   Cross-client name, archive, restore, and delete notifications reconcile the
   lists and current selection. Deletion also removes that thread's browser-local
   image and file copies from memory and IndexedDB.
+- The composer can add non-empty plain text for the current existing thread to
+  a server-persistent outbox. Its per-thread panel rereads when another
+  authenticated browser changes the queue. Only a read-synchronized browser on
+  an idle thread can send after an explicit click. Startup, reconnect, Codex
+  ready, timers, and active turns never consume the queue in the background,
+  and queue items never become steering. Stable reads check runtime state and
+  the last turn before dispatch. Changed context, busy or unavailable threads,
+  and known rejection require review; a write that may have executed without a
+  valid result becomes non-replayable `indeterminate`. A bounded atomic JSON
+  file persists state while preserving `externalSandbox`, manual approval, and
+  approval ownership by the browser that successfully sends.
 - A fourth read-only Skills tab groups skill names, descriptions,
   `user`/`repo`/`system`/`admin` scopes, and enabled states by cwd, and reports
   load failures only as a count. The directory starts loading when the tab is
@@ -119,8 +133,10 @@ The implementation currently provides:
   The gateway caches each thread and turn's latest complete notification and
   attaches it to read-only turn results and lifecycle notifications. A Plan
   object, explicit unrecoverable `null`, or absent unknown cache field replaces,
-  clears, or preserves browser state respectively; a resync snapshot also
-  supersedes earlier buffered Plans that it covers. A successful fork copies
+  clears, or preserves browser state respectively. The gateway adds a
+  process-local monotonic revision to realtime Plans and cached snapshots;
+  resync drops only buffered notifications whose revisions are covered by the
+  snapshot, then applies newer notifications in arrival order. A successful fork copies
   bounded in-process Plan records from the source to the new thread ID,
   preserving recoverable and explicitly unavailable states without making the
   cache a cross-process source of truth. A turn diff is explicitly shown as a
@@ -230,16 +246,13 @@ as executed.
 ## Incomplete Work And Boundaries
 
 The former nine-gap flat list no longer treats unlike items as equal. P1
-steering and the aggregate DOM budget, plus P2 fork and multi-type file input,
-are complete. The remainder is organized by actionability below. Priorities are
-the current recommendation, not delivery commitments.
+steering and the aggregate DOM budget, plus P2 fork, multi-type file input, and
+the persistent cross-device message queue, are complete. The remainder is
+organized by actionability below. Priorities are the current recommendation,
+not delivery commitments.
 
 ### Implementation Candidates
 
-- **P2, standalone**: a persistent cross-device message queue. It needs its own
-  ADR for idempotency keys, expiry, acknowledgement, active-turn conflicts, and
-  approval ownership. Do not merge it with completed no-auto-replay steering
-  into one send semantic.
 - **P3, standalone**: a persistent Activity audit. Its data sensitivity,
   retention, and sources of truth need a separate definition; it cannot simply
   reuse the bounded structured Plan recovery cache.
@@ -282,15 +295,20 @@ the current recommendation, not delivery commitments.
   cache rather than a new persistent conversation database. It covers ordinary
   disconnects and Codex child restarts but does not promise reconstruction across
   gateway processes or devices. This is an accepted tradeoff, not ordinary debt.
+- Under ADR 0018, the cross-device queue persists plain text only and is
+  consumed explicitly by a synchronized browser. It does not auto-execute,
+  replay unknown results, support attachments, or act as a shared database
+  between gateways or hosts.
 - The browser cannot submit arbitrary commands or gain an implicit shell. Fixed
   actions and a PTY, even if implemented later, require explicit authorization
   and isolation boundaries separate from Codex approval.
 
 ## Next
 
-This P2 multi-type file-input milestone is complete; the next item has not been
-selected. Prefer one standalone P2 design rather than introducing several new
-persistent state models at once. Other candidates remain in
+The persistent cross-device message-queue P2 milestone and Plan resync race fix
+are complete. Persistent Activity audit is the next P3 candidate: define its
+sensitive-data scope, sources of truth, retention, and query boundary before
+choosing storage. Implementation has not started. Other candidates remain in
 [`ideas.en.md`](ideas.en.md); presence in either document is not a delivery
 commitment.
 
@@ -344,8 +362,16 @@ commitment.
   failed retry must not degrade into `turn/start`.
 - `turn/plan/updated` is a complete snapshot. JSONL and WebSocket arrival order
   must remain authoritative, and realtime delivery and cached recovery must use
-  the same field projection and resource bounds. `emittedAtMs` and
+  the same field projection and resource bounds. Resync may drop a notification
+  only when a monotonic revision from the same gateway proves that the snapshot
+  covers it; an absent revision requires conservative replay. `emittedAtMs` and
   `gatewayReceivedAtMs` are diagnostic only and must never reorder Plan state.
+- The persistent message queue must remain explicitly consumed and use item
+  revisions for concurrency control, with unknown write results retained as
+  `indeterminate`. Reconnect, startup, and Codex ready must never send in the
+  background. The presence of `clientUserMessageId` alone is not a proven
+  idempotency guarantee. Queue files contain user plaintext and must retain
+  their single-process, permission, and capacity bounds.
 - The sandbox probe and actual override are separate app-server RPCs. The
   current protocol has no CAS or revision-conditioned write, so another Codex
   process can still change the sandbox between them. The gateway serializes its
@@ -362,32 +388,43 @@ commitment.
 ## Verification
 
 Verification for this round was completed on 2026-08-07 with Node.js
-`v24.18.0`, npm `12.0.2`, and Codex CLI `0.146.0`:
+`v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
-- Current experimental TypeScript bindings were generated from the installed
-  CLI and compared for `ThreadResumeResponse.sandbox`,
+- Current stable and experimental TypeScript bindings were generated from the
+  installed CLI and compared for `ThreadResumeResponse.sandbox`,
   `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
   `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`,
   `TurnSteerParams`, `TurnSteerResponse`, the complete-snapshot
   `TurnPlanUpdatedNotification`, `ThreadForkParams`, `ThreadForkResponse`,
   `Thread.historyMode`, official Plan-free Turn read structures, and the
-  notification envelope's `emittedAtMs`. Ordinary file input also received live
-  protocol validation: `mention` was unsuitable for an ordinary local file,
-  while gateway-built application `additionalContext` let Codex accurately read
-  a controlled temporary path. No real turn or persistent test fork was created
+  notification envelope's `emittedAtMs`. Queue review also covered stable
+  `TurnStartParams.clientUserMessageId` and `thread/inject_items`; their schemas
+  do not establish the idempotency scope, retention, and conflict semantics
+  needed to replay an unknown write, so the implementation submits neither the
+  former nor the latter. Ordinary file input previously received live protocol
+  validation: `mention` was unsuitable for an ordinary local file, while
+  gateway-built application `additionalContext` let Codex accurately read a
+  controlled temporary path. No real turn or persistent test fork was created
   solely for automated checks.
-- `npm run typecheck`, `npm run lint`, and `npm run build` passed.
-- `NODE_ENV=test npx vitest run` passed: 37 test files and 637 tests. Server
-  tests ran in an environment that permits loopback socket binding.
+- `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
+  passed.
+- `NODE_ENV=test npm test` passed: 40 test files and 672 tests. Server tests ran
+  in an environment that permits loopback socket binding. Queue coverage
+  includes atomic persistence, corrupt and over-budget fail-closed startup,
+  restart recovery, cross-client revisions, busy threads, context changes,
+  unknown send results, approval ownership, and browser state. Plan coverage
+  includes revision comparison across the resync race and conservative replay
+  when a revision is absent.
 - `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-file-input-visual npm run
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-message-queue-visual npm run
   check:visual` passed against the current production build. Desktop and
   390x844 mobile fixtures covered approvals, project navigation, Activity,
   Skills, Usage, Agent-output downloads, rich content, the fixed reasoning slot,
-  images, Plans, the running-turn steering composer, the new attachment `+`
-  menu, and ordinary-file history cards. The unavailable state also remained
-  intact when no same-Origin Blob was present. There was no horizontal overflow,
-  clipping, content overlap, console error, or page error. The thread action
-  menu included and contained Fork in both viewports. Deterministic browser
-  fixtures intercepted every RPC, upload, and download and created no real
-  Codex turn or fork.
+  images, Plans, the running-turn steering composer, the cross-device queue,
+  the attachment `+` menu, and ordinary-file history cards. Queue actions,
+  status text, and the composer remained usable while expanded or collapsed;
+  the unavailable state also remained intact when no same-Origin Blob was
+  present. There was no horizontal overflow, clipping, content overlap, console
+  error, or page error. The thread action menu included and contained Fork in
+  both viewports. Deterministic browser fixtures intercepted every RPC, upload,
+  and download and created no real Codex turn or fork.

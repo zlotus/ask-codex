@@ -163,13 +163,14 @@ describe("ResyncCoordinator", () => {
     expect(filterSnapshotCoveredNotifications(null, snapshot, [message])).toEqual([message]);
   });
 
-  it("drops plan notifications already covered by a plan snapshot or tombstone", () => {
+  it("drops only plan notifications whose revision is covered by a snapshot or tombstone", () => {
     const planNotification: NotificationMessage = {
       type: "notification",
       method: "turn/plan/updated",
       params: {
         threadId: "thread-1",
         turnId: "turn-1",
+        askCodexPlanRevision: 2,
         plan: [{ step: "Buffered", status: "inProgress" }],
       },
     };
@@ -178,6 +179,7 @@ describe("ResyncCoordinator", () => {
       turns: [{
         id: "turn-1",
         items: [],
+        askCodexPlanRevision: 2,
         plan: { plan: [{ step: "Snapshot", status: "completed" }] },
       }],
     };
@@ -187,6 +189,22 @@ describe("ResyncCoordinator", () => {
       ...snapshot,
       turns: [{ ...snapshot.turns[0], plan: null }],
     }, [planNotification])).toEqual([]);
+    expect(filterSnapshotCoveredNotifications(null, {
+      ...snapshot,
+      turns: [{ ...snapshot.turns[0], askCodexPlanRevision: 1 }],
+    }, [planNotification])).toEqual([planNotification]);
+    expect(filterSnapshotCoveredNotifications(null, {
+      ...snapshot,
+      turns: [{ ...snapshot.turns[0], askCodexPlanRevision: undefined }],
+    }, [planNotification])).toEqual([planNotification]);
+    expect(filterSnapshotCoveredNotifications(null, snapshot, [{
+      ...planNotification,
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        plan: [{ step: "Unversioned", status: "inProgress" }],
+      },
+    }])).toHaveLength(1);
     expect(filterSnapshotCoveredNotifications(null, {
       ...snapshot,
       turns: [{ id: "turn-1", items: [] }],

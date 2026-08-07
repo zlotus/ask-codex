@@ -56,6 +56,7 @@ describe("TurnPlanCache", () => {
     });
 
     const first = decorateListedTurn(cache, "thread-1", "turn-1");
+    expect(first.askCodexPlanRevision).toBe(2);
     expect(first.plan).toEqual({
       explanation: "No remaining work",
       plan: [],
@@ -68,6 +69,7 @@ describe("TurnPlanCache", () => {
     firstPlan.plan.push({ step: "Injected", status: "completed" });
 
     const second = decorateListedTurn(cache, "thread-1", "turn-1");
+    expect(second.askCodexPlanRevision).toBe(2);
     expect(second.plan).toEqual({
       explanation: "No remaining work",
       plan: [],
@@ -101,6 +103,7 @@ describe("TurnPlanCache", () => {
       projectedParams: {
         threadId: "thread-strict",
         turnId: "turn-strict",
+        askCodexPlanRevision: 1,
         explanation: "Bounded projection",
         plan: [
           { step: "Queued", status: "pending" },
@@ -135,7 +138,7 @@ describe("TurnPlanCache", () => {
 
   it("replaces over-limit snapshots with tombstones and clears only the plan omission on recovery", () => {
     const cache = new TurnPlanCache({
-      maxSnapshotBytes: 300,
+      maxSnapshotBytes: 330,
       maxExplanationBytes: 8,
       maxStepBytes: 8,
       maxSteps: 2,
@@ -281,8 +284,36 @@ describe("TurnPlanCache", () => {
       { step: "Bounded", status: "inProgress" },
     ]);
 
-    expect(decorateListedTurn(cache, "thread-budget", "turn-budget")).toMatchObject({
+    const decorated = decorateListedTurn(cache, "thread-budget", "turn-budget");
+    expect(decorated).toMatchObject({
       plan: null,
+      recoveryOmissions: ["turn/plan/updated"],
+    });
+    expect(decorated).not.toHaveProperty("askCodexPlanRevision");
+  });
+
+  it("projects monotonic revisions for recoverable plans and authoritative tombstones", () => {
+    const cache = new TurnPlanCache();
+    const first = observePlan(cache, "thread-revision", "turn-revision", [
+      { step: "First", status: "inProgress" },
+    ]);
+    const second = observePlan(cache, "thread-revision", "turn-revision", [
+      { step: "Second", status: "completed" },
+    ]);
+
+    expect(first.projectedParams).toMatchObject({ askCodexPlanRevision: 1 });
+    expect(second.projectedParams).toMatchObject({ askCodexPlanRevision: 2 });
+    expect(decorateListedTurn(cache, "thread-revision", "turn-revision"))
+      .toMatchObject({ askCodexPlanRevision: 2 });
+
+    cache.observeNotification("turn/plan/updated", {
+      threadId: "thread-revision",
+      turnId: "turn-revision",
+      plan: "invalid",
+    }, BASE_TIMING);
+    expect(decorateListedTurn(cache, "thread-revision", "turn-revision")).toMatchObject({
+      plan: null,
+      askCodexPlanRevision: 3,
       recoveryOmissions: ["turn/plan/updated"],
     });
   });
@@ -343,12 +374,19 @@ describe("TurnPlanCache", () => {
       { thread: { id: "thread-forked", forkedFromId: "thread-source" } },
     );
 
-    expect(decorateListedTurn(cache, "thread-forked", "turn-cached").plan)
+    expect(decorateListedTurn(cache, "thread-forked", "turn-cached"))
       .toMatchObject({
-        plan: [{ step: "Keep structured history", status: "completed" }],
+        askCodexPlanRevision: 1,
+        plan: {
+          plan: [{ step: "Keep structured history", status: "completed" }],
+        },
       });
     expect(decorateListedTurn(cache, "thread-forked", "turn-unavailable"))
-      .toMatchObject({ plan: null, recoveryOmissions: ["turn/plan/updated"] });
+      .toMatchObject({
+        plan: null,
+        askCodexPlanRevision: 2,
+        recoveryOmissions: ["turn/plan/updated"],
+      });
     expect(decorateListedTurn(cache, "thread-source", "turn-cached").plan)
       .not.toBeNull();
 

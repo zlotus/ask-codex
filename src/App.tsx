@@ -3,6 +3,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel";
 import { ActivePlanDock } from "./components/ActivePlanDock";
 import { Composer } from "./components/Composer";
 import { Conversation } from "./components/Conversation";
+import { MessageQueueDock } from "./components/MessageQueueDock";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadSettingsDialog } from "./components/ThreadSettingsDialog";
 import { Toasts } from "./components/Toasts";
@@ -19,6 +20,7 @@ import type {
   CodexTurn,
   CodexTurnsPage,
   ModelInfo,
+  MessageQueueItem,
   NotificationMessage,
   ServerRequestMessage,
   SkillsDirectoryEntry,
@@ -41,6 +43,7 @@ import {
   normalizeThread,
   normalizeTurn,
   parsePlan,
+  parsePlanRevision,
   readString,
   sandboxMode,
 } from "./utils/protocol";
@@ -98,6 +101,10 @@ import {
   type UploadedFileAttachment,
 } from "./utils/attachments";
 import { downloadFileCapability } from "./utils/fileDownloads";
+import {
+  extractMessageQueueItem,
+  extractMessageQueueSnapshot,
+} from "./utils/messageQueue";
 
 function threadTitle(thread: CodexThread | null): string {
   return thread?.name?.trim() || thread?.preview?.trim() || (thread ? "Untitled thread" : "New thread");
@@ -277,6 +284,11 @@ export default function App() {
   const [resyncSignal, setResyncSignal] = useState(0);
   const [resyncing, setResyncing] = useState(false);
   const [resyncError, setResyncError] = useState<string | null>(null);
+  const [messageQueueItems, setMessageQueueItems] = useState<MessageQueueItem[]>([]);
+  const [messageQueueLoading, setMessageQueueLoading] = useState(false);
+  const [messageQueueError, setMessageQueueError] = useState<string | null>(null);
+  const [messageQueueBusyItemId, setMessageQueueBusyItemId] = useState<string | null>(null);
+  const [messageQueueInvalidationSignal, setMessageQueueInvalidationSignal] = useState(0);
   const [threadHydrationSignal, setThreadHydrationSignal] = useState(0);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
@@ -302,6 +314,7 @@ export default function App() {
   const settingsLoadGenerationRef = useRef(0);
   const threadListRefreshGenerationRef = useRef(0);
   const threadListMutationEpochRef = useRef(0);
+  const messageQueueLoadGenerationRef = useRef(0);
   const threadCwdAuthorityRevisionRef = useRef(0);
   const threadCwdUpdatesRef = useRef(new Map<string, ThreadCwdAuthority>());
   const skillsLoadGenerationRef = useRef(0);
@@ -788,7 +801,13 @@ export default function App() {
       case "turn/plan/updated": {
         const plan = parsePlan(params, message);
         if (threadId && turnId && plan) {
-          dispatch({ type: "setTurnPlan", threadId, turnId, plan });
+          dispatch({
+            type: "setTurnPlan",
+            threadId,
+            turnId,
+            plan,
+            askCodexPlanRevision: parsePlanRevision(params.askCodexPlanRevision),
+          });
         }
         return;
       }
@@ -872,6 +891,13 @@ export default function App() {
   ]);
 
   const onNotification = useCallback((message: NotificationMessage) => {
+    if (message.method === "messageQueue/changed") {
+      const threadId = readString(paramsRecord(message.params).threadId);
+      if (threadId && threadId === selectedThreadIdRef.current) {
+        setMessageQueueInvalidationSignal((current) => current + 1);
+      }
+      return;
+    }
     if (message.method === "skills/changed") {
       if (skillsLoadedRef.current) {
         setSkillsInvalidationSignal((current) => current + 1);
@@ -960,6 +986,60 @@ export default function App() {
       dispatch({ type: "clearRequests" });
     }
   }, [connection]);
+
+  const refreshMessageQueue = useCallback(async (requestedThreadId?: string) => {
+    const threadId = requestedThreadId ?? selectedThreadIdRef.current;
+    const generation = ++messageQueueLoadGenerationRef.current;
+    if (!threadId || connection !== "connected") {
+      setMessageQueueItems([]);
+      setMessageQueueLoading(false);
+      setMessageQueueError(null);
+      return;
+    }
+    setMessageQueueLoading(true);
+    setMessageQueueError(null);
+    try {
+      const result = await rpc("messageQueue/list", { threadId });
+      if (generation !== messageQueueLoadGenerationRef.current) return;
+      const snapshot = extractMessageQueueSnapshot(result);
+      if (!snapshot) throw new Error("Gateway returned an invalid message queue snapshot");
+      if (selectedThreadIdRef.current !== threadId) return;
+      setMessageQueueItems(snapshot.items);
+    } catch (error) {
+      if (generation !== messageQueueLoadGenerationRef.current) return;
+      setMessageQueueError(errorMessage(error));
+    } finally {
+      if (generation === messageQueueLoadGenerationRef.current) {
+        setMessageQueueLoading(false);
+      }
+    }
+  }, [connection, rpc]);
+
+  useEffect(() => {
+    const threadId = state.currentThread?.id === state.selectedThreadId
+      ? state.currentThread.id
+      : undefined;
+    if (connection !== "connected" || !threadId) {
+      const generation = ++messageQueueLoadGenerationRef.current;
+      const timeout = window.setTimeout(() => {
+        if (generation !== messageQueueLoadGenerationRef.current) return;
+        setMessageQueueItems([]);
+        setMessageQueueLoading(false);
+        setMessageQueueError(null);
+        setMessageQueueBusyItemId(null);
+      }, 0);
+      return () => window.clearTimeout(timeout);
+    }
+    void refreshMessageQueue(threadId);
+    return undefined;
+  }, [
+    connection,
+    messageQueueInvalidationSignal,
+    readySequence,
+    refreshMessageQueue,
+    state.currentThread?.id,
+    state.selectedThreadId,
+  ]);
 
   const refreshUsage = useCallback(async () => {
     const generation = ++usageLoadGenerationRef.current;
@@ -1857,6 +1937,29 @@ export default function App() {
     token,
   ]);
 
+  const enqueueMessage = useCallback(async (text: string) => {
+    const thread = state.currentThread;
+    if (!thread || thread.id !== state.selectedThreadId) {
+      throw new Error("Choose an existing thread before queueing a message");
+    }
+    const lastTurnId = thread.turns?.at(-1)?.id ?? null;
+    const result = await rpc("messageQueue/enqueue", {
+      threadId: thread.id,
+      text,
+      expectedLastTurnId: lastTurnId,
+    });
+    const queued = extractMessageQueueItem(result);
+    if (!queued || queued.threadId !== thread.id) {
+      throw new Error("Gateway returned an invalid queued message");
+    }
+    if (selectedThreadIdRef.current === thread.id) {
+      setMessageQueueItems((current) => [
+        ...current.filter((item) => item.id !== queued.id),
+        queued,
+      ].sort((left, right) => left.createdAt - right.createdAt));
+    }
+  }, [rpc, state.currentThread, state.selectedThreadId]);
+
   const steerMessage = useCallback(async (text: string, expectedTurnId: string) => {
     const thread = state.currentThread;
     const activeTurn = thread?.turns?.find((turn) => (
@@ -1909,6 +2012,68 @@ export default function App() {
       showToast(errorMessage(error));
     }
   }, [rpc, showToast, state.activeTurnId, state.currentThread]);
+
+  const sendQueuedMessage = useCallback(async (item: MessageQueueItem) => {
+    const threadId = state.currentThread?.id;
+    if (
+      !threadId ||
+      threadId !== state.selectedThreadId ||
+      item.threadId !== threadId ||
+      connection !== "connected" ||
+      loadingThread ||
+      resyncing ||
+      resyncError !== null ||
+      threadLoadError !== null ||
+      state.activeTurnId
+    ) {
+      showToast("The thread is not ready to send a queued message");
+      return;
+    }
+    setMessageQueueBusyItemId(item.id);
+    try {
+      const result = await rpc("messageQueue/send", {
+        id: item.id,
+        revision: item.revision,
+        ...(item.status === "needsReview" ? { confirmReview: true } : {}),
+      });
+      const turn = extractTurn(result);
+      if (!turn) throw new Error("Gateway did not confirm the queued turn");
+      if (selectedThreadIdRef.current === threadId) {
+        dispatch({ type: "upsertTurn", turn, threadId });
+      }
+      void refreshThreads();
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      setMessageQueueBusyItemId((current) => current === item.id ? null : current);
+      void refreshMessageQueue(threadId);
+    }
+  }, [
+    connection,
+    loadingThread,
+    refreshMessageQueue,
+    refreshThreads,
+    resyncError,
+    resyncing,
+    rpc,
+    showToast,
+    state.activeTurnId,
+    state.currentThread?.id,
+    state.selectedThreadId,
+    threadLoadError,
+  ]);
+
+  const cancelQueuedMessage = useCallback(async (item: MessageQueueItem) => {
+    setMessageQueueBusyItemId(item.id);
+    try {
+      await rpc("messageQueue/cancel", { id: item.id, revision: item.revision });
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      setMessageQueueBusyItemId((current) => current === item.id ? null : current);
+      void refreshMessageQueue(item.threadId);
+    }
+  }, [refreshMessageQueue, rpc, showToast]);
 
   const isThreadActive = useCallback((threadId: string): boolean => {
     const thread = state.threads.find((entry) => entry.id === threadId)
@@ -2135,6 +2300,8 @@ export default function App() {
     : undefined;
   const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
   const syncing = resyncing;
+  const queueSendDisabled = connection !== "connected" || loadingThread || syncing ||
+    resyncError !== null || threadLoadError !== null || Boolean(state.activeTurnId);
 
   return (
     <div className="app-shell">
@@ -2216,6 +2383,18 @@ export default function App() {
           onResolve={resolveRequest}
           onReject={rejectRequest}
         />
+        {state.currentThread?.id === state.selectedThreadId && (
+          <MessageQueueDock
+            items={messageQueueItems}
+            loading={messageQueueLoading}
+            error={messageQueueError}
+            disabled={queueSendDisabled}
+            busyItemId={messageQueueBusyItemId}
+            onRefresh={() => void refreshMessageQueue(state.currentThread!.id)}
+            onSend={(item) => void sendQueuedMessage(item)}
+            onCancel={(item) => void cancelQueuedMessage(item)}
+          />
+        )}
         <Composer
           activeTurnId={activeTurn?.id ?? null}
           disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
@@ -2230,6 +2409,7 @@ export default function App() {
             }));
           }}
           onSend={sendMessage}
+          onEnqueue={state.currentThread?.id === state.selectedThreadId ? enqueueMessage : undefined}
           onSteer={steerMessage}
           onStop={stopTurn}
         />

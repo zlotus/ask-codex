@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,11 @@ import {
   type FileDownloadLease,
 } from "./file-downloads.js";
 import {
+  MessageQueueError,
+  MessageQueueStore,
+  type MessageQueueItem,
+} from "./message-queue.js";
+import {
   assertSafeBind,
   ClientInputError,
   ClientRpcError,
@@ -46,11 +52,13 @@ import {
 } from "./thread-ownership.js";
 import {
   ALLOWED_BROWSER_RPC_METHODS,
+  MESSAGE_QUEUE_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
   materializeTurnStartAttachments,
   sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
+  sanitizeMessageQueueRpcParams,
 } from "./rpc-policy.js";
 import {
   assertServerRequestRoutable,
@@ -95,6 +103,7 @@ export interface AskCodexConfig {
   publicOrigin?: string;
   production: boolean;
   distDir: string;
+  messageQueuePath?: string;
 }
 
 export interface StartedServer {
@@ -362,6 +371,22 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
+function messageQueuePath(environment: NodeJS.ProcessEnv): string {
+  const configured = environment.ASK_CODEX_QUEUE_PATH?.trim();
+  if (configured) {
+    if (!isAbsolute(configured)) {
+      throw new Error("ASK_CODEX_QUEUE_PATH must be an absolute path");
+    }
+    return configured;
+  }
+  const configuredStateHome = environment.XDG_STATE_HOME?.trim();
+  if (configuredStateHome && !isAbsolute(configuredStateHome)) {
+    throw new Error("XDG_STATE_HOME must be an absolute path");
+  }
+  const stateHome = configuredStateHome || join(homedir(), ".local", "state");
+  return join(stateHome, "ask-codex", "message-queue.json");
+}
+
 function assertDirectory(path: string, label: string): void {
   if (!isAbsolute(path)) {
     throw new Error(`${label} must be an absolute path`);
@@ -396,6 +421,38 @@ export function loadConfig(
     publicOrigin,
     production: environment.NODE_ENV === "production",
     distDir: resolve(moduleDirectory, "../dist"),
+    messageQueuePath: messageQueuePath(environment),
+  };
+}
+
+interface QueuedThreadSnapshot {
+  busy: boolean;
+  lastTurnId: string | null;
+  systemError: boolean;
+}
+
+function queuedThreadSnapshot(result: unknown, threadId: string): QueuedThreadSnapshot {
+  const thread = isRecord(result) && isRecord(result.thread) ? result.thread : undefined;
+  if (thread?.id !== threadId || !Array.isArray(thread.turns) || !isRecord(thread.status)) {
+    throw new MessageQueueError("Queued message thread state is unavailable");
+  }
+  const statusType = thread.status.type;
+  if (
+    statusType !== "active" &&
+    statusType !== "idle" &&
+    statusType !== "notLoaded" &&
+    statusType !== "systemError"
+  ) {
+    throw new MessageQueueError("Queued message thread state is unavailable");
+  }
+  const lastTurn = thread.turns.at(-1);
+  if (lastTurn !== undefined && (!isRecord(lastTurn) || typeof lastTurn.id !== "string" || !lastTurn.id)) {
+    throw new MessageQueueError("Queued message thread context is unavailable");
+  }
+  return {
+    busy: statusType === "active" || (isRecord(lastTurn) && lastTurn.status === "inProgress"),
+    lastTurnId: isRecord(lastTurn) ? lastTurn.id as string : null,
+    systemError: statusType === "systemError",
   };
 }
 
@@ -486,6 +543,7 @@ export class AskCodexServer {
   private readonly pendingAttachmentStarts = new Map<string, number>();
   private readonly attachments: AttachmentStore;
   private readonly fileDownloads: FileDownloadStore;
+  private readonly messageQueue: MessageQueueStore;
   private readonly turnPlans = new TurnPlanCache();
   private readonly createFileDownloadTransferTimeout: CreateFileDownloadTransferTimeout;
   private readonly pendingServerRequests = new Map<string, PendingServerRequest>();
@@ -506,11 +564,15 @@ export class AskCodexServer {
     attachments?: AttachmentStore,
     fileDownloads?: FileDownloadStore,
     downloadTimeoutFactory: CreateFileDownloadTransferTimeout = createFileDownloadTransferTimeout,
+    messageQueue?: MessageQueueStore,
   ) {
     assertSafeBind(config.host, config.token, config.publicOrigin);
     assertDirectory(config.defaultCwd, "defaultCwd");
     this.attachments = attachments ?? new AttachmentStore();
     this.fileDownloads = fileDownloads ?? new FileDownloadStore();
+    this.messageQueue = messageQueue ?? new MessageQueueStore({
+      filePath: config.messageQueuePath,
+    });
     this.createFileDownloadTransferTimeout = downloadTimeoutFactory;
     this.httpServer.maxConnections = MAX_HTTP_CONNECTIONS;
     this.httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
@@ -1097,6 +1159,17 @@ export class AskCodexServer {
     let pendingAttachmentThreadId: string | undefined;
     const requestCodexErrorRevision = this.codexErrorRevision;
     try {
+      if (MESSAGE_QUEUE_BROWSER_RPC_METHODS.has(message.method)) {
+        const sanitizedParams = sanitizeMessageQueueRpcParams(message.method, message.params);
+        const result = await this.handleMessageQueueRpc(
+          client,
+          message.method,
+          sanitizedParams,
+          requestCodexErrorRevision,
+        );
+        this.send(client, { type: "rpcResult", id: message.id, result });
+        return;
+      }
       if (!ALLOWED_BROWSER_RPC_METHODS.has(message.method)) {
         throw new MethodNotAllowedError(message.method);
       }
@@ -1187,6 +1260,252 @@ export class AskCodexServer {
         await Promise.allSettled(attachmentLeases.map((lease) => lease.release()));
       }
     }
+  }
+
+  private async handleMessageQueueRpc(
+    client: WebSocket,
+    method: string,
+    params: Record<string, unknown>,
+    requestCodexErrorRevision: number,
+  ): Promise<unknown> {
+    if (method === "messageQueue/list") {
+      return this.messageQueue.list(params.threadId as string);
+    }
+    if (method === "messageQueue/enqueue") {
+      const threadId = params.threadId as string;
+      this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+      try {
+        const readResult = await this.codex.request("thread/read", {
+          threadId,
+          includeTurns: false,
+        });
+        this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+        const thread = isRecord(readResult) && isRecord(readResult.thread)
+          ? readResult.thread
+          : undefined;
+        if (thread?.id !== threadId) {
+          throw new Error("thread ID mismatch");
+        }
+      } catch {
+        throw new MessageQueueError("Queued message thread is unavailable");
+      }
+      const item = this.messageQueue.enqueue({
+        threadId,
+        text: params.text as string,
+        expectedLastTurnId: params.expectedLastTurnId as string | null,
+      });
+      this.broadcastMessageQueueChanged(item.threadId);
+      return { item };
+    }
+    if (method === "messageQueue/cancel") {
+      const item = this.messageQueue.cancel(
+        params.id as string,
+        params.revision as number,
+      );
+      this.broadcastMessageQueueChanged(item.threadId);
+      return { item };
+    }
+    if (method !== "messageQueue/send") {
+      throw new MethodNotAllowedError(method);
+    }
+
+    const claimId = randomBytes(24).toString("base64url");
+    const item = this.messageQueue.claim(
+      params.id as string,
+      params.revision as number,
+      claimId,
+      params.confirmReview === true,
+    );
+    this.broadcastMessageQueueChanged(item.threadId);
+    try {
+      return await this.dispatchQueuedMessage(
+        client,
+        item,
+        claimId,
+        params.confirmReview === true,
+        requestCodexErrorRevision,
+      );
+    } catch (error) {
+      try {
+        const review = this.messageQueue.markNeedsReview(
+          item.id,
+          claimId,
+          "threadUnavailable",
+        );
+        this.broadcastMessageQueueChanged(review.threadId);
+      } catch {
+        // The dispatch path already moved the item to a more precise state.
+      }
+      if (error instanceof MessageQueueError) throw error;
+      throw new MessageQueueError("Queued message was not sent; review before retrying");
+    }
+  }
+
+  private async dispatchQueuedMessage(
+    client: WebSocket,
+    item: MessageQueueItem,
+    claimId: string,
+    confirmReview: boolean,
+    requestCodexErrorRevision: number,
+  ): Promise<unknown> {
+    return await this.serializeThreadOwnershipRpc(
+      item.threadId,
+      "messageQueue/send",
+      async (setFailureOutcomeKnown) => {
+        setFailureOutcomeKnown(true);
+        this.assertThreadOwnershipRpcCanStart(
+          client,
+          requestCodexErrorRevision,
+          "messageQueue/send",
+        );
+
+        let snapshot: QueuedThreadSnapshot;
+        try {
+          const readResult = await this.codex.request("thread/read", {
+            threadId: item.threadId,
+            includeTurns: true,
+          });
+          this.assertThreadOwnershipRpcCanStart(
+            client,
+            requestCodexErrorRevision,
+            "messageQueue/send",
+          );
+          snapshot = queuedThreadSnapshot(readResult, item.threadId);
+        } catch {
+          const review = this.messageQueue.markNeedsReview(
+            item.id,
+            claimId,
+            "threadUnavailable",
+          );
+          this.broadcastMessageQueueChanged(review.threadId);
+          throw new MessageQueueError("Queued message thread state is unavailable");
+        }
+        if (snapshot.busy || snapshot.systemError) {
+          const review = this.messageQueue.markNeedsReview(
+            item.id,
+            claimId,
+            snapshot.busy ? "threadBusy" : "threadUnavailable",
+          );
+          this.broadcastMessageQueueChanged(review.threadId);
+          throw new MessageQueueError(
+            snapshot.busy
+              ? "Queued message thread is busy"
+              : "Queued message thread state is unavailable",
+          );
+        }
+        const contextChanged = snapshot.lastTurnId !== item.expectedLastTurnId;
+        const reviewedContextChange = confirmReview && item.reviewReason === "contextChanged";
+        if (contextChanged && !reviewedContextChange) {
+          const review = this.messageQueue.markNeedsReview(
+            item.id,
+            claimId,
+            "contextChanged",
+          );
+          this.broadcastMessageQueueChanged(review.threadId);
+          throw new MessageQueueError("Queued message context changed; review before sending");
+        }
+
+        const resumeParams = {
+          threadId: item.threadId,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          excludeTurns: true,
+        };
+        try {
+          setFailureOutcomeKnown(false);
+          const resumeResult = await this.codex.request("thread/resume", resumeParams);
+          setFailureOutcomeKnown(true);
+          resumeResultSandboxType(resumeResult, item.threadId);
+          this.assertThreadOwnershipRpcCanStart(
+            client,
+            requestCodexErrorRevision,
+            "messageQueue/send",
+          );
+        } catch {
+          setFailureOutcomeKnown(true);
+          const review = this.messageQueue.markNeedsReview(
+            item.id,
+            claimId,
+            "threadUnavailable",
+          );
+          this.broadcastMessageQueueChanged(review.threadId);
+          throw new MessageQueueError("Queued message thread could not be prepared");
+        }
+
+        const dispatching = this.messageQueue.markDispatching(item.id, claimId);
+        this.broadcastMessageQueueChanged(dispatching.threadId);
+        const turnParams = {
+          threadId: item.threadId,
+          input: [{ type: "text", text: item.text, text_elements: [] }],
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+        };
+        let resultObserved = false;
+        let confirmedItem: MessageQueueItem | undefined;
+        let projectedResult: unknown;
+        try {
+          setFailureOutcomeKnown(false);
+          const rawResult = await this.codex.requestWithResultObserver(
+            "turn/start",
+            turnParams,
+            (result) => {
+              resultObserved = true;
+              const turnId = turnIdFromStartResult(result);
+              if (!turnId) {
+                throw new Error("Codex app-server returned an invalid turn/start result");
+              }
+              this.turnPlans.observeRpcResult("turn/start", turnParams, result);
+              projectedResult = this.turnPlans.decorateRpcResult(
+                "turn/start",
+                turnParams,
+                sanitizeBrowserRpcResult("turn/start", result, turnParams),
+              );
+              confirmedItem = this.messageQueue.confirm(item.id, claimId, turnId);
+              setFailureOutcomeKnown(true);
+              this.claimThreadOwnership(item.threadId, client);
+              this.broadcastMessageQueueChanged(item.threadId);
+            },
+          );
+          setFailureOutcomeKnown(true);
+          if (!resultObserved || !confirmedItem) {
+            throw new Error("Codex app-server returned an invalid turn/start result");
+          }
+          void rawResult;
+        } catch (error) {
+          if (error instanceof CodexRpcError && !resultObserved) {
+            setFailureOutcomeKnown(true);
+            const review = this.messageQueue.markNeedsReview(
+              item.id,
+              claimId,
+              "dispatchRejected",
+            );
+            this.broadcastMessageQueueChanged(review.threadId);
+            throw new MessageQueueError("Codex rejected the queued message; review before retrying");
+          }
+          try {
+            const indeterminate = this.messageQueue.markIndeterminate(item.id, claimId);
+            this.broadcastMessageQueueChanged(indeterminate.threadId);
+          } catch {
+            // A durable confirmation may already have won the result race.
+          }
+          throw new MessageQueueError(
+            "Queued message outcome is indeterminate; inspect thread history before removing it",
+          );
+        }
+
+        const turn = isRecord(projectedResult) ? projectedResult.turn : undefined;
+        return { item: confirmedItem, ...(turn === undefined ? {} : { turn }) };
+      },
+    );
+  }
+
+  private broadcastMessageQueueChanged(threadId: string): void {
+    const { revision } = this.messageQueue.list(threadId);
+    this.broadcast({
+      type: "notification",
+      method: "messageQueue/changed",
+      params: { threadId, revision },
+    });
   }
 
   private async requestCodexForBrowserRpc(

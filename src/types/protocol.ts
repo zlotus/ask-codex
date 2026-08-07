@@ -70,6 +70,41 @@ export type ItemStatus = "inProgress" | "completed" | "failed" | "declined" | st
 export type ImageDetail = "auto" | "low" | "high" | "original";
 export type InputModality = "text" | "image" | "audio";
 
+export type MessageQueueStatus =
+  | "queued"
+  | "claimed"
+  | "dispatching"
+  | "needsReview"
+  | "indeterminate"
+  | "confirmed"
+  | "expired"
+  | "cancelled";
+
+export type MessageQueueReviewReason =
+  | "contextChanged"
+  | "dispatchRejected"
+  | "threadBusy"
+  | "threadUnavailable";
+
+export interface MessageQueueItem {
+  id: string;
+  threadId: string;
+  text: string;
+  expectedLastTurnId: string | null;
+  status: MessageQueueStatus;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  reviewReason?: MessageQueueReviewReason;
+  confirmedTurnId?: string;
+}
+
+export interface MessageQueueSnapshot {
+  revision: number;
+  items: MessageQueueItem[];
+}
+
 export interface FileDownloadCapability {
   href: string;
   capabilityId: string;
@@ -129,6 +164,7 @@ export interface CodexTurn {
   durationMs?: number | null;
   diff?: string;
   plan?: TurnPlan | null;
+  askCodexPlanRevision?: number;
   recoveryOmissions?: string[];
   historyDetail?: {
     cursor: string | null;

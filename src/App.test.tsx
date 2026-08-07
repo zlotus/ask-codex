@@ -73,6 +73,18 @@ const newThread = {
   turns: [],
 };
 
+const queuedMessage = {
+  id: "q".repeat(32),
+  threadId: existingThread.id,
+  text: "Continue this later",
+  expectedLastTurnId: null,
+  status: "queued",
+  revision: 1,
+  createdAt: 1_800_000_001_000,
+  updatedAt: 1_800_000_001_000,
+  expiresAt: 1_800_604_801_000,
+};
+
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -104,6 +116,22 @@ function installRpcFixture() {
     };
     if (method === "config/read") return { model: "configured-model", effort: "max" };
     if (method === "skills/list") return { data: [] };
+    if (method === "messageQueue/list") return { revision: 0, items: [] };
+    if (method === "messageQueue/enqueue") return { item: queuedMessage };
+    if (method === "messageQueue/send") {
+      return {
+        item: {
+          ...queuedMessage,
+          status: "confirmed",
+          revision: 4,
+          confirmedTurnId: "turn-queued",
+        },
+        turn: { id: "turn-queued", status: "inProgress", items: [] },
+      };
+    }
+    if (method === "messageQueue/cancel") {
+      return { item: { ...queuedMessage, status: "cancelled", revision: 2 } };
+    }
     if (method === "thread/read") return { thread: existingThread };
     if (method === "thread/turns/list") {
       return { data: [], nextCursor: null, backwardsCursor: null };
@@ -295,6 +323,57 @@ describe("App thread settings lifecycle", () => {
 
     expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/default-one");
     expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+  });
+
+  it("queues composer text for the selected thread and explicitly sends it", async () => {
+    installBootstrapFixture();
+    render(<App />);
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByRole("region", { name: "Message queue" });
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/list", {
+      threadId: existingThread.id,
+    }));
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "Continue this later" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/enqueue", {
+      threadId: existingThread.id,
+      text: "Continue this later",
+      expectedLastTurnId: null,
+    }));
+    expect(await screen.findByText("Continue this later")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send queued message" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/send", {
+      id: queuedMessage.id,
+      revision: queuedMessage.revision,
+    }));
+    await waitFor(() => expect(screen.queryByText("Continue this later")).not.toBeInTheDocument());
+  });
+
+  it("refreshes the selected thread queue after a cross-client notification", async () => {
+    installBootstrapFixture();
+    let visibleItems: unknown[] = [];
+    const baseImplementation = socket.rpc.getMockImplementation()!;
+    socket.rpc.mockImplementation(async (method: string, params?: unknown) => (
+      method === "messageQueue/list"
+        ? { revision: visibleItems.length, items: visibleItems }
+        : await baseImplementation(method, params)
+    ));
+    render(<App />);
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByText("No queued messages");
+    visibleItems = [queuedMessage];
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "messageQueue/changed",
+      params: { threadId: existingThread.id, revision: 1 },
+    }));
+
+    expect(await screen.findByText("Continue this later")).toBeInTheDocument();
   });
 
   it("inherits the selected thread working directory and returns to the default after archiving it", async () => {
@@ -1350,6 +1429,102 @@ describe("App thread settings lifecycle", () => {
     })).toBeInTheDocument();
     expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/resume"))
       .toHaveLength(resumeCallsBeforeReconnect);
+  });
+
+  it("replays a newer buffered plan after an older reconnect snapshot", async () => {
+    let recovering = false;
+    let resolveTurnsPage: ((value: unknown) => void) | undefined;
+    const pendingTurnsPage = new Promise<unknown>((resolve) => {
+      resolveTurnsPage = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (recovering && method === "thread/read") {
+        return Promise.resolve({ thread: existingThread });
+      }
+      if (recovering && method === "thread/turns/list") return pendingTurnsPage;
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    await sendMessage();
+    await screen.findByRole("button", { name: "Stop turn" });
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: existingThread.id,
+        turnId: "turn-new",
+        askCodexPlanRevision: 1,
+        plan: [
+          { step: "Inspect", status: "inProgress" },
+          { step: "Repair", status: "pending" },
+          { step: "Verify", status: "pending" },
+        ],
+      },
+    }));
+    expect(screen.getByRole("button", { name: /Step 1 of 3: Inspect/ }))
+      .toBeInTheDocument();
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(screen.getByLabelText("Model for next turn")).toBeDisabled());
+
+    recovering = true;
+    socket.connection = "connected";
+    socket.retryAttempt = 0;
+    socket.readySequence = 2;
+    rerender(<App />);
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("thread/turns/list", {
+      threadId: existingThread.id,
+      limit: 10,
+      sortDirection: "desc",
+      itemsView: "full",
+    }));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/plan/updated",
+      params: {
+        threadId: existingThread.id,
+        turnId: "turn-new",
+        askCodexPlanRevision: 3,
+        plan: [
+          { step: "Inspect", status: "completed" },
+          { step: "Repair", status: "completed" },
+          { step: "Verify", status: "inProgress" },
+        ],
+      },
+    }));
+
+    await act(async () => {
+      resolveTurnsPage?.({
+        data: [{
+          id: "turn-new",
+          status: "inProgress",
+          itemsView: "full",
+          items: [],
+          askCodexPlanRevision: 2,
+          plan: {
+            plan: [
+              { step: "Inspect", status: "completed" },
+              { step: "Repair", status: "inProgress" },
+              { step: "Verify", status: "pending" },
+            ],
+          },
+        }],
+        nextCursor: null,
+        backwardsCursor: null,
+      });
+      await pendingTurnsPage;
+    });
+
+    expect(await screen.findByRole("button", { name: /Step 3 of 3: Verify/ }))
+      .toBeInTheDocument();
   });
 
   it("does not let an older thread list overwrite a newer reconnect snapshot cwd", async () => {

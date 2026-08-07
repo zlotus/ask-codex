@@ -149,8 +149,12 @@ export function normalizeTurn(value: unknown): CodexTurn | null {
   const turn: CodexTurn = { ...value, id: value.id, items };
   if (Object.hasOwn(value, "plan")) {
     turn.plan = value.plan === null ? null : parsePlan(value.plan) ?? null;
+    const revision = parsePlanRevision(value.askCodexPlanRevision);
+    if (revision === undefined) delete turn.askCodexPlanRevision;
+    else turn.askCodexPlanRevision = revision;
   } else {
     delete turn.plan;
+    delete turn.askCodexPlanRevision;
   }
   for (const field of ["startedAt", "completedAt", "durationMs"] as const) {
     const raw = value[field];
@@ -504,6 +508,12 @@ const PLAN_TEXT_ENCODER = new TextEncoder();
 
 function planUtf8Bytes(value: string): number {
   return PLAN_TEXT_ENCODER.encode(value).byteLength;
+}
+
+export function parsePlanRevision(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 export function parsePlan(

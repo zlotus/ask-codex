@@ -3,6 +3,7 @@ import {
   FileUp,
   Gauge,
   ImagePlus,
+  ListPlus,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -41,6 +42,7 @@ interface ComposerProps {
     images: readonly File[],
     files: readonly File[],
   ) => Promise<void> | void;
+  onEnqueue?: (text: string) => Promise<void> | void;
   onSteer?: (text: string, expectedTurnId: string) => Promise<void> | void;
   onStop: () => Promise<void> | void;
 }
@@ -60,7 +62,7 @@ interface DraftSubmission {
   error?: string;
   files: DraftFile[];
   images: DraftImage[];
-  mode: "start" | "steer";
+  mode: "queue" | "start" | "steer";
   expectedTurnId?: string;
   text: string;
 }
@@ -87,6 +89,7 @@ export function Composer({
   models,
   onSettingsChange,
   onSend,
+  onEnqueue,
   onSteer,
   onStop,
 }: ComposerProps) {
@@ -118,6 +121,8 @@ export function Composer({
     : !running &&
       (Boolean(value.trim()) || images.length > 0 || files.length > 0) &&
       (images.length === 0 || imageInputSupported));
+  const canEnqueue = !controlsDisabled && Boolean(onEnqueue) && Boolean(value.trim()) &&
+    images.length === 0 && files.length === 0;
 
   useEffect(() => {
     imagesRef.current = images;
@@ -254,7 +259,10 @@ export function Composer({
   const sendSubmission = async (submission: DraftSubmission) => {
     setInFlightSubmission(submission);
     try {
-      if (submission.mode === "steer") {
+      if (submission.mode === "queue") {
+        if (!onEnqueue) throw new Error("Choose an existing thread before queueing a message");
+        await onEnqueue(submission.text);
+      } else if (submission.mode === "steer") {
         if (!submission.expectedTurnId || !onSteer) {
           throw new Error("The active turn is no longer available; nothing was sent");
         }
@@ -289,6 +297,14 @@ export function Composer({
       setFiles([]);
       setAddMenuOpen(false);
     }
+    await sendSubmission(submission);
+  };
+
+  const enqueue = async () => {
+    const text = value.trim();
+    if (!canEnqueue) return;
+    const submission: DraftSubmission = { mode: "queue", text, images: [], files: [] };
+    setValue("");
     await sendSubmission(submission);
   };
 
@@ -375,10 +391,12 @@ export function Composer({
         <span className="sr-only" aria-live="polite">
           {sending
               ? inFlightSubmission?.mode === "steer"
-              ? "Steering active turn"
-              : inFlightSubmission && inFlightSubmission.images.length + inFlightSubmission.files.length > 0
-                ? "Uploading attachments"
-                : "Sending message"
+                ? "Steering active turn"
+                : inFlightSubmission?.mode === "queue"
+                  ? "Queueing message"
+                  : inFlightSubmission && inFlightSubmission.images.length + inFlightSubmission.files.length > 0
+                    ? "Uploading attachments"
+                    : "Sending message"
             : images.length + files.length > 0
               ? `${images.length + files.length} attachment${images.length + files.length === 1 ? "" : "s"} selected`
               : ""}
@@ -466,6 +484,20 @@ export function Composer({
               )}
             </div>
           )}
+          <button
+            type="button"
+            className="composer-image-action composer-queue-action"
+            title={images.length + files.length > 0
+              ? "Only plain text can be queued"
+              : "Queue message"}
+            aria-label="Queue message"
+            disabled={!canEnqueue}
+            onClick={() => void enqueue()}
+          >
+            {sending && inFlightSubmission?.mode === "queue"
+              ? <LoaderCircle className="composer-spinner" size={15} aria-hidden="true" />
+              : <ListPlus size={15} aria-hidden="true" />}
+          </button>
           <label className="composer-setting" title="Model for the next turn">
             <Sparkles size={12} aria-hidden="true" />
             <select
@@ -523,7 +555,11 @@ export function Composer({
       {failedSubmission && (
         <div className="composer-failed-submission" role="alert">
           <span className="composer-failed-copy">
-            <strong>{failedSubmission.mode === "steer" ? "Guidance not confirmed" : "Message not confirmed"}</strong>
+            <strong>{failedSubmission.mode === "steer"
+              ? "Guidance not confirmed"
+              : failedSubmission.mode === "queue"
+                ? "Message not queued"
+                : "Message not confirmed"}</strong>
             {failedSubmission.error && <span className="composer-failed-error">{failedSubmission.error}</span>}
             {failedSubmission.mode === "steer" && (
               !running || activeTurnId !== failedSubmission.expectedTurnId
@@ -547,11 +583,21 @@ export function Composer({
           <button
             type="button"
             className="composer-failed-action"
-            title={failedSubmission.mode === "steer" ? "Retry unconfirmed guidance" : "Retry unconfirmed message"}
-            aria-label={failedSubmission.mode === "steer" ? "Retry unconfirmed guidance" : "Retry unconfirmed message"}
+            title={failedSubmission.mode === "steer"
+              ? "Retry unconfirmed guidance"
+              : failedSubmission.mode === "queue"
+                ? "Retry queueing message"
+                : "Retry unconfirmed message"}
+            aria-label={failedSubmission.mode === "steer"
+              ? "Retry unconfirmed guidance"
+              : failedSubmission.mode === "queue"
+                ? "Retry queueing message"
+                : "Retry unconfirmed message"}
             disabled={disabled || sending || (failedSubmission.mode === "start"
               ? running
-              : !running || activeTurnId !== failedSubmission.expectedTurnId)}
+              : failedSubmission.mode === "steer"
+                ? !running || activeTurnId !== failedSubmission.expectedTurnId
+                : !onEnqueue)}
             onClick={() => void sendSubmission(failedSubmission)}
           >
             {sending
@@ -561,8 +607,16 @@ export function Composer({
           <button
             type="button"
             className="composer-failed-action"
-            title={failedSubmission.mode === "steer" ? "Discard unconfirmed guidance" : "Discard unconfirmed message"}
-            aria-label={failedSubmission.mode === "steer" ? "Discard unconfirmed guidance" : "Discard unconfirmed message"}
+            title={failedSubmission.mode === "steer"
+              ? "Discard unconfirmed guidance"
+              : failedSubmission.mode === "queue"
+                ? "Discard unqueued message"
+                : "Discard unconfirmed message"}
+            aria-label={failedSubmission.mode === "steer"
+              ? "Discard unconfirmed guidance"
+              : failedSubmission.mode === "queue"
+                ? "Discard unqueued message"
+                : "Discard unconfirmed message"}
             disabled={sending}
             onClick={discardFailedSubmission}
           >

@@ -61,7 +61,7 @@ export type AppAction =
   | { type: "recordIndexedItemOmission"; turnId: string; itemId: string; itemType?: string; field: "summary" | "content"; omitted: number }
   | { type: "clearActiveReasoningItems" }
   | { type: "setTurnDiff"; turnId: string; diff: string }
-  | { type: "setTurnPlan"; threadId: string; turnId: string; plan: TurnPlan }
+  | { type: "setTurnPlan"; threadId: string; turnId: string; plan: TurnPlan; askCodexPlanRevision?: number }
   | { type: "recordTurnRecoveryOmission"; threadId?: string; turnId: string; method: string }
   | { type: "addRequest"; request: PendingRequest }
   | { type: "recordCommandApprovalReason"; threadId: string; turnId?: string; itemId: string; reason: string }
@@ -469,7 +469,13 @@ function reconcilePlanSnapshot(
     );
     if (reconciled.recoveryOmissions === undefined) delete reconciled.recoveryOmissions;
   }
-  if (!Object.hasOwn(snapshot, "plan")) return reconciled;
+  if (!Object.hasOwn(snapshot, "plan")) {
+    if (existing.askCodexPlanRevision === undefined) delete reconciled.askCodexPlanRevision;
+    else reconciled.askCodexPlanRevision = existing.askCodexPlanRevision;
+    return reconciled;
+  }
+  if (snapshot.askCodexPlanRevision === undefined) delete reconciled.askCodexPlanRevision;
+  else reconciled.askCodexPlanRevision = snapshot.askCodexPlanRevision;
   const snapshotMarksPlanUnavailable = snapshot.recoveryOmissions?.includes(
     "turn/plan/updated",
   ) === true;
@@ -1111,14 +1117,22 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       if (state.currentThread?.id !== action.threadId) return state;
       return {
         ...state,
-        currentThread: updateTurn(state.currentThread, action.turnId, (turn) => ({
-          ...turn,
-          plan: action.plan,
-          recoveryOmissions: withoutRecoveryOmission(
-            turn.recoveryOmissions,
-            "turn/plan/updated",
-          ),
-        })),
+        currentThread: updateTurn(state.currentThread, action.turnId, (turn) => {
+          const updated: CodexTurn = {
+            ...turn,
+            plan: action.plan,
+            recoveryOmissions: withoutRecoveryOmission(
+              turn.recoveryOmissions,
+              "turn/plan/updated",
+            ),
+          };
+          if (action.askCodexPlanRevision === undefined) {
+            delete updated.askCodexPlanRevision;
+          } else {
+            updated.askCodexPlanRevision = action.askCodexPlanRevision;
+          }
+          return updated;
+        }),
       };
     case "recordTurnRecoveryOmission": {
       if (action.threadId && action.threadId !== state.currentThread?.id) return state;

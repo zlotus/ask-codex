@@ -25,11 +25,6 @@ tracking or durable rationale.
   protocol design; skill-triggered commands must continue through normal Codex
   approval.
 
-## Cross-Device Workflow
-
-- A persistent message queue that can be prepared on one device and consumed by
-  the active thread without duplicate or stale-turn delivery.
-
 ## Host Capabilities
 
 - Fixed host actions may expose server-configured action identifiers, never a

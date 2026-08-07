@@ -278,6 +278,7 @@ describe("turn page normalization", () => {
     expect(normalizeTurn({
       id: "turn-planned",
       items: [],
+      askCodexPlanRevision: 7,
       plan: {
         explanation: "Work through the recovery path.",
         plan: [
@@ -291,6 +292,7 @@ describe("turn page normalization", () => {
     })).toEqual({
       id: "turn-planned",
       items: [],
+      askCodexPlanRevision: 7,
       plan: {
         explanation: "Work through the recovery path.",
         plan: [
@@ -305,8 +307,17 @@ describe("turn page normalization", () => {
   });
 
   it("distinguishes an authoritative null plan from an absent plan and fails malformed plans closed", () => {
-    const absent = normalizeTurn({ id: "turn-absent", items: [] });
-    const cleared = normalizeTurn({ id: "turn-cleared", items: [], plan: null });
+    const absent = normalizeTurn({
+      id: "turn-absent",
+      items: [],
+      askCodexPlanRevision: 7,
+    });
+    const cleared = normalizeTurn({
+      id: "turn-cleared",
+      items: [],
+      plan: null,
+      askCodexPlanRevision: 8,
+    });
     const malformed = normalizeTurn({
       id: "turn-malformed",
       items: [],
@@ -319,8 +330,25 @@ describe("turn page normalization", () => {
     });
 
     expect(Object.hasOwn(absent!, "plan")).toBe(false);
-    expect(cleared).toEqual({ id: "turn-cleared", items: [], plan: null });
+    expect(absent).not.toHaveProperty("askCodexPlanRevision");
+    expect(cleared).toEqual({
+      id: "turn-cleared",
+      items: [],
+      plan: null,
+      askCodexPlanRevision: 8,
+    });
     expect(malformed).toEqual({ id: "turn-malformed", items: [], plan: null });
+  });
+
+  it("accepts only positive safe plan revisions on authoritative snapshots", () => {
+    for (const askCodexPlanRevision of [0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(normalizeTurn({
+        id: "turn-invalid-revision",
+        items: [],
+        plan: null,
+        askCodexPlanRevision,
+      })).toEqual({ id: "turn-invalid-revision", items: [], plan: null });
+    }
   });
 
   it("rejects plan snapshots outside the browser rendering bounds", () => {
