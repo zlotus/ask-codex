@@ -1,6 +1,6 @@
 # ADR 0020：为下一次直接轮次提供一次性免审批提示模式
 
-- 状态：已接受
+- 状态：已取代；由 [ADR 0022](0022-sandbox-aware-one-turn-auto-run.md) 取代
 - 决策日期：2026-08-07
 - 修订：[ADR 0002](0002-security-gateway-and-manual-approval.zh-CN.md)
 

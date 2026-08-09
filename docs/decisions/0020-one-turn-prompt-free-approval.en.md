@@ -1,6 +1,6 @@
 # ADR 0020: Offer a one-turn prompt-free mode for the next direct turn
 
-- Status: Accepted
+- Status: Superseded by [ADR 0022](0022-sandbox-aware-one-turn-auto-run.en.md)
 - Decision date: 2026-08-07
 - Amends: [ADR 0002](0002-security-gateway-and-manual-approval.md)
 

@@ -17,27 +17,30 @@ swallow a newer Plan notification is also fixed through monotonic gateway
 revisions. Multi-type file input, constrained native fork, text steering, the
 aggregate long-history DOM budget, cwd continuity, Agent-output handoff, and
 gateway hardening remain in place. Persistent Activity audit is the next P3
-candidate and has not started. One-turn prompt-free mode operates per turn:
-each turn defaults to manual, while an existing idle thread or configured
-new-thread draft can explicitly use `never` for its next direct turn and
-restores manual mode after completion or a failed start. Thread creation, queue,
-steering, and experimental settings APIs are not involved, and the sandbox is
-unchanged.
+candidate and has not started. One-turn sandbox-aware auto-run operates per
+turn: ordinary direct turns default to `untrusted`, while an existing idle
+thread or configured new-thread draft can explicitly use `on-request` for its
+next direct turn. Actions allowed by the sandbox run automatically, boundary
+requests still go to the user, and completion or a failed start restores the
+strict default. Creation, resume, fork, and queue sends remain fixed to
+`on-request`; steering carries no policy, and no experimental API is used.
 
 ## Current Baseline
 
 The implementation currently provides:
 
-- A one-turn prompt-free control in the composer, editable for the currently
+- A one-turn sandbox-aware auto-run control in the composer, editable for the
   selected existing idle thread or after a new-thread draft is configured.
-  Every turn defaults to manual. Once explicitly armed, the next direct
-  `turn/start` uses `approvalPolicy: "never"`; it remains visible but disabled
-  while Working and clears after completion, cancellation, failure, or an
-  invalid start result, so each later turn must be armed again. A new thread's
-  `thread/start`, resume, queue consumption, and steering remain fixed to manual
-  approval; only the separate first `turn/start` after creation may use the
-  draft's one-shot choice. The gateway always injects the user reviewer, and
-  `never` does not widen the current sandbox.
+  Ordinary direct turns explicitly use `approvalPolicy: "untrusted"`. Once
+  armed, the next direct `turn/start` uses `approvalPolicy: "on-request"`, but
+  sandbox escalation, restricted network access, and writes outside the
+  workspace still require user approval. The control remains visible but
+  disabled while Working and clears after completion, cancellation, failure,
+  or an invalid start result, so each later turn must be armed again. Thread
+  creation, resume, fork, and queue consumption remain fixed to `on-request`,
+  while steering carries no policy. Only the separate first `turn/start` after
+  creation may use the draft's choice. The gateway always injects the user
+  reviewer and rejects browser-supplied `never`, `granular`, or reviewer values.
 - React desktop and mobile layouts for listing, searching, creating, resuming,
   and refreshing native Codex threads, with a 44-pixel conversation header and
   an always-editable responsive multiline composer where Enter inserts a
@@ -249,10 +252,11 @@ The implementation currently provides:
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
-- Enforced `on-request` user approval for thread creation, resume, queue
-  consumption, and every ordinary direct turn. Only the explicitly selected
-  next direct turn on an existing idle thread or configured new-thread draft
-  may use `never`; new-thread creation itself remains fixed to `on-request`.
+- Enforced `on-request` user approval for thread creation, resume, fork, and
+  queue consumption. Ordinary direct turns default to `untrusted`; only the
+  explicitly selected next direct turn on an existing idle thread or configured
+  new-thread draft may use `on-request` sandbox-aware auto-run. Standard
+  boundary requests still go to the user, and `never` is no longer exposed.
   Fail-closed unsupported permissions, loopback defaults, token and Origin
   checks, connection and request limits, and exact trusted-public-origin support
   remain.
@@ -379,15 +383,15 @@ commitment.
   redirect approval requests away from the browser that started or resumed it.
   Ordinary reconnection and Codex restart may retry bounded read-only requests,
   never unconfirmed writes.
-- One-turn `never` may affect only the next direct turn explicitly started by
-  the user. When a new-thread draft receives a real ID, the choice may transfer
-  only to the first turn in the same submission. The UI must not persist the
-  control or carry it to another thread, and later Ask Codex writes must
-  explicitly restore `on-request`. Because the
-  upstream setting may remain sticky until that write, this UI does not
-  guarantee another Codex client's approval behavior during the intervening
-  window and must not remove it through an ownership-changing automatic
-  `thread/resume`.
+- One-turn `on-request` auto-run may affect only the next direct turn explicitly
+  started by the user. When a new-thread draft receives a real ID, the choice
+  may transfer only to the first turn in the same submission. The UI must not
+  persist the control or carry it to another thread, and later ordinary direct
+  turns must explicitly restore `untrusted`. The upstream setting may remain
+  `on-request` until that write, so this UI does not guarantee another Codex
+  client's approval behavior during the intervening window. Sandbox-boundary
+  requests remain interactive, and the UI must not remove the window through
+  an ownership-changing automatic `thread/resume`.
 - `turn/steer` must remain bound to the `expectedTurnId` captured at submission,
   accept only field-rebuilt text input, and fail closed when the response
   `turnId` differs. Recovery must not replay steering automatically, and a
@@ -422,43 +426,41 @@ commitment.
 The current worktree was verified on 2026-08-09 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
-- On 2026-08-07, stable and experimental TypeScript bindings were generated
-  from the same CLI version and compared for `ThreadResumeResponse.sandbox`,
-  `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
-  `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`,
-  `TurnSteerParams`, `TurnSteerResponse`, the complete-snapshot
-  `TurnPlanUpdatedNotification`, `ThreadForkParams`, `ThreadForkResponse`,
-  `Thread.historyMode`, official Plan-free Turn read structures, and the
-  notification envelope's `emittedAtMs`. This round also checked the stable
-  `TurnStartParams.approvalPolicy` union of `on-request | never`. Queue review
-  covered stable `TurnStartParams.clientUserMessageId` and
-  `thread/inject_items`; their schemas
-  do not establish the idempotency scope, retention, and conflict semantics
-  needed to replay an unknown write, so the implementation submits neither the
-  former nor the latter. Ordinary file input previously received live protocol
-  validation: `mention` was unsuitable for an ordinary local file, while
-  gateway-built application `additionalContext` let Codex accurately read a
-  controlled temporary path. No real turn or persistent test fork was created
-  solely for automated checks.
+- The existing baseline generated bindings from the same CLI version on
+  2026-08-07 and checked the relevant resume sandbox, approval decision,
+  turn/steering/fork, complete Plan snapshot, history-mode, and notification
+  revision structures. This approval change ran only
+  `codex app-server generate-ts` without `--experimental`, confirming that the
+  stable `AskForApproval` referenced by `TurnStartParams.approvalPolicy` includes
+  `untrusted` and `on-request` and that `approvalsReviewer` is stable. The
+  implementation uses only mature direct `turn/start` behavior and calls no
+  experimental settings RPC or other experimental API. Earlier queue review
+  covered stable `TurnStartParams.clientUserMessageId` and `thread/inject_items`,
+  but their schemas do not establish the idempotency scope, retention, and
+  conflict semantics needed to replay an unknown write, so the implementation
+  submits neither. Prior live protocol validation for ordinary file input also
+  remains applicable. No real turn or persistent test fork was created solely
+  for this round of automated checks.
 - `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
   passed.
-- `NODE_ENV=test npm test` passed: 41 test files and 683 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 41 test files and 684 tests. Server tests ran
   in an environment that permits loopback socket binding. Queue coverage
   includes atomic persistence, corrupt and over-budget fail-closed startup,
   restart recovery, cross-client revisions, busy threads, context changes,
   unknown send results, approval ownership, and browser state. Plan coverage
   includes revision comparison across the resync race, conservative replay
   when a revision is absent, and stopping animation when a terminal turn retains
-  an `in_progress` Plan snapshot. Approval coverage includes one-shot `never`
-  for existing and first-turn threads, explicit later `on-request`, and manual
-  restoration after creation or start failure.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4444
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-turn-defaults-visual-final2 node
-  scripts/visual-check.mjs` passed against the current production build.
+  an `in_progress` Plan snapshot. Approval coverage includes one-shot
+  `on-request` for existing and first-turn threads, explicit later `untrusted`,
+  strict-mode restoration after creation or start failure, and a user-visible,
+  acceptable command approval when an auto-run turn requests sandbox escalation.
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-sandbox-auto-run-visual.C8eV16 npm run
+  check:visual` passed against the current production build.
   Desktop and 390x844 mobile fixtures covered approvals, project navigation, Activity,
   Skills, Usage, Agent-output downloads, rich content, the fixed reasoning slot,
   images, Plans, the running-turn steering composer, the cross-device queue,
-  the one-turn approval control, the attachment `+` menu, and ordinary-file
+  the one-turn sandbox auto-run control, the attachment `+` menu, and ordinary-file
   history cards. They verified Queue starts collapsed, a terminal Plan stops
   spinning, and both an existing thread and configured new-thread draft can arm
   one turn before clearing the choice on selection. Queue actions, status text,
@@ -468,11 +470,5 @@ The current worktree was verified on 2026-08-09 with Node.js
   error, or page error. The thread action menu included and contained Fork in
   both viewports. Deterministic browser fixtures intercepted every RPC, upload,
   and download and created no real Codex turn or fork.
-- A deliberately invalid `approvalPolicy` capability probe against the live
-  service on port 4444 returned the expected `on-request | never` gateway
-  validation. This proves the running process already has the relevant RPC
-  allowlist. The probe did not reach app-server or create a real turn, so the
-  first-turn UI extension requires no gateway restart that would interrupt this
-  session.
-- Local Markdown-link validation covered 14 related Chinese and English
+- Local relative Markdown-link validation covered 16 related Chinese and English
   documents, and every target resolved.

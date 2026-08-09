@@ -1009,13 +1009,13 @@ async function approvalControlSnapshot(page) {
   });
 }
 
-async function inspectOneTurnApproval(page, screenshotPaths) {
+async function inspectOneTurnAutoRun(page, screenshotPaths) {
   const control = page.locator(".composer-approval-toggle");
-  const input = page.getByLabel("Auto-run next turn without approval prompts");
+  const input = page.getByLabel("Auto-run sandboxed actions for next turn");
   const existing = await approvalControlSnapshot(page);
   await control.click();
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === true
+    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === true
   ));
   const existingArmed = await approvalControlSnapshot(page);
   await control.click();
@@ -1031,14 +1031,14 @@ async function inspectOneTurnApproval(page, screenshotPaths) {
   const configuredDraft = await approvalControlSnapshot(page);
   await control.click();
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === true
+    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === true
   ));
   const configuredDraftArmed = await approvalControlSnapshot(page);
   await page.screenshot({ path: screenshotPaths.armedDraft, fullPage: true });
 
   await selectFixture(page);
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === false
+    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === false
   ));
   const clearedAfterThreadSelection = !(await input.isChecked());
   return {
@@ -1051,7 +1051,7 @@ async function inspectOneTurnApproval(page, screenshotPaths) {
   };
 }
 
-function oneTurnApprovalInvalid(inspection) {
+function oneTurnAutoRunInvalid(inspection) {
   const snapshots = [
     inspection.existing,
     inspection.existingArmed,
@@ -1388,11 +1388,11 @@ try {
       composerTextareaHeight: textarea?.height ?? 0,
       modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
       effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
-      autoApprovalDisabled: document.querySelector(
-        '[aria-label="Auto-run next turn without approval prompts"]',
+      autoRunDisabled: document.querySelector(
+        '[aria-label="Auto-run sandboxed actions for next turn"]',
       )?.disabled === true,
-      autoApprovalChecked: document.querySelector(
-        '[aria-label="Auto-run next turn without approval prompts"]',
+      autoRunChecked: document.querySelector(
+        '[aria-label="Auto-run sandboxed actions for next turn"]',
       )?.checked === true,
       defaultLabels: [...document.querySelectorAll(".composer-setting option")]
         .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
@@ -1455,11 +1455,11 @@ try {
   const desktopComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-attachment.png`, fullPage: true });
   await page.getByRole("button", { name: "Remove visual-fixture.png" }).click();
-  const desktopOneTurnApproval = await inspectOneTurnApproval(page, {
+  const desktopOneTurnAutoRun = await inspectOneTurnAutoRun(page, {
     dialog: `${outputDirectory}/desktop-new-thread.png`,
     armedDraft: `${outputDirectory}/desktop-first-turn-auto.png`,
   });
-  const desktopDialog = desktopOneTurnApproval.dialog;
+  const desktopDialog = desktopOneTurnAutoRun.dialog;
   await page.screenshot({ path: `${outputDirectory}/desktop-readme.png`, fullPage: true });
   const desktopSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-sent-image.png`, fullPage: true });
@@ -1503,11 +1503,11 @@ try {
     composerTextareaHeight: document.querySelector(".composer textarea")?.getBoundingClientRect().height ?? 0,
     modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
     effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
-    autoApprovalDisabled: document.querySelector(
-      '[aria-label="Auto-run next turn without approval prompts"]',
+    autoRunDisabled: document.querySelector(
+      '[aria-label="Auto-run sandboxed actions for next turn"]',
     )?.disabled === true,
-    autoApprovalChecked: document.querySelector(
-      '[aria-label="Auto-run next turn without approval prompts"]',
+    autoRunChecked: document.querySelector(
+      '[aria-label="Auto-run sandboxed actions for next turn"]',
     )?.checked === true,
     defaultLabels: [...document.querySelectorAll(".composer-setting option")]
       .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
@@ -1615,7 +1615,7 @@ try {
     fixture,
     `${outputDirectory}/mobile-plan`,
   );
-  const mobileOneTurnApproval = await inspectOneTurnApproval(page, {
+  const mobileOneTurnAutoRun = await inspectOneTurnAutoRun(page, {
     dialog: `${outputDirectory}/mobile-first-turn-dialog.png`,
     armedDraft: `${outputDirectory}/mobile-first-turn-auto.png`,
   });
@@ -1642,7 +1642,7 @@ try {
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
       activePlan: desktopActivePlan,
-      oneTurnApproval: desktopOneTurnApproval,
+      oneTurnAutoRun: desktopOneTurnAutoRun,
     },
     mobile: {
       ...mobileBefore,
@@ -1665,7 +1665,7 @@ try {
       activeReasoning: mobileActiveReasoning,
       failedSubmission: mobileFailedSubmission,
       activePlan: mobileActivePlan,
-      oneTurnApproval: mobileOneTurnApproval,
+      oneTurnAutoRun: mobileOneTurnAutoRun,
       splitActionHidden,
     },
     consoleErrors,
@@ -1682,10 +1682,10 @@ try {
     desktop.composerTextareaHeight > 34 ||
     desktop.modelSelection !== "gpt-5-codex" ||
     desktop.effortSelection !== "high" ||
-    !desktop.autoApprovalDisabled ||
-    desktop.autoApprovalChecked ||
+    !desktop.autoRunDisabled ||
+    desktop.autoRunChecked ||
     desktop.defaultLabels > 0 ||
-    oneTurnApprovalInvalid(desktopOneTurnApproval) ||
+    oneTurnAutoRunInvalid(desktopOneTurnAutoRun) ||
     desktopComposerImage.count !== 1 ||
     !desktopComposerImage.previewLoaded ||
     !desktopComposerImage.previewContained ||
@@ -1806,11 +1806,11 @@ try {
     mobileBefore.composerTextareaHeight > 34 ||
     mobileBefore.modelSelection !== "gpt-5-codex" ||
     mobileBefore.effortSelection !== "high" ||
-    !mobileBefore.autoApprovalDisabled ||
-    mobileBefore.autoApprovalChecked ||
+    !mobileBefore.autoRunDisabled ||
+    mobileBefore.autoRunChecked ||
     mobileBefore.defaultLabels > 0 ||
     !mobileBefore.composerSettingsVisible ||
-    oneTurnApprovalInvalid(mobileOneTurnApproval) ||
+    oneTurnAutoRunInvalid(mobileOneTurnAutoRun) ||
     mobileComposerImage.count !== 1 ||
     !mobileComposerImage.previewLoaded ||
     !mobileComposerImage.previewContained ||

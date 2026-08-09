@@ -32,8 +32,8 @@ describe("Composer", () => {
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
   });
 
-  it("arms one-turn auto approval only in an eligible idle composer", () => {
-    const onAutoApprovalNextTurnChange = vi.fn();
+  it("arms one-turn sandbox auto-run only in an eligible idle composer", () => {
+    const onAutoRunNextTurnChange = vi.fn();
     const props = {
       disabled: false,
       running: false,
@@ -42,24 +42,24 @@ describe("Composer", () => {
       onSettingsChange: vi.fn(),
       onSend: vi.fn(),
       onStop: vi.fn(),
-      onAutoApprovalNextTurnChange,
+      onAutoRunNextTurnChange,
     };
     const { rerender } = render(<Composer {...props} />);
-    const toggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    const toggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
 
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
-    expect(onAutoApprovalNextTurnChange).toHaveBeenCalledWith(true);
+    expect(onAutoRunNextTurnChange).toHaveBeenCalledWith(true);
 
-    rerender(<Composer {...props} autoApprovalNextTurn running />);
+    rerender(<Composer {...props} autoRunNextTurn running />);
     expect(toggle).toBeChecked();
     expect(toggle).toBeDisabled();
 
-    rerender(<Composer {...props} disabled autoApprovalNextTurn />);
+    rerender(<Composer {...props} disabled autoRunNextTurn />);
     expect(toggle).toBeChecked();
     expect(toggle).toBeEnabled();
 
-    rerender(<Composer {...props} autoApprovalAvailable={false} />);
+    rerender(<Composer {...props} autoRunAvailable={false} />);
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeDisabled();
     expect(toggle.closest("label")).toHaveAttribute(

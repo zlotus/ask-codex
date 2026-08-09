@@ -964,12 +964,12 @@ describe("browser RPC policy", () => {
       threadId: "thread-1",
       input: [{ type: "text", text: "Continue", text_elements: [] }],
       cwd: "/workspace/project",
-      approvalPolicy: "on-request",
+      approvalPolicy: "untrusted",
       approvalsReviewer: "user",
     });
   });
 
-  it("defaults turn starts to manual approval and allows one explicit never policy", () => {
+  it("defaults direct turns to untrusted and allows one explicit on-request policy", () => {
     const input = [{ type: "text", text: "Continue", text_elements: [] }];
 
     expect(sanitizeBrowserRpcParams("turn/start", {
@@ -978,23 +978,24 @@ describe("browser RPC policy", () => {
     })).toEqual({
       threadId: "thread-1",
       input,
-      approvalPolicy: "on-request",
+      approvalPolicy: "untrusted",
       approvalsReviewer: "user",
     });
     expect(sanitizeBrowserRpcParams("turn/start", {
       threadId: "thread-1",
       input,
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
     })).toEqual({
       threadId: "thread-1",
       input,
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
       approvalsReviewer: "user",
     });
   });
 
   it.each([
-    [{ approvalPolicy: "unless-trusted" }, "approvalPolicy must be on-request or never"],
+    [{ approvalPolicy: "never" }, "approvalPolicy must be untrusted or on-request"],
+    [{ approvalPolicy: { granular: {} } }, "approvalPolicy must be untrusted or on-request"],
     [{ approvalsReviewer: "user" }, "does not allow param: approvalsReviewer"],
   ])("rejects an unsupported turn approval override %#", (override, message) => {
     expect(() => sanitizeBrowserRpcParams("turn/start", {
@@ -1033,7 +1034,7 @@ describe("browser RPC policy", () => {
     ]))
       .toEqual({
         threadId: "thread-1",
-        approvalPolicy: "on-request",
+        approvalPolicy: "untrusted",
         approvalsReviewer: "user",
         input: [
           { type: "localImage", path: "/private/first.png", detail: "high" },

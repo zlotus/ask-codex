@@ -12,20 +12,22 @@ P2 跨设备持久消息队列已完成：一个设备可把已有线程的纯�
 同时修复了 Working -> Retry -> Sync 窗口中旧重同步快照可能吞掉较新 Plan 通知的竞态，以
 网关单调 revision 裁决覆盖关系。此前完成的多类型文件输入、受限原生 fork、文本 steering、
 长历史整体 DOM 预算、cwd 连续性、Agent 输出文件交接和网关安全硬化继续保持。下一候选是
-P3 持久 Activity 审计，尚未开始。一次性免审批提示模式按 turn 工作：每轮默认手动，已有
-空闲线程或完成配置的新线程草稿可显式让下一次直接轮次使用 `never`，结束或启动失败后恢复
-手动；线程创建、队列、steering 和实验性设置 API 均不参与，沙箱不变。
+P3 持久 Activity 审计，尚未开始。一次性沙箱内自动运行按 turn 工作：普通直接 turn 默认
+`untrusted`，已有空闲线程或完成配置的新线程草稿可显式让下一次直接 turn 使用 `on-request`；
+当前 sandbox 已允许的操作自动执行，越界请求仍人工审批，结束或启动失败后恢复严格默认。
+线程创建、恢复、fork 和队列继续固定 `on-request`，steering 不携带策略，也不使用实验性 API。
 
 ## 当前基线
 
 当前实现包括：
 
-- 输入区提供一次性免审批提示开关，只在当前选中的已有空闲线程，或新线程草稿完成配置后可
-  修改。每个 turn 默认手动；显式开启后，下一次直接 `turn/start` 使用
-  `approvalPolicy: "never"`，Working 时保持显示但禁用，轮次结束、取消、失败或启动结果无效
-  时关闭，下一轮必须重新开启。新线程的 `thread/start`、恢复、队列消费和 steering 继续固定
-  手动审批；只有创建成功后独立发起的首个 `turn/start` 可使用草稿上的当次选择。网关始终
-  注入用户 reviewer，且 `never` 不放宽当前 sandbox。
+- 输入区提供一次性沙箱内自动运行开关，只在当前选中的已有空闲线程，或新线程草稿完成配置后
+  可修改。普通直接 turn 显式使用 `approvalPolicy: "untrusted"`；开启后，下一次直接
+  `turn/start` 使用 `approvalPolicy: "on-request"`，但仍由用户审批 sandbox 升级、受限网络和
+  工作区外写入。Working 时开关保持显示但禁用，轮次结束、取消、失败或启动结果无效时关闭，
+  下一轮必须重新开启。新线程创建、恢复、fork 和队列继续固定 `on-request`，steering 不携带
+  策略；只有创建成功后独立发起的首个 `turn/start` 可使用草稿上的当次选择。网关始终注入
+  用户 reviewer，并拒绝浏览器提交 `never`、`granular` 或 reviewer。
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
   包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
   发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。轮次运行时，同一输入框可向提交时
@@ -152,9 +154,10 @@ P3 持久 Activity 审计，尚未开始。一次性免审批提示模式按 tur
   数据、浏览器回收存储，或换用其他设备、浏览器、配置文件或 Origin 后均回退为安全占位符。
 - 有界的浏览器、网关和 app-server 消息；线性 JSONL 累积；背压驱逐；审批重路由；
   以及超大通知无法转发时基于快照的恢复。
-- 线程创建、恢复、队列和每个普通直接轮次默认强制 `on-request` 用户审批；只有已有空闲线程，
-  或已配置新线程草稿上用户显式选择的下一次直接轮次可使用 `never`。新线程创建本身仍固定
-  `on-request`。同时保留不支持权限失败时关闭、默认只绑定
+- 线程创建、恢复、fork 和队列固定 `on-request` 用户审批；普通直接 turn 默认
+  `untrusted`，只有已有空闲线程或已配置新线程草稿上用户显式选择的下一次直接 turn 可使用
+  `on-request` 沙箱内自动运行。标准越界请求仍交给用户，`never` 不再开放。同时保留不支持权限
+  失败时关闭、默认只绑定
   回环地址、token 和 Origin 检查、连接与请求限制，以及对精确受信任公共 Origin 的支持。
 - 中英文 Cloudflare Tunnel 部署指南，用于仅绑定回环地址的 Cloudflare Access，
   并保留独立的 Ask Codex token 关卡。
@@ -240,11 +243,11 @@ P3 持久 Activity 审计，尚未开始。一次性免审批提示模式按 tur
   引入路径或命令透传。
 - 自动恢复和只读视图不得声称拥有线程，也不得把审批请求从启动或恢复该线程的浏览器
   重定向出去。普通重连和 Codex 重启只能自动重试有界只读请求，不得重放未确认写操作。
-- 一次性 `never` 只能影响用户显式发起的下一次直接轮次；新线程草稿获得真实 ID 时只允许把
-  选择转移给同一次提交的首轮。UI 不得持久化或跨其他线程携带开关，后续 Ask Codex 写入必须
-  显式恢复 `on-request`。由于上游设置可能在这次写入前保持粘性，
-  同一窗口内其他 Codex 客户端的审批行为不由本 UI 保证，也不得通过自动 `thread/resume`
-  改变 owner 来消除该窗口。
+- 一次性 `on-request` 自动运行只能影响用户显式发起的下一次直接 turn；新线程草稿获得真实 ID
+  时只允许把选择转移给同一次提交的首轮。UI 不得持久化或跨其他线程携带开关，后续普通直接
+  turn 必须显式恢复 `untrusted`。由于上游设置可能在这次写入前保持 `on-request`，同一窗口内
+  其他 Codex 客户端的审批行为不由本 UI 保证；sandbox 越界仍会请求审批，也不得通过自动
+  `thread/resume` 改变 owner 来消除该窗口。
 - `turn/steer` 必须继续绑定提交时捕获的 `expectedTurnId`，只允许文本并逐字段重建输入；
   响应 `turnId` 不匹配时失败关闭。断线恢复不得自动重放 steering，失败重试也不得退化为
   `turn/start`。
@@ -268,35 +271,30 @@ P3 持久 Activity 审计，尚未开始。一次性免审批提示模式按 tur
 当前工作树已于 2026-08-09 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
 `0.147.0` 完成验证：
 
-- 2026-08-07 已从同版本 CLI 分别生成 stable 和 experimental TypeScript bindings，并核对
-  `ThreadResumeResponse.sandbox`、`ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`、
-  `CommandExecutionApprovalDecision`、`ReviewDecision`、`TurnStartResponse`、
-  `TurnSteerParams`、`TurnSteerResponse`、完整快照形式的 `TurnPlanUpdatedNotification`、
-  `ThreadForkParams`、`ThreadForkResponse`、`Thread.historyMode`、不含 Plan 的官方 Turn
-  读取结构，以及通知 envelope 的 `emittedAtMs`。本轮另核对 stable
-  `TurnStartParams.approvalPolicy` 的 `on-request | never` 联合类型；队列还核对了
-  `TurnStartParams.clientUserMessageId` 与 `thread/inject_items`，确认 schema 没有给出足以授权
-  未知写重放的幂等作用域、持久期和冲突语义，因此实现未提交前者，也未调用后者。普通文件
-  输入此前还完成了真实协议验证：
-  `mention` 不适合普通本地文件，而由网关构造的 application `additionalContext` 可让 Codex
-  准确读取受控临时路径；没有仅为自动化检查创建真实轮次或持久测试 fork。
+- 既有基线曾在 2026-08-07 从同版本 CLI 生成 bindings，并核对恢复 sandbox、审批 decision、
+  turn/steering/fork、Plan 完整快照、历史模式和通知 revision 等相关结构。本轮审批变更只运行
+  不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
+  `TurnStartParams.approvalPolicy` 引用的 `AskForApproval` 包含 `untrusted` 和 `on-request`，且
+  `approvalsReviewer` 是稳定字段；实现只使用成熟的直接 `turn/start`，未调用实验性的设置 RPC
+  或其他实验性 API。队列此前还核对了稳定 `TurnStartParams.clientUserMessageId` 与
+  `thread/inject_items`，但 schema 没有给出足以授权未知写重放的幂等作用域、持久期和冲突语义，
+  因此实现未提交前者，也未调用后者。普通文件输入此前完成的真实协议验证仍有效；没有仅为
+  本轮自动化检查创建真实 turn 或持久测试 fork。
 - `npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
-- `NODE_ENV=test npm test` 通过：41 个测试文件、683 项测试；服务端测试在允许绑定回环套接字
+- `NODE_ENV=test npm test` 通过：41 个测试文件、684 项测试；服务端测试在允许绑定回环套接字
   的环境中运行。队列覆盖原子持久化、损坏和配额失败关闭、重启恢复、跨客户端 revision、
   忙线程、上下文变化、未知发送结果、审批 owner 以及浏览器状态；Plan 覆盖同步竞态的 revision
   比较、缺失 revision 的保守重放，以及终态 turn 遗留 `in_progress` 快照时停止动画。审批覆盖
-  已有线程和新线程首轮的单次 `never`、后续显式恢复 `on-request`，以及创建/启动失败后恢复手动。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4444
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-turn-defaults-visual-final2 node scripts/visual-check.mjs`
+  已有线程和新线程首轮的一次性 `on-request`、后续显式恢复 `untrusted`、创建或启动失败后恢复
+  严格模式，以及自动 turn 遇到 sandbox 越界请求时仍显示人工命令审批并可接受。
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-sandbox-auto-run-visual.C8eV16 npm run check:visual`
   针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
   Usage、Agent 输出下载、富内容、推理状态槽、图片、Plan、运行中 steering 输入区，以及新的
-  跨设备队列、一次性审批开关、附件 `+` 菜单和普通文件历史卡片；验证了 Queue 默认收起、
+  跨设备队列、一次性沙箱自动运行开关、附件 `+` 菜单和普通文件历史卡片；验证了 Queue 默认收起、
   终态 Plan 停止旋转，以及已有线程和已配置新草稿都可逐轮开启并在切换后清除选择。队列展开
   和折叠时按钮、状态文字与输入框均保持可用，同源 Blob 缺失时的不可下载状态也保持完整。
   未发现水平溢出、裁切、内容重叠、
   console error 或 page error。所有 RPC、上传和下载均由确定性浏览器夹具拦截；线程动作菜单
   在两种视口均包含且容纳 Fork，没有创建真实 Codex 轮次或 fork。
-- 对 4444 常驻实例发送了必定在网关失败的无效 `approvalPolicy` 能力探针，运行态返回了预期的
-  `on-request | never` 校验结果，证明现有进程已加载相关 RPC 白名单；探针未转发到 app-server，
-  也未创建真实轮次，因此本次首轮 UI 扩展不需要中断当前会话重启网关。
-- 对 14 个本轮相关中英文文档执行了本地 Markdown 链接检查，全部目标均存在。
+- 对 16 个本轮相关中英文文档执行了本地 Markdown 相对链接检查，全部目标均存在。

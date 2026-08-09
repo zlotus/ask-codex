@@ -604,9 +604,9 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
     "effort",
     "approvalPolicy",
   ]);
-  const approvalPolicy = input.approvalPolicy ?? "on-request";
-  if (approvalPolicy !== "on-request" && approvalPolicy !== "never") {
-    throw new ClientInputError(`${method} approvalPolicy must be on-request or never`);
+  const approvalPolicy = input.approvalPolicy ?? "untrusted";
+  if (approvalPolicy !== "untrusted" && approvalPolicy !== "on-request") {
+    throw new ClientInputError(`${method} approvalPolicy must be untrusted or on-request`);
   }
   if (!Array.isArray(input.input) || input.input.length === 0) {
     throw new ClientInputError(`${method} input must be a non-empty array`);

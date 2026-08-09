@@ -1,6 +1,6 @@
 # ADR 0021：将一次性免审批提示扩展到新线程首轮
 
-- 状态：已接受
+- 状态：已取代；由 [ADR 0022](0022-sandbox-aware-one-turn-auto-run.md) 取代
 - 决策日期：2026-08-09
 - 修订：[ADR 0020](0020-one-turn-prompt-free-approval.md)
 

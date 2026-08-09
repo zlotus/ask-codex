@@ -1,6 +1,6 @@
 # ADR 0021: Extend one-shot prompt-free approval to a new thread's first turn
 
-- Status: Accepted
+- Status: Superseded by [ADR 0022](0022-sandbox-aware-one-turn-auto-run.en.md)
 - Decision date: 2026-08-09
 - Amends: [ADR 0020](0020-one-turn-prompt-free-approval.en.md)
 

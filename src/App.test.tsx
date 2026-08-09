@@ -356,11 +356,11 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(screen.queryByText("Continue this later")).not.toBeInTheDocument());
   });
 
-  it("uses auto approval for one direct turn, then restores manual approval", async () => {
+  it("uses sandbox-aware auto-run for one direct turn, then restores strict approval", async () => {
     installBootstrapFixture();
     render(<App />);
 
-    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
     expect(autoToggle).toBeDisabled();
     fireEvent.click(await screen.findByText("Existing thread"));
     await screen.findByTitle("Existing thread");
@@ -382,10 +382,28 @@ describe("App thread settings lifecycle", () => {
     await sendMessage();
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       threadId: existingThread.id,
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
     }));
     expect(autoToggle).toBeChecked();
     expect(autoToggle).toBeDisabled();
+
+    act(() => socket.onRequest?.({
+      type: "request",
+      id: "sandbox-escalation",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: existingThread.id,
+        turnId: "turn-new",
+        itemId: "command-escalation",
+        command: "npm install",
+        cwd: existingThread.cwd,
+        reason: "Requires network access",
+        availableDecisions: ["accept", "decline"],
+      },
+    }));
+    expect(screen.getByText("Run this command?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(socket.respond).toHaveBeenCalledWith("sandbox-escalation", { decision: "accept" });
 
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "steer without consuming auto mode" },
@@ -417,16 +435,16 @@ describe("App thread settings lifecycle", () => {
     const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start");
     expect(turnStarts.at(-1)?.[1]).toEqual(expect.objectContaining({
       threadId: existingThread.id,
-      approvalPolicy: "on-request",
+      approvalPolicy: "untrusted",
     }));
   });
 
-  it("uses auto approval for the first turn of a configured new thread", async () => {
+  it("uses sandbox-aware auto-run for the first turn of a configured new thread", async () => {
     const fetchMock = installBootstrapFixture();
     render(<App />);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
     expect(autoToggle).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
@@ -442,7 +460,7 @@ describe("App thread settings lifecycle", () => {
     }));
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       threadId: newThread.id,
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
     }));
     expect(autoToggle).toBeChecked();
     expect(autoToggle).toBeDisabled();
@@ -459,7 +477,7 @@ describe("App thread settings lifecycle", () => {
     expect(autoToggle).toBeEnabled();
   });
 
-  it("restores manual approval when an armed new thread cannot be created", async () => {
+  it("restores strict approval when an armed new thread cannot be created", async () => {
     const baseRpc = socket.rpc.getMockImplementation();
     socket.rpc.mockImplementation((method: string, params?: unknown) => (
       method === "thread/start"
@@ -472,7 +490,7 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
     fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
-    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
     fireEvent.click(autoToggle);
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "start automatically" },
@@ -485,7 +503,7 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
   });
 
-  it("restores manual approval when an auto turn start fails", async () => {
+  it("restores strict approval when an auto turn start fails", async () => {
     const baseRpc = socket.rpc.getMockImplementation();
     socket.rpc.mockImplementation((method: string, params?: unknown) => (
       method === "turn/start"
@@ -497,7 +515,7 @@ describe("App thread settings lifecycle", () => {
 
     fireEvent.click(await screen.findByText("Existing thread"));
     await screen.findByTitle("Existing thread");
-    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
     fireEvent.click(autoToggle);
     await sendMessage();
 

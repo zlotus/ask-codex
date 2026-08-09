@@ -292,7 +292,7 @@ export default function App() {
   const [threadHydrationSignal, setThreadHydrationSignal] = useState(0);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
-  const [autoApprovalNextTurn, setAutoApprovalNextTurn] = useState(false);
+  const [autoRunNextTurn, setAutoRunNextTurn] = useState(false);
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
@@ -384,14 +384,14 @@ export default function App() {
 
   useEffect(() => {
     if (approvalSelectionRef.current !== state.selectedThreadId) {
-      setAutoApprovalNextTurn(false);
+      setAutoRunNextTurn(false);
       approvalSelectionRef.current = state.selectedThreadId;
     }
   }, [state.selectedThreadId]);
 
   useEffect(() => {
     if (previousActiveTurnIdRef.current && !state.activeTurnId) {
-      setAutoApprovalNextTurn(false);
+      setAutoRunNextTurn(false);
     }
     previousActiveTurnIdRef.current = state.activeTurnId;
   }, [state.activeTurnId]);
@@ -1738,7 +1738,7 @@ export default function App() {
   }, [rpc, state.currentThread]);
 
   const openNewThread = useCallback(() => {
-    setAutoApprovalNextTurn(false);
+    setAutoRunNextTurn(false);
     const defaults = {
       ...composerSettings,
       model: configuredDefaults.model || composerSettings.model,
@@ -1814,7 +1814,8 @@ export default function App() {
       throw new Error("A turn is already active; the message was not sent as a new turn");
     }
     const selectionGeneration = selectionGenerationRef.current;
-    const approvalPolicy = autoApprovalNextTurn ? "never" : "on-request";
+    const autoRunSelected = autoRunNextTurn;
+    const approvalPolicy = autoRunSelected ? "on-request" : "untrusted";
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
     let guardedThreadId = thread?.id;
@@ -1932,8 +1933,8 @@ export default function App() {
       });
       turnAccepted = true;
       const turn = extractTurn(result);
-      if (approvalPolicy === "never" && (!turn || turn.status !== "inProgress")) {
-        setAutoApprovalNextTurn(false);
+      if (autoRunSelected && (!turn || turn.status !== "inProgress")) {
+        setAutoRunNextTurn(false);
       }
       if (turn) {
         rememberImagePreviews(thread.id, turn.id, images, uploadedImages);
@@ -1944,8 +1945,8 @@ export default function App() {
       }
       void refreshThreads();
     } catch (error) {
-      if ((threadCreateAttempted || turnStartAttempted) && approvalPolicy === "never") {
-        setAutoApprovalNextTurn(false);
+      if ((threadCreateAttempted || turnStartAttempted) && autoRunSelected) {
+        setAutoRunNextTurn(false);
       }
       if (!turnAccepted) {
         if (uploadedImages.length > 0) void discardAttachments(uploadedImages, token);
@@ -1954,7 +1955,7 @@ export default function App() {
       throw error;
     }
   }, [
-    autoApprovalNextTurn,
+    autoRunNextTurn,
     captureThreadCwdAuthorityRevision,
     nextTurnSettings,
     refreshThreads,
@@ -2429,12 +2430,12 @@ export default function App() {
         )}
         <Composer
           activeTurnId={activeTurn?.id ?? null}
-          autoApprovalAvailable={Boolean(
+          autoRunAvailable={Boolean(
             draftThreadConfigured || (
               state.currentThread?.id && state.currentThread.id === state.selectedThreadId
             ),
           )}
-          autoApprovalNextTurn={autoApprovalNextTurn}
+          autoRunNextTurn={autoRunNextTurn}
           disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           settings={composerSettings}
@@ -2448,7 +2449,7 @@ export default function App() {
           }}
           onSend={sendMessage}
           onEnqueue={state.currentThread?.id === state.selectedThreadId ? enqueueMessage : undefined}
-          onAutoApprovalNextTurnChange={setAutoApprovalNextTurn}
+          onAutoRunNextTurnChange={setAutoRunNextTurn}
           onSteer={steerMessage}
           onStop={stopTurn}
         />
