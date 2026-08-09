@@ -479,8 +479,21 @@ async function installFixture(page) {
   };
 }
 
+async function ensureThreadSidebarOpen(page) {
+  const sidebarInViewport = await page.locator(".sidebar").evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return box.right > 0 && box.left < window.innerWidth && box.bottom > 0 && box.top < window.innerHeight;
+  });
+  if (!sidebarInViewport) {
+    const openThreads = page.getByRole("button", { name: "Open threads" });
+    if (await openThreads.isVisible()) await openThreads.click();
+  }
+}
+
 async function selectFixture(page) {
-  await page.getByRole("button", { name: "Renderer fixture", exact: true }).click();
+  const fixtureButton = page.getByRole("button", { name: "Renderer fixture", exact: true });
+  await ensureThreadSidebarOpen(page);
+  await fixtureButton.click();
   await page.getByText("The bounded renderer is in place.", { exact: false }).waitFor();
   await page.waitForTimeout(250);
 }
@@ -891,14 +904,43 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
     turn: { id: turnId, status: "completed", itemsView: "notLoaded", items: [] },
   });
   await dock.waitFor({ state: "hidden" });
+  const terminalPlan = page.getByRole("region", { name: "Plan" });
+  await terminalPlan.getByRole("status").waitFor();
+  const terminal = await terminalPlan.evaluate((element) => {
+    const notice = element.querySelector(".plan-terminal-notice");
+    return {
+      complete: true,
+      noticeVisible: Boolean(notice && notice.getClientRects().length > 0),
+      noticeContained: Boolean(notice && notice.scrollWidth <= notice.clientWidth),
+      spinnerStopped: !element.querySelector(".spin"),
+      horizontalOverflow: element.scrollWidth > element.clientWidth,
+    };
+  });
+  await page.screenshot({ path: `${screenshotPrefix}-terminal.png`, fullPage: true });
   fixture.notify("serverRequest/resolved", { requestId });
   await approval.waitFor({ state: "hidden" });
-  return { collapsed, expanded, dismissed: true };
+  return { collapsed, expanded, terminal, dismissed: true };
 }
 
 async function inspectMessageQueueDock(page, screenshotPath) {
   const dock = page.getByRole("region", { name: "Message queue" });
   await dock.waitFor();
+  const initialToggle = dock.getByRole("button", { name: /Expand message queue/ });
+  await initialToggle.waitFor();
+  await page.locator(".message-queue-dock__body").waitFor({ state: "hidden" });
+  const collapsed = await dock.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
+    return {
+      bodyHidden: !element.querySelector(".message-queue-dock__body"),
+      composerVisible: Boolean(composer && composer.top >= box.bottom - 1 && composer.bottom <= window.innerHeight),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      summaryCollapsed: element.querySelector(".message-queue-dock__summary")
+        ?.getAttribute("aria-expanded") === "false",
+    };
+  });
+  await initialToggle.click();
+  await page.locator(".message-queue-dock__body").waitFor({ state: "visible" });
   await dock.getByText("Context changed", { exact: true }).waitFor();
   const expanded = await dock.evaluate((element) => {
     const box = element.getBoundingClientRect();
@@ -929,15 +971,6 @@ async function inspectMessageQueueDock(page, screenshotPath) {
   const toggle = dock.getByRole("button", { name: /Collapse message queue/ });
   await toggle.click();
   await page.locator(".message-queue-dock__body").waitFor({ state: "hidden" });
-  const collapsed = await dock.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
-    return {
-      bodyHidden: !element.querySelector(".message-queue-dock__body"),
-      composerVisible: Boolean(composer && composer.top >= box.bottom - 1 && composer.bottom <= window.innerHeight),
-      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-    };
-  });
   await dock.getByRole("button", { name: /Expand message queue/ }).click();
   await page.locator(".message-queue-dock__body").waitFor({ state: "visible" });
   return { expanded, collapsed };
@@ -957,6 +990,82 @@ async function inspectThreadDialog(page) {
       sandbox: sandbox?.tagName === "SELECT" ? sandbox.value : null,
     };
   });
+}
+
+async function approvalControlSnapshot(page) {
+  const control = page.locator(".composer-approval-toggle");
+  await control.waitFor();
+  return control.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const footer = element.closest(".composer-footer")?.getBoundingClientRect();
+    const input = element.querySelector('input[type="checkbox"]');
+    return {
+      checked: input?.checked === true,
+      disabled: input?.disabled === true,
+      usableSize: box.width >= 44 && box.height >= 24,
+      contained: Boolean(footer && box.left >= footer.left && box.right <= footer.right),
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+}
+
+async function inspectOneTurnApproval(page, screenshotPaths) {
+  const control = page.locator(".composer-approval-toggle");
+  const input = page.getByLabel("Auto-run next turn without approval prompts");
+  const existing = await approvalControlSnapshot(page);
+  await control.click();
+  await page.waitForFunction(() => (
+    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === true
+  ));
+  const existingArmed = await approvalControlSnapshot(page);
+  await control.click();
+
+  const newThread = page.getByRole("button", { name: "New thread", exact: true });
+  await ensureThreadSidebarOpen(page);
+  await newThread.click();
+  const dialog = await inspectThreadDialog(page);
+  await page.screenshot({ path: screenshotPaths.dialog, fullPage: true });
+  await page.getByRole("button", { name: "Create thread", exact: true }).click();
+  await page.locator(".thread-settings-dialog").waitFor({ state: "hidden" });
+
+  const configuredDraft = await approvalControlSnapshot(page);
+  await control.click();
+  await page.waitForFunction(() => (
+    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === true
+  ));
+  const configuredDraftArmed = await approvalControlSnapshot(page);
+  await page.screenshot({ path: screenshotPaths.armedDraft, fullPage: true });
+
+  await selectFixture(page);
+  await page.waitForFunction(() => (
+    document.querySelector('[aria-label="Auto-run next turn without approval prompts"]')?.checked === false
+  ));
+  const clearedAfterThreadSelection = !(await input.isChecked());
+  return {
+    existing,
+    existingArmed,
+    dialog,
+    configuredDraft,
+    configuredDraftArmed,
+    clearedAfterThreadSelection,
+  };
+}
+
+function oneTurnApprovalInvalid(inspection) {
+  const snapshots = [
+    inspection.existing,
+    inspection.existingArmed,
+    inspection.configuredDraft,
+    inspection.configuredDraftArmed,
+  ];
+  return inspection.existing.disabled || inspection.existing.checked ||
+    inspection.configuredDraft.disabled || inspection.configuredDraft.checked ||
+    !inspection.existingArmed.checked || inspection.existingArmed.disabled ||
+    !inspection.configuredDraftArmed.checked || inspection.configuredDraftArmed.disabled ||
+    !inspection.clearedAfterThreadSelection ||
+    snapshots.some((snapshot) => (
+      !snapshot.usableSize || !snapshot.contained || snapshot.horizontalOverflow
+    ));
 }
 
 async function inspectThreadActionMenu(page) {
@@ -1279,6 +1388,12 @@ try {
       composerTextareaHeight: textarea?.height ?? 0,
       modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
       effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
+      autoApprovalDisabled: document.querySelector(
+        '[aria-label="Auto-run next turn without approval prompts"]',
+      )?.disabled === true,
+      autoApprovalChecked: document.querySelector(
+        '[aria-label="Auto-run next turn without approval prompts"]',
+      )?.checked === true,
       defaultLabels: [...document.querySelectorAll(".composer-setting option")]
         .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
       connection: document.querySelector(".sidebar-footer span:nth-child(2)")?.textContent,
@@ -1340,11 +1455,11 @@ try {
   const desktopComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-attachment.png`, fullPage: true });
   await page.getByRole("button", { name: "Remove visual-fixture.png" }).click();
-  await page.getByRole("button", { name: "New thread", exact: true }).click();
-  const desktopDialog = await inspectThreadDialog(page);
-  await page.screenshot({ path: `${outputDirectory}/desktop-new-thread.png`, fullPage: true });
-  await page.getByRole("button", { name: "Close", exact: true }).click();
-  await selectFixture(page);
+  const desktopOneTurnApproval = await inspectOneTurnApproval(page, {
+    dialog: `${outputDirectory}/desktop-new-thread.png`,
+    armedDraft: `${outputDirectory}/desktop-first-turn-auto.png`,
+  });
+  const desktopDialog = desktopOneTurnApproval.dialog;
   await page.screenshot({ path: `${outputDirectory}/desktop-readme.png`, fullPage: true });
   const desktopSentImage = await sendAndInspectFixtureImage(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-sent-image.png`, fullPage: true });
@@ -1388,6 +1503,12 @@ try {
     composerTextareaHeight: document.querySelector(".composer textarea")?.getBoundingClientRect().height ?? 0,
     modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
     effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
+    autoApprovalDisabled: document.querySelector(
+      '[aria-label="Auto-run next turn without approval prompts"]',
+    )?.disabled === true,
+    autoApprovalChecked: document.querySelector(
+      '[aria-label="Auto-run next turn without approval prompts"]',
+    )?.checked === true,
     defaultLabels: [...document.querySelectorAll(".composer-setting option")]
       .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
     composerSettingsVisible: [...document.querySelectorAll(".composer-setting")].every((element) => {
@@ -1494,6 +1615,10 @@ try {
     fixture,
     `${outputDirectory}/mobile-plan`,
   );
+  const mobileOneTurnApproval = await inspectOneTurnApproval(page, {
+    dialog: `${outputDirectory}/mobile-first-turn-dialog.png`,
+    armedDraft: `${outputDirectory}/mobile-first-turn-auto.png`,
+  });
 
   const result = {
     desktop: {
@@ -1517,6 +1642,7 @@ try {
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
       activePlan: desktopActivePlan,
+      oneTurnApproval: desktopOneTurnApproval,
     },
     mobile: {
       ...mobileBefore,
@@ -1539,6 +1665,7 @@ try {
       activeReasoning: mobileActiveReasoning,
       failedSubmission: mobileFailedSubmission,
       activePlan: mobileActivePlan,
+      oneTurnApproval: mobileOneTurnApproval,
       splitActionHidden,
     },
     consoleErrors,
@@ -1555,7 +1682,10 @@ try {
     desktop.composerTextareaHeight > 34 ||
     desktop.modelSelection !== "gpt-5-codex" ||
     desktop.effortSelection !== "high" ||
+    !desktop.autoApprovalDisabled ||
+    desktop.autoApprovalChecked ||
     desktop.defaultLabels > 0 ||
+    oneTurnApprovalInvalid(desktopOneTurnApproval) ||
     desktopComposerImage.count !== 1 ||
     !desktopComposerImage.previewLoaded ||
     !desktopComposerImage.previewContained ||
@@ -1632,6 +1762,7 @@ try {
     !desktopMessageQueue.expanded.textContained ||
     desktopMessageQueue.expanded.horizontalOverflow ||
     !desktopMessageQueue.collapsed.bodyHidden ||
+    !desktopMessageQueue.collapsed.summaryCollapsed ||
     !desktopMessageQueue.collapsed.composerVisible ||
     desktopMessageQueue.collapsed.horizontalOverflow ||
     !desktopUsage.fitsViewport ||
@@ -1675,8 +1806,11 @@ try {
     mobileBefore.composerTextareaHeight > 34 ||
     mobileBefore.modelSelection !== "gpt-5-codex" ||
     mobileBefore.effortSelection !== "high" ||
+    !mobileBefore.autoApprovalDisabled ||
+    mobileBefore.autoApprovalChecked ||
     mobileBefore.defaultLabels > 0 ||
     !mobileBefore.composerSettingsVisible ||
+    oneTurnApprovalInvalid(mobileOneTurnApproval) ||
     mobileComposerImage.count !== 1 ||
     !mobileComposerImage.previewLoaded ||
     !mobileComposerImage.previewContained ||
@@ -1746,6 +1880,7 @@ try {
     !mobileMessageQueue.expanded.textContained ||
     mobileMessageQueue.expanded.horizontalOverflow ||
     !mobileMessageQueue.collapsed.bodyHidden ||
+    !mobileMessageQueue.collapsed.summaryCollapsed ||
     !mobileMessageQueue.collapsed.composerVisible ||
     mobileMessageQueue.collapsed.horizontalOverflow ||
     !mobileUsage.fitsViewport ||
@@ -1845,6 +1980,11 @@ try {
     desktopActivePlan.expanded.horizontalOverflow ||
     !desktopActivePlan.expanded.noOverlap ||
     !desktopActivePlan.expanded.summaryExpanded ||
+    !desktopActivePlan.terminal.complete ||
+    !desktopActivePlan.terminal.noticeVisible ||
+    !desktopActivePlan.terminal.noticeContained ||
+    !desktopActivePlan.terminal.spinnerStopped ||
+    desktopActivePlan.terminal.horizontalOverflow ||
     !desktopActivePlan.dismissed ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
@@ -1902,6 +2042,11 @@ try {
     mobileActivePlan.expanded.horizontalOverflow ||
     !mobileActivePlan.expanded.noOverlap ||
     !mobileActivePlan.expanded.summaryExpanded ||
+    !mobileActivePlan.terminal.complete ||
+    !mobileActivePlan.terminal.noticeVisible ||
+    !mobileActivePlan.terminal.noticeContained ||
+    !mobileActivePlan.terminal.spinnerStopped ||
+    mobileActivePlan.terminal.horizontalOverflow ||
     !mobileActivePlan.dismissed ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||

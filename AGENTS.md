@@ -44,8 +44,12 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
 ## 安全不变量
 
 - 绝不暴露任意 app-server RPC 方法，也不要直接透传浏览器参数；必须根据允许列表重新构建参数。
-- 在网关强制保持 `approvalPolicy: "on-request"` 和
-  `approvalsReviewer: "user"`。
+- 线程创建、恢复和队列消费必须在网关固定 `approvalPolicy: "on-request"`；直接
+  `turn/start` 只允许逐字段重建后的 `on-request` 或 `never`，并始终由网关注入
+  `approvalsReviewer: "user"`。产品 UI 只能在已有空闲线程，或已完成配置但尚未创建的新线程
+  草稿上，为下一次直接轮次显式启用 `never`。每个 turn 均默认手动，用户必须逐轮开启；
+  Working 时禁止切换，轮次结束或启动失败后恢复默认手动。新线程的 `thread/start`、steering、
+  队列和后续 Ask Codex 轮次不得继承该选择。`never` 不得扩大沙箱权限。
 - 绝不将 `ASK_CODEX_TOKEN` 放进 URL，也不要把它传给 Codex、MCP 服务器、hook
   或命令。WebSocket 认证在第一条消息帧中完成。
 - 保持默认仅监听回环地址、严格的 Origin/Host 检查、连接和请求限制，以及非回环地址必须

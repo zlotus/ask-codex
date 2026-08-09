@@ -2,7 +2,7 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-08-09
 
 ## Current Milestone
 
@@ -17,12 +17,27 @@ swallow a newer Plan notification is also fixed through monotonic gateway
 revisions. Multi-type file input, constrained native fork, text steering, the
 aggregate long-history DOM budget, cwd continuity, Agent-output handoff, and
 gateway hardening remain in place. Persistent Activity audit is the next P3
-candidate and has not started.
+candidate and has not started. One-turn prompt-free mode operates per turn:
+each turn defaults to manual, while an existing idle thread or configured
+new-thread draft can explicitly use `never` for its next direct turn and
+restores manual mode after completion or a failed start. Thread creation, queue,
+steering, and experimental settings APIs are not involved, and the sandbox is
+unchanged.
 
 ## Current Baseline
 
 The implementation currently provides:
 
+- A one-turn prompt-free control in the composer, editable for the currently
+  selected existing idle thread or after a new-thread draft is configured.
+  Every turn defaults to manual. Once explicitly armed, the next direct
+  `turn/start` uses `approvalPolicy: "never"`; it remains visible but disabled
+  while Working and clears after completion, cancellation, failure, or an
+  invalid start result, so each later turn must be armed again. A new thread's
+  `thread/start`, resume, queue consumption, and steering remain fixed to manual
+  approval; only the separate first `turn/start` after creation may use the
+  draft's one-shot choice. The gateway always injects the user reviewer, and
+  `never` does not widen the current sandbox.
 - React desktop and mobile layouts for listing, searching, creating, resuming,
   and refreshing native Codex threads, with a 44-pixel conversation header and
   an always-editable responsive multiline composer where Enter inserts a
@@ -52,9 +67,10 @@ The implementation currently provides:
   lists and current selection. Deletion also removes that thread's browser-local
   image and file copies from memory and IndexedDB.
 - The composer can add non-empty plain text for the current existing thread to
-  a server-persistent outbox. Its per-thread panel rereads when another
-  authenticated browser changes the queue. Only a read-synchronized browser on
-  an idle thread can send after an explicit click. Startup, reconnect, Codex
+  a server-persistent outbox. Its per-thread panel is collapsed by default and
+  rereads when another authenticated browser changes the queue. Only a
+  read-synchronized browser on an idle thread can send after an explicit click.
+  Startup, reconnect, Codex
   ready, timers, and active turns never consume the queue in the background,
   and queue items never become steering. Stable reads check runtime state and
   the last turn before dispatch. Changed context, busy or unavailable threads,
@@ -129,7 +145,10 @@ The implementation currently provides:
   structured plan also appears above the composer as a compact normal-layout
   summary that expands into a bounded scrolling step list; the summary
   disappears when the turn ends while the historical plan stays in its original
-  turn. Realtime Plans and recovery snapshots use one strict bounded projection.
+  turn. If the last Plan snapshot still contains running or pending steps, the
+  historical view labels it as the last state when the turn ended and stops its
+  animation without fabricating completion. Realtime Plans and recovery snapshots
+  use one strict bounded projection.
   The gateway caches each thread and turn's latest complete notification and
   attaches it to read-only turn results and lifecycle notifications. A Plan
   object, explicit unrecoverable `null`, or absent unknown cache field replaces,
@@ -230,18 +249,22 @@ The implementation currently provides:
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
-- Enforced `on-request` user approval, fail-closed unsupported permissions,
-  loopback defaults, token and Origin checks, connection and request limits,
-  and exact trusted-public-origin support.
+- Enforced `on-request` user approval for thread creation, resume, queue
+  consumption, and every ordinary direct turn. Only the explicitly selected
+  next direct turn on an existing idle thread or configured new-thread draft
+  may use `never`; new-thread creation itself remains fixed to `on-request`.
+  Fail-closed unsupported permissions, loopback defaults, token and Origin
+  checks, connection and request limits, and exact trusted-public-origin support
+  remain.
 - An English and Chinese Cloudflare Tunnel deployment guide for loopback-hosted
   Cloudflare Access plus an independent Ask Codex token gate.
 - Deterministic desktop and mobile production visual fixtures that do not
   create a real Codex turn.
 
-This file describes the current verified handoff baseline on `main`. Another
-device can pull the latest `origin/main` and resume from `Next` without relying
-on prior chat history; only checks explicitly listed under `Verification` count
-as executed.
+This file describes the verified handoff baseline in its containing commit.
+Source and project documentation still move between devices through Git;
+another device can continue after obtaining the commit that contains this
+file. Only checks explicitly listed under `Verification` count as executed.
 
 ## Incomplete Work And Boundaries
 
@@ -356,6 +379,15 @@ commitment.
   redirect approval requests away from the browser that started or resumed it.
   Ordinary reconnection and Codex restart may retry bounded read-only requests,
   never unconfirmed writes.
+- One-turn `never` may affect only the next direct turn explicitly started by
+  the user. When a new-thread draft receives a real ID, the choice may transfer
+  only to the first turn in the same submission. The UI must not persist the
+  control or carry it to another thread, and later Ask Codex writes must
+  explicitly restore `on-request`. Because the
+  upstream setting may remain sticky until that write, this UI does not
+  guarantee another Codex client's approval behavior during the intervening
+  window and must not remove it through an ownership-changing automatic
+  `thread/resume`.
 - `turn/steer` must remain bound to the `expectedTurnId` captured at submission,
   accept only field-rebuilt text input, and fail closed when the response
   `turnId` differs. Recovery must not replay steering automatically, and a
@@ -387,18 +419,20 @@ commitment.
 
 ## Verification
 
-Verification for this round was completed on 2026-08-07 with Node.js
+The current worktree was verified on 2026-08-09 with Node.js
 `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
-- Current stable and experimental TypeScript bindings were generated from the
-  installed CLI and compared for `ThreadResumeResponse.sandbox`,
+- On 2026-08-07, stable and experimental TypeScript bindings were generated
+  from the same CLI version and compared for `ThreadResumeResponse.sandbox`,
   `ThreadSettingsUpdatedNotification.threadSettings.sandboxPolicy`,
   `CommandExecutionApprovalDecision`, `ReviewDecision`, `TurnStartResponse`,
   `TurnSteerParams`, `TurnSteerResponse`, the complete-snapshot
   `TurnPlanUpdatedNotification`, `ThreadForkParams`, `ThreadForkResponse`,
   `Thread.historyMode`, official Plan-free Turn read structures, and the
-  notification envelope's `emittedAtMs`. Queue review also covered stable
-  `TurnStartParams.clientUserMessageId` and `thread/inject_items`; their schemas
+  notification envelope's `emittedAtMs`. This round also checked the stable
+  `TurnStartParams.approvalPolicy` union of `on-request | never`. Queue review
+  covered stable `TurnStartParams.clientUserMessageId` and
+  `thread/inject_items`; their schemas
   do not establish the idempotency scope, retention, and conflict semantics
   needed to replay an unknown write, so the implementation submits neither the
   former nor the latter. Ordinary file input previously received live protocol
@@ -408,23 +442,37 @@ Verification for this round was completed on 2026-08-07 with Node.js
   solely for automated checks.
 - `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
   passed.
-- `NODE_ENV=test npm test` passed: 40 test files and 672 tests. Server tests ran
+- `NODE_ENV=test npm test` passed: 41 test files and 683 tests. Server tests ran
   in an environment that permits loopback socket binding. Queue coverage
   includes atomic persistence, corrupt and over-budget fail-closed startup,
   restart recovery, cross-client revisions, busy threads, context changes,
   unknown send results, approval ownership, and browser state. Plan coverage
-  includes revision comparison across the resync race and conservative replay
-  when a revision is absent.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-message-queue-visual npm run
-  check:visual` passed against the current production build. Desktop and
-  390x844 mobile fixtures covered approvals, project navigation, Activity,
+  includes revision comparison across the resync race, conservative replay
+  when a revision is absent, and stopping animation when a terminal turn retains
+  an `in_progress` Plan snapshot. Approval coverage includes one-shot `never`
+  for existing and first-turn threads, explicit later `on-request`, and manual
+  restoration after creation or start failure.
+- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4444
+  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-turn-defaults-visual-final2 node
+  scripts/visual-check.mjs` passed against the current production build.
+  Desktop and 390x844 mobile fixtures covered approvals, project navigation, Activity,
   Skills, Usage, Agent-output downloads, rich content, the fixed reasoning slot,
   images, Plans, the running-turn steering composer, the cross-device queue,
-  the attachment `+` menu, and ordinary-file history cards. Queue actions,
-  status text, and the composer remained usable while expanded or collapsed;
+  the one-turn approval control, the attachment `+` menu, and ordinary-file
+  history cards. They verified Queue starts collapsed, a terminal Plan stops
+  spinning, and both an existing thread and configured new-thread draft can arm
+  one turn before clearing the choice on selection. Queue actions, status text,
+  and the composer remained usable while expanded or collapsed;
   the unavailable state also remained intact when no same-Origin Blob was
   present. There was no horizontal overflow, clipping, content overlap, console
   error, or page error. The thread action menu included and contained Fork in
   both viewports. Deterministic browser fixtures intercepted every RPC, upload,
   and download and created no real Codex turn or fork.
+- A deliberately invalid `approvalPolicy` capability probe against the live
+  service on port 4444 returned the expected `on-request | never` gateway
+  validation. This proves the running process already has the relevant RPC
+  allowlist. The probe did not reach app-server or create a real turn, so the
+  first-turn UI extension requires no gateway restart that would interrupt this
+  session.
+- Local Markdown-link validation covered 14 related Chinese and English
+  documents, and every target resolved.

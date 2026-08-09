@@ -215,7 +215,12 @@ export function TurnView({
           {historyDetail?.error && <span role="alert">Could not load full detail: {historyDetail.error}</span>}
         </div>
       )}
-      {turn.plan && <PlanView plan={turn.plan} />}
+      {turn.plan && (
+        <PlanView
+          plan={turn.plan}
+          terminal={turn.status !== "inProgress"}
+        />
+      )}
       {renderItems(turn.items, disclosure, fileAttachments, imagePreviewUrls, onDownloadFile)}
       {turn.error != null && (
         <div className="turn-error" role="alert">

@@ -964,7 +964,44 @@ describe("browser RPC policy", () => {
       threadId: "thread-1",
       input: [{ type: "text", text: "Continue", text_elements: [] }],
       cwd: "/workspace/project",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
     });
+  });
+
+  it("defaults turn starts to manual approval and allows one explicit never policy", () => {
+    const input = [{ type: "text", text: "Continue", text_elements: [] }];
+
+    expect(sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input,
+    })).toEqual({
+      threadId: "thread-1",
+      input,
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+    });
+    expect(sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input,
+      approvalPolicy: "never",
+    })).toEqual({
+      threadId: "thread-1",
+      input,
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+    });
+  });
+
+  it.each([
+    [{ approvalPolicy: "unless-trusted" }, "approvalPolicy must be on-request or never"],
+    [{ approvalsReviewer: "user" }, "does not allow param: approvalsReviewer"],
+  ])("rejects an unsupported turn approval override %#", (override, message) => {
+    expect(() => sanitizeBrowserRpcParams("turn/start", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      ...override,
+    })).toThrow(message);
   });
 
   it("rebuilds ordered text and uploaded-image input without accepting browser paths", () => {
@@ -996,6 +1033,8 @@ describe("browser RPC policy", () => {
     ]))
       .toEqual({
         threadId: "thread-1",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
         input: [
           { type: "localImage", path: "/private/first.png", detail: "high" },
           { type: "text", text: "Compare these images", text_elements: [] },

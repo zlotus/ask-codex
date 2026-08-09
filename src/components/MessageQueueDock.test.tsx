@@ -17,7 +17,7 @@ const queued: MessageQueueItem = {
 };
 
 describe("MessageQueueDock", () => {
-  it("expands queued items and exposes explicit send, cancel, and refresh actions", () => {
+  it("starts collapsed and exposes explicit send, cancel, and refresh actions after expanding", () => {
     const onRefresh = vi.fn();
     const onSend = vi.fn();
     const onCancel = vi.fn();
@@ -33,6 +33,12 @@ describe("MessageQueueDock", () => {
         onCancel={onCancel}
       />,
     );
+    const toggle = screen.getByRole("button", { name: /Expand message queue/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Continue the queued task")).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Continue the queued task")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Send queued message" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel queued message" }));
@@ -58,6 +64,7 @@ describe("MessageQueueDock", () => {
         onCancel={vi.fn()}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /Expand message queue/ }));
     expect(screen.getByText("Outcome unknown")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Send/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dismiss after checking thread history" }))

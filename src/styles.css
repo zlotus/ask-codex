@@ -2518,6 +2518,13 @@ details[open] > summary .details-chevron {
   font-size: 11px;
 }
 
+.plan-terminal-notice {
+  margin: 7px 0 0 22px;
+  color: #856328;
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
 .plan-step {
   display: grid;
   grid-template-columns: 15px minmax(0, 1fr);
@@ -2542,6 +2549,12 @@ details[open] > summary .details-chevron {
 .plan-step--inProgress {
   color: #2d694a;
   font-weight: 650;
+}
+
+.plan-list--terminal .plan-step--in_progress,
+.plan-list--terminal .plan-step--inProgress {
+  color: #6f756f;
+  font-weight: 500;
 }
 
 .turn-error {
@@ -3262,6 +3275,74 @@ details[open] > summary .details-chevron {
   color: #52675a;
   background: #edf1ed;
   border-color: #d4ddd6;
+}
+
+.composer-approval-toggle {
+  position: relative;
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 26px;
+  gap: 4px;
+  color: #707670;
+  background: #f3f2ed;
+  border: 1px solid #deddd6;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.composer-approval-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.composer-approval-toggle__track {
+  position: relative;
+  width: 22px;
+  height: 12px;
+  background: #c8cbc6;
+  border-radius: 6px;
+  transition: background 140ms ease;
+}
+
+.composer-approval-toggle__track > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(28, 31, 28, 0.2);
+  transition: transform 140ms ease;
+}
+
+.composer-approval-toggle--active {
+  color: #984d42;
+  background: #fff0ed;
+  border-color: #dfaaa2;
+}
+
+.composer-approval-toggle--active .composer-approval-toggle__track {
+  background: #c85b4e;
+}
+
+.composer-approval-toggle--active .composer-approval-toggle__track > span {
+  transform: translateX(10px);
+}
+
+.composer-approval-toggle:has(input:focus-visible) {
+  outline: 2px solid rgba(72, 143, 99, 0.32);
+  outline-offset: 1px;
+}
+
+.composer-approval-toggle:has(input:disabled) {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .composer-add-control {

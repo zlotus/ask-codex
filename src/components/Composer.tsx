@@ -8,6 +8,7 @@ import {
   Plus,
   RotateCcw,
   Send,
+  ShieldOff,
   Sparkles,
   Square,
   X,
@@ -32,6 +33,8 @@ const MAX_TEXTAREA_HEIGHT = 128;
 
 interface ComposerProps {
   activeTurnId?: string | null;
+  autoApprovalAvailable?: boolean;
+  autoApprovalNextTurn?: boolean;
   disabled: boolean;
   running: boolean;
   settings: ThreadSettings;
@@ -43,6 +46,7 @@ interface ComposerProps {
     files: readonly File[],
   ) => Promise<void> | void;
   onEnqueue?: (text: string) => Promise<void> | void;
+  onAutoApprovalNextTurnChange?: (enabled: boolean) => void;
   onSteer?: (text: string, expectedTurnId: string) => Promise<void> | void;
   onStop: () => Promise<void> | void;
 }
@@ -83,6 +87,8 @@ function clipboardFiles(data: DataTransfer): File[] {
 
 export function Composer({
   activeTurnId = null,
+  autoApprovalAvailable = true,
+  autoApprovalNextTurn = false,
   disabled,
   running,
   settings,
@@ -90,6 +96,7 @@ export function Composer({
   onSettingsChange,
   onSend,
   onEnqueue,
+  onAutoApprovalNextTurnChange = () => {},
   onSteer,
   onStop,
 }: ComposerProps) {
@@ -123,6 +130,7 @@ export function Composer({
       (images.length === 0 || imageInputSupported));
   const canEnqueue = !controlsDisabled && Boolean(onEnqueue) && Boolean(value.trim()) &&
     images.length === 0 && files.length === 0;
+  const autoApprovalDisabled = running || sending || !autoApprovalAvailable;
 
   useEffect(() => {
     imagesRef.current = images;
@@ -498,6 +506,24 @@ export function Composer({
               ? <LoaderCircle className="composer-spinner" size={15} aria-hidden="true" />
               : <ListPlus size={15} aria-hidden="true" />}
           </button>
+          <label
+            className={`composer-approval-toggle${autoApprovalNextTurn ? " composer-approval-toggle--active" : ""}`}
+            title={autoApprovalAvailable
+              ? "Run the next turn without approval prompts; sandbox limits still apply"
+              : "Choose an idle thread or finish configuring a new one before enabling one-turn auto mode"}
+          >
+            <ShieldOff size={13} aria-hidden="true" />
+            <input
+              type="checkbox"
+              aria-label="Auto-run next turn without approval prompts"
+              checked={autoApprovalNextTurn}
+              disabled={autoApprovalDisabled}
+              onChange={(event) => onAutoApprovalNextTurnChange(event.target.checked)}
+            />
+            <span className="composer-approval-toggle__track" aria-hidden="true">
+              <span />
+            </span>
+          </label>
           <label className="composer-setting" title="Model for the next turn">
             <Sparkles size={12} aria-hidden="true" />
             <select

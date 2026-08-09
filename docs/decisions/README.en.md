@@ -6,7 +6,7 @@ the records relevant to the current task.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-codex-app-server-stdio.md) | Accepted | Use the documented Codex app-server protocol over JSONL stdio. |
-| [0002](0002-security-gateway-and-manual-approval.md) | Accepted | Keep the gateway as a strict policy boundary and enforce manual approval. |
+| [0002](0002-security-gateway-and-manual-approval.md) | Accepted; amended by 0020 | Keep the gateway as a strict policy boundary and enforce manual approval. |
 | [0003](0003-cloudflare-access-dual-gate.md) | Accepted | Use Cloudflare Access and the Ask Codex token as independent remote-access gates. |
 | [0004](0004-versioned-project-context.md) | Accepted | Keep concise cross-device development context in versioned documents. |
 | [0005](0005-thread-and-turn-settings.md) | Accepted; amended by 0006 | Separate thread identity and sandbox settings from next-turn model controls. |
@@ -24,6 +24,8 @@ the records relevant to the current task.
 | [0017](0017-constrained-file-input-and-browser-local-copies.en.md) | Accepted | Submit ordinary files through temporary gateway context and retain bounded download copies only in the same-Origin browser. |
 | [0018](0018-server-persistent-explicit-message-queue.en.md) | Accepted | Persist cross-device text in a server outbox and consume it only through an explicitly synchronized browser without replay. |
 | [0019](0019-monotonic-plan-revisions-during-resync.en.md) | Accepted | Use monotonic gateway revisions so an older resync snapshot cannot swallow a newer buffered Plan. |
+| [0020](0020-one-turn-prompt-free-approval.en.md) | Accepted; amended by 0021 | Keep manual approval as the default while allowing one explicitly armed prompt-free turn on an existing idle thread. |
+| [0021](0021-first-turn-one-shot-prompt-free-approval.en.md) | Accepted | Default every turn to manual and extend the explicit one-shot choice to a configured new thread's first turn. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

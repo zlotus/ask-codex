@@ -292,6 +292,7 @@ export default function App() {
   const [threadHydrationSignal, setThreadHydrationSignal] = useState(0);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
+  const [autoApprovalNextTurn, setAutoApprovalNextTurn] = useState(false);
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
@@ -301,6 +302,8 @@ export default function App() {
   const toastIdRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
+  const approvalSelectionRef = useRef<string | null>(state.selectedThreadId);
+  const previousActiveTurnIdRef = useRef<string | null>(state.activeTurnId);
   const currentThreadRef = useRef<CodexThread | null>(state.currentThread);
   const historyLoadsRef = useRef(new Set<string>());
   const detailLoadsRef = useRef(new Set<string>());
@@ -378,6 +381,20 @@ export default function App() {
     selectedThreadIdRef.current = state.selectedThreadId;
     currentThreadRef.current = state.currentThread;
   }, [state.currentThread, state.selectedThreadId]);
+
+  useEffect(() => {
+    if (approvalSelectionRef.current !== state.selectedThreadId) {
+      setAutoApprovalNextTurn(false);
+      approvalSelectionRef.current = state.selectedThreadId;
+    }
+  }, [state.selectedThreadId]);
+
+  useEffect(() => {
+    if (previousActiveTurnIdRef.current && !state.activeTurnId) {
+      setAutoApprovalNextTurn(false);
+    }
+    previousActiveTurnIdRef.current = state.activeTurnId;
+  }, [state.activeTurnId]);
 
   useEffect(() => {
     const registry = imagePreviewRegistryRef.current!;
@@ -1721,6 +1738,7 @@ export default function App() {
   }, [rpc, state.currentThread]);
 
   const openNewThread = useCallback(() => {
+    setAutoApprovalNextTurn(false);
     const defaults = {
       ...composerSettings,
       model: configuredDefaults.model || composerSettings.model,
@@ -1796,6 +1814,7 @@ export default function App() {
       throw new Error("A turn is already active; the message was not sent as a new turn");
     }
     const selectionGeneration = selectionGenerationRef.current;
+    const approvalPolicy = autoApprovalNextTurn ? "never" : "on-request";
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
     let guardedThreadId = thread?.id;
@@ -1806,6 +1825,8 @@ export default function App() {
     let uploadedImages: UploadedAttachment[] = [];
     let uploadedFiles: UploadedFileAttachment[] = [];
     let turnAccepted = false;
+    let threadCreateAttempted = false;
+    let turnStartAttempted = false;
     const assertSelectionUnchanged = (): void => {
       if (selectionGeneration !== selectionGenerationRef.current) {
         throw new Error("Thread changed while preparing the message; nothing was sent");
@@ -1830,6 +1851,7 @@ export default function App() {
       assertSelectionUnchanged();
       if (!thread) {
         const threadStartAuthorityRevision = captureThreadCwdAuthorityRevision();
+        threadCreateAttempted = true;
         const result = await rpc("thread/start", {
           cwd,
           approvalPolicy: "on-request",
@@ -1852,6 +1874,7 @@ export default function App() {
         threadListMutationEpochRef.current += 1;
         rememberPendingCanonicalThread(pendingCanonicalThreadIdsRef.current, thread.id);
         selectedThreadIdRef.current = thread.id;
+        approvalSelectionRef.current = thread.id;
         currentThreadRef.current = thread;
         dispatch({ type: "setCurrentThread", thread });
         if (createdCwd !== cwd) dispatch({ type: "settings", settings: { cwd: createdCwd } });
@@ -1889,6 +1912,7 @@ export default function App() {
         }
       }
       assertSelectionUnchanged();
+      turnStartAttempted = true;
       const result = await rpc("turn/start", {
         threadId: thread.id,
         input: [
@@ -1903,10 +1927,14 @@ export default function App() {
           })),
         ],
         cwd,
+        approvalPolicy,
         ...nextTurnOverrides(nextTurnSettings),
       });
       turnAccepted = true;
       const turn = extractTurn(result);
+      if (approvalPolicy === "never" && (!turn || turn.status !== "inProgress")) {
+        setAutoApprovalNextTurn(false);
+      }
       if (turn) {
         rememberImagePreviews(thread.id, turn.id, images, uploadedImages);
         rememberFileAttachments(thread.id, turn.id, files, uploadedFiles);
@@ -1916,6 +1944,9 @@ export default function App() {
       }
       void refreshThreads();
     } catch (error) {
+      if ((threadCreateAttempted || turnStartAttempted) && approvalPolicy === "never") {
+        setAutoApprovalNextTurn(false);
+      }
       if (!turnAccepted) {
         if (uploadedImages.length > 0) void discardAttachments(uploadedImages, token);
         if (uploadedFiles.length > 0) void discardFileAttachments(uploadedFiles, token);
@@ -1923,6 +1954,7 @@ export default function App() {
       throw error;
     }
   }, [
+    autoApprovalNextTurn,
     captureThreadCwdAuthorityRevision,
     nextTurnSettings,
     refreshThreads,
@@ -2397,6 +2429,12 @@ export default function App() {
         )}
         <Composer
           activeTurnId={activeTurn?.id ?? null}
+          autoApprovalAvailable={Boolean(
+            draftThreadConfigured || (
+              state.currentThread?.id && state.currentThread.id === state.selectedThreadId
+            ),
+          )}
+          autoApprovalNextTurn={autoApprovalNextTurn}
           disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           settings={composerSettings}
@@ -2410,6 +2448,7 @@ export default function App() {
           }}
           onSend={sendMessage}
           onEnqueue={state.currentThread?.id === state.selectedThreadId ? enqueueMessage : undefined}
+          onAutoApprovalNextTurnChange={setAutoApprovalNextTurn}
           onSteer={steerMessage}
           onStop={stopTurn}
         />

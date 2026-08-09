@@ -46,7 +46,7 @@ export function MessageQueueDock({
   onSend,
   onCancel,
 }: MessageQueueDockProps) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const contentId = useId();
   return (
     <section className="message-queue-dock" aria-label="Message queue">

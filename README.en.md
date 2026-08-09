@@ -54,6 +54,14 @@ accepts arbitrary paths.
   generation.
 - Review command and file-change approvals in the browser, and keep captured
   approval rationale attached to the matching command for the browser session.
+- Every turn defaults to manual approval. An existing idle thread or a
+  configured new-thread draft can temporarily arm the next direct turn to run
+  without approval prompts. The control is disabled while Working, restores
+  manual approval after the turn ends or fails to start, and must be armed again
+  for each later turn. New-thread creation, resume, cross-device queued sends,
+  and steering always use manual policy; only the separate first `turn/start`
+  may carry the draft's one-shot choice. `never` does not widen the sandbox and
+  needs no experimental settings API.
 - Answer structured questions from `request_user_input`.
 - Choose the absolute working directory and sandbox when starting a thread,
   then select the next-turn model and reasoning effort beside the composer.

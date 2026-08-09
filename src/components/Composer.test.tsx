@@ -32,6 +32,42 @@ describe("Composer", () => {
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
   });
 
+  it("arms one-turn auto approval only in an eligible idle composer", () => {
+    const onAutoApprovalNextTurnChange = vi.fn();
+    const props = {
+      disabled: false,
+      running: false,
+      settings: { cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" } as const,
+      models,
+      onSettingsChange: vi.fn(),
+      onSend: vi.fn(),
+      onStop: vi.fn(),
+      onAutoApprovalNextTurnChange,
+    };
+    const { rerender } = render(<Composer {...props} />);
+    const toggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+
+    expect(toggle).toBeEnabled();
+    fireEvent.click(toggle);
+    expect(onAutoApprovalNextTurnChange).toHaveBeenCalledWith(true);
+
+    rerender(<Composer {...props} autoApprovalNextTurn running />);
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeDisabled();
+
+    rerender(<Composer {...props} disabled autoApprovalNextTurn />);
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeEnabled();
+
+    rerender(<Composer {...props} autoApprovalAvailable={false} />);
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(toggle.closest("label")).toHaveAttribute(
+      "title",
+      "Choose an idle thread or finish configuring a new one before enabling one-turn auto mode",
+    );
+  });
+
   it("normalizes effort when selecting a model for the next turn", () => {
     const onSettingsChange = vi.fn();
     render(

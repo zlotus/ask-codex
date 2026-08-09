@@ -596,7 +596,18 @@ function sanitizeTextUserInput(
 function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   const method = "turn/start";
   const input = paramsObject(method, params);
-  assertOnlyKeys(method, input, ["threadId", "input", "cwd", "model", "effort"]);
+  assertOnlyKeys(method, input, [
+    "threadId",
+    "input",
+    "cwd",
+    "model",
+    "effort",
+    "approvalPolicy",
+  ]);
+  const approvalPolicy = input.approvalPolicy ?? "on-request";
+  if (approvalPolicy !== "on-request" && approvalPolicy !== "never") {
+    throw new ClientInputError(`${method} approvalPolicy must be on-request or never`);
+  }
   if (!Array.isArray(input.input) || input.input.length === 0) {
     throw new ClientInputError(`${method} input must be a non-empty array`);
   }
@@ -657,6 +668,8 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   const output: Record<string, unknown> = {
     threadId: requiredString(method, input, "threadId"),
     input: sanitizedInput,
+    approvalPolicy,
+    approvalsReviewer: "user",
   };
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));

@@ -52,8 +52,16 @@ accepted decision. Record only verification that was actually run.
 
 - Never expose arbitrary app-server RPC methods or pass browser params through
   without rebuilding them from an allowlist.
-- Keep `approvalPolicy: "on-request"` and `approvalsReviewer: "user"` enforced
-  at the gateway.
+- Fix `approvalPolicy: "on-request"` at the gateway for thread creation,
+  resume, and queue consumption. Direct `turn/start` may accept only a
+  field-rebuilt `on-request` or `never`, and the gateway must always inject
+  `approvalsReviewer: "user"`. The product UI may explicitly arm `never` only
+  for the next direct turn on an existing idle thread or a configured but
+  not-yet-created new-thread draft. Every turn defaults to manual, and the user
+  must arm each automatic turn separately. The control must be disabled while
+  Working and restore the manual default after completion or a failed start.
+  A new thread's `thread/start`, steering, queued sends, and later Ask Codex
+  turns must not inherit that choice. `never` must not widen sandbox permissions.
 - Never put `ASK_CODEX_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
   or commands. WebSocket authentication happens in the first message frame.
 - Keep loopback-only defaults, strict Origin/Host checks, connection and request

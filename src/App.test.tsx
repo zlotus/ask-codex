@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
 import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { StrictMode } from "react";
@@ -333,6 +333,9 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/list", {
       threadId: existingThread.id,
     }));
+    const queueToggle = screen.getByRole("button", { name: /Expand message queue/ });
+    expect(queueToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(queueToggle);
 
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "Continue this later" },
@@ -353,6 +356,155 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(screen.queryByText("Continue this later")).not.toBeInTheDocument());
   });
 
+  it("uses auto approval for one direct turn, then restores manual approval", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    expect(autoToggle).toBeDisabled();
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    expect(autoToggle).toBeEnabled();
+    fireEvent.click(autoToggle);
+    expect(autoToggle).toBeChecked();
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "queue without consuming auto mode" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/enqueue", {
+      threadId: existingThread.id,
+      text: "queue without consuming auto mode",
+      expectedLastTurnId: null,
+    }));
+    expect(autoToggle).toBeChecked();
+
+    await sendMessage();
+    expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      threadId: existingThread.id,
+      approvalPolicy: "never",
+    }));
+    expect(autoToggle).toBeChecked();
+    expect(autoToggle).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "steer without consuming auto mode" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Steer active turn" }));
+    await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("turn/steer", {
+      threadId: existingThread.id,
+      expectedTurnId: "turn-new",
+      input: [{
+        type: "text",
+        text: "steer without consuming auto mode",
+        text_elements: [],
+      }],
+    }));
+    expect(autoToggle).toBeChecked();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "full", items: [] },
+      },
+    }));
+    await waitFor(() => expect(autoToggle).not.toBeChecked());
+    expect(autoToggle).toBeEnabled();
+
+    await sendMessage();
+    const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start");
+    expect(turnStarts.at(-1)?.[1]).toEqual(expect.objectContaining({
+      threadId: existingThread.id,
+      approvalPolicy: "on-request",
+    }));
+  });
+
+  it("uses auto approval for the first turn of a configured new thread", async () => {
+    const fetchMock = installBootstrapFixture();
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    expect(autoToggle).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    expect(autoToggle).toBeEnabled();
+    fireEvent.click(autoToggle);
+    expect(autoToggle).toBeChecked();
+
+    await sendMessage();
+
+    expect(socket.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({
+      approvalPolicy: "on-request",
+    }));
+    expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      threadId: newThread.id,
+      approvalPolicy: "never",
+    }));
+    expect(autoToggle).toBeChecked();
+    expect(autoToggle).toBeDisabled();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: newThread.id,
+        turn: { id: "turn-new", status: "completed", itemsView: "full", items: [] },
+      },
+    }));
+    await waitFor(() => expect(autoToggle).not.toBeChecked());
+    expect(autoToggle).toBeEnabled();
+  });
+
+  it("restores manual approval when an armed new thread cannot be created", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "thread/start"
+        ? Promise.reject(new Error("thread/start failed"))
+        : baseRpc?.(method, params)
+    ));
+    const fetchMock = installBootstrapFixture();
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
+    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    fireEvent.click(autoToggle);
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "start automatically" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("thread/start failed");
+    expect(autoToggle).not.toBeChecked();
+    expect(autoToggle).toBeEnabled();
+    expect(socket.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
+  });
+
+  it("restores manual approval when an auto turn start fails", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    socket.rpc.mockImplementation((method: string, params?: unknown) => (
+      method === "turn/start"
+        ? Promise.reject(new Error("turn/start failed"))
+        : baseRpc?.(method, params)
+    ));
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+    const autoToggle = screen.getByLabelText("Auto-run next turn without approval prompts");
+    fireEvent.click(autoToggle);
+    await sendMessage();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("turn/start failed");
+    expect(autoToggle).not.toBeChecked();
+  });
+
   it("refreshes the selected thread queue after a cross-client notification", async () => {
     installBootstrapFixture();
     let visibleItems: unknown[] = [];
@@ -364,6 +516,7 @@ describe("App thread settings lifecycle", () => {
     ));
     render(<App />);
     fireEvent.click(await screen.findByText("Existing thread"));
+    fireEvent.click(await screen.findByRole("button", { name: /Expand message queue/ }));
     await screen.findByText("No queued messages");
     visibleItems = [queuedMessage];
 
@@ -2892,7 +3045,15 @@ describe("App thread settings lifecycle", () => {
     }));
 
     expect(screen.queryByRole("region", { name: "Current plan" })).not.toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Plan" })).toHaveTextContent("Verify the layout");
+    const terminalPlan = screen.getByRole("region", { name: "Plan" });
+    expect(terminalPlan).toHaveTextContent("Verify the layout");
+    expect(within(terminalPlan).getByRole("status")).toHaveTextContent(
+      "Turn ended without a final plan update",
+    );
+    expect(within(terminalPlan).getByRole("listitem", {
+      name: "In progress when turn ended: Verify the layout",
+    })).toBeInTheDocument();
+    expect(terminalPlan.querySelector(".spin")).not.toBeInTheDocument();
   });
 
   it("cancels a prepared image turn when thread selection changes during upload", async () => {
