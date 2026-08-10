@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApprovalPanel } from "./ApprovalPanel";
 
@@ -18,8 +18,55 @@ describe("ApprovalPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "For session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept for session" }));
     expect(onResolve).toHaveBeenCalledWith(1, { decision: "acceptForSession" });
+  });
+
+  it("keeps icon-only decisions in a stable header ahead of bounded request content", () => {
+    render(
+      <ApprovalPanel
+        requests={[{
+          id: "three-decisions",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            command: "npm run typecheck && npm test",
+            cwd: "/workspace/project",
+            reason: "Verify the complete change",
+            availableDecisions: ["accept", "acceptForSession", "decline"],
+          },
+          receivedAt: 1,
+        }, {
+          id: "two-decisions",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            command: "npm run build",
+            cwd: "/workspace/project",
+            availableDecisions: ["accept", "decline"],
+          },
+          receivedAt: 2,
+        }]}
+        onResolve={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
+
+    const cards = [...document.querySelectorAll<HTMLElement>(".approval-card")];
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]).getByRole("group", { name: "Approval actions" })).toBeInTheDocument();
+    expect(within(cards[0]).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Accept for session",
+      "Accept",
+      "Decline",
+    ]);
+    expect(within(cards[1]).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Accept",
+      "Decline",
+    ]);
+    expect(within(cards[0]).getByRole("button", { name: "Accept" })).toHaveAttribute("title", "Accept");
+    expect(within(cards[0]).getByRole("button", { name: "Accept" })).not.toHaveTextContent("Accept");
+    expect(cards[0].querySelector(".approval-card-header")).toBeInTheDocument();
+    expect(cards[0].querySelector(".approval-body")).toHaveTextContent("Request details");
+    expect(cards[0].querySelector(".approval-body")).toHaveTextContent("/workspace/project");
   });
 
   it("does not mistake granular permission requests for command approvals", () => {

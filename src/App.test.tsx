@@ -439,6 +439,149 @@ describe("App thread settings lifecycle", () => {
     }));
   });
 
+  it("keeps an active auto-run turn scoped to its thread while switching sessions", async () => {
+    const otherThread = {
+      ...existingThread,
+      id: "thread-other",
+      name: "Other thread",
+      cwd: "/workspace/other",
+    };
+    let activeExistingTurn: { id: string; status: string; items: unknown[] } | null = null;
+    const baseRpc = socket.rpc.getMockImplementation()!;
+    socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
+      const request = params as { archived?: boolean; initialTurnsPage?: unknown; threadId?: string } | undefined;
+      if (method === "thread/list" && !request?.archived) {
+        return {
+          data: [
+            activeExistingTurn
+              ? { ...existingThread, status: { type: "active" }, turns: [activeExistingTurn] }
+              : existingThread,
+            otherThread,
+          ],
+          nextCursor: null,
+        };
+      }
+      if (method === "thread/resume") {
+        const thread = request?.threadId === otherThread.id
+          ? otherThread
+          : {
+              ...existingThread,
+              ...(activeExistingTurn ? { status: { type: "active" }, turns: [activeExistingTurn] } : {}),
+            };
+        return request?.initialTurnsPage
+          ? {
+              thread,
+              cwd: thread.cwd,
+              model: thread.model,
+              sandbox: { type: "workspaceWrite" },
+              initialTurnsPage: {
+                data: request.threadId === existingThread.id && activeExistingTurn
+                  ? [activeExistingTurn]
+                  : [],
+                nextCursor: null,
+                backwardsCursor: null,
+              },
+            }
+          : { thread };
+      }
+      if (method === "turn/start") {
+        activeExistingTurn = { id: "turn-auto", status: "inProgress", items: [] };
+        return { turn: activeExistingTurn };
+      }
+      return await baseRpc(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
+    await screen.findByTitle("Existing thread");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    fireEvent.click(autoToggle);
+    await sendMessage();
+    await waitFor(() => {
+      expect(autoToggle).toBeChecked();
+      expect(autoToggle).toBeDisabled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Other thread" }));
+    await waitFor(() => {
+      expect(autoToggle).not.toBeChecked();
+      expect(autoToggle).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Existing thread" }));
+    await waitFor(() => {
+      expect(autoToggle).toBeChecked();
+      expect(autoToggle).toBeDisabled();
+    });
+
+    activeExistingTurn = { id: "turn-auto", status: "completed", items: [] };
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: activeExistingTurn,
+      },
+    }));
+    await waitFor(() => {
+      expect(autoToggle).not.toBeChecked();
+      expect(autoToggle).toBeEnabled();
+    });
+  });
+
+  it("does not revive auto-run when completion precedes the turn start result", async () => {
+    let resolveTurnStart!: (result: unknown) => void;
+    let markTurnStartRequested!: () => void;
+    const turnStartRequested = new Promise<void>((resolve) => {
+      markTurnStartRequested = resolve;
+    });
+    const turnStartResult = new Promise<unknown>((resolve) => {
+      resolveTurnStart = resolve;
+    });
+    const baseRpc = socket.rpc.getMockImplementation()!;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "turn/start") {
+        markTurnStartRequested();
+        return turnStartResult;
+      }
+      return baseRpc(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
+    await screen.findByTitle("Existing thread");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    fireEvent.click(autoToggle);
+    fireEvent.change(screen.getByLabelText("Message Codex"), {
+      target: { value: "complete immediately" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await turnStartRequested;
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-race", status: "completed", items: [] },
+      },
+    }));
+    await act(async () => {
+      resolveTurnStart({
+        turn: { id: "turn-race", status: "inProgress", items: [] },
+      });
+      await turnStartResult;
+    });
+
+    await waitFor(() => {
+      expect(autoToggle).not.toBeChecked();
+      expect(autoToggle).toBeEnabled();
+    });
+    expect(screen.queryByRole("button", { name: "Steer active turn" })).not.toBeInTheDocument();
+  });
+
   it("uses sandbox-aware auto-run for the first turn of a configured new thread", async () => {
     const fetchMock = installBootstrapFixture();
     render(<App />);

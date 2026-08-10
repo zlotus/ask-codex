@@ -2,7 +2,7 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-10
 
 ## Current Milestone
 
@@ -35,10 +35,12 @@ The implementation currently provides:
   armed, the next direct `turn/start` uses `approvalPolicy: "on-request"`, but
   sandbox escalation, restricted network access, and writes outside the
   workspace still require user approval. The control remains visible but
-  disabled while Working and clears after completion, cancellation, failure,
-  or an invalid start result, so each later turn must be armed again. Thread
-  creation, resume, fork, and queue consumption remain fixed to `on-request`,
-  while steering carries no policy. Only the separate first `turn/start` after
+  disabled while Working and reflects the policy captured when that active turn
+  started; switching to another session and back cannot lose or rewrite this
+  per-turn state. It clears after completion, cancellation, failure, or an
+  invalid start result, so each later turn must be armed again. Thread creation,
+  resume, fork, and queue consumption remain fixed to `on-request`, while
+  steering carries no policy. Only the separate first `turn/start` after
   creation may use the draft's choice. The gateway always injects the user
   reviewer and rejects browser-supplied `never`, `granular`, or reviewer values.
 - React desktop and mobile layouts for listing, searching, creating, resuming,
@@ -190,7 +192,11 @@ The implementation currently provides:
   app-server `availableDecisions`; malformed, unknown, or exclusively
   client-unsupported structured decisions fail closed. Captured command
   approval reasons remain attached to the exact command item for the current
-  browser session.
+  browser session. Command and file approvals keep icon decisions beside the
+  card title while long commands and request details scroll in a bounded body.
+  Multiple cards run horizontally on desktop and vertically on mobile, keeping
+  common decisions at the same position after the preceding request is resolved.
+  Structured `request_user_input` keeps its full form and Submit flow.
 - New-thread working-directory and sandbox settings, explicit idle-thread
   sandbox overrides, next-turn model and reasoning controls beside the
   composer, and active-turn interruption. With a current selection, new-thread
@@ -423,13 +429,13 @@ commitment.
 
 ## Verification
 
-The current worktree was verified on 2026-08-09 with Node.js
-`v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
+The following checks were run on the current worktree on 2026-08-10 with
+Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
 - The existing baseline generated bindings from the same CLI version on
   2026-08-07 and checked the relevant resume sandbox, approval decision,
   turn/steering/fork, complete Plan snapshot, history-mode, and notification
-  revision structures. This approval change ran only
+  revision structures. The 2026-08-09 auto-run protocol review ran only
   `codex app-server generate-ts` without `--experimental`, confirming that the
   stable `AskForApproval` referenced by `TurnStartParams.approvalPolicy` includes
   `untrusted` and `on-request` and that `approvalsReviewer` is stable. The
@@ -443,32 +449,23 @@ The current worktree was verified on 2026-08-09 with Node.js
   for this round of automated checks.
 - `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
   passed.
-- `NODE_ENV=test npm test` passed: 41 test files and 684 tests. Server tests ran
-  in an environment that permits loopback socket binding. Queue coverage
-  includes atomic persistence, corrupt and over-budget fail-closed startup,
-  restart recovery, cross-client revisions, busy threads, context changes,
-  unknown send results, approval ownership, and browser state. Plan coverage
-  includes revision comparison across the resync race, conservative replay
-  when a revision is absent, and stopping animation when a terminal turn retains
-  an `in_progress` Plan snapshot. Approval coverage includes one-shot
-  `on-request` for existing and first-turn threads, explicit later `untrusted`,
-  strict-mode restoration after creation or start failure, and a user-visible,
-  acceptable command approval when an auto-run turn requests sandbox escalation.
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-sandbox-auto-run-visual.C8eV16 npm run
-  check:visual` passed against the current production build.
-  Desktop and 390x844 mobile fixtures covered approvals, project navigation, Activity,
-  Skills, Usage, Agent-output downloads, rich content, the fixed reasoning slot,
-  images, Plans, the running-turn steering composer, the cross-device queue,
-  the one-turn sandbox auto-run control, the attachment `+` menu, and ordinary-file
-  history cards. They verified Queue starts collapsed, a terminal Plan stops
-  spinning, and both an existing thread and configured new-thread draft can arm
-  one turn before clearing the choice on selection. Queue actions, status text,
-  and the composer remained usable while expanded or collapsed;
-  the unavailable state also remained intact when no same-Origin Blob was
-  present. There was no horizontal overflow, clipping, content overlap, console
-  error, or page error. The thread action menu included and contained Fork in
-  both viewports. Deterministic browser fixtures intercepted every RPC, upload,
-  and download and created no real Codex turn or fork.
-- Local relative Markdown-link validation covered 16 related Chinese and English
-  documents, and every target resolved.
+- The 8 tests in `src/components/ApprovalPanel.test.tsx` and 69 tests in
+  `src/App.test.tsx` passed, covering icon-decision order, protocol-offered
+  approval results, per-turn launch policy, cross-session viewing, and the race
+  where completion precedes the start response. `NODE_ENV=test npx vitest run
+  --exclude server/server.test.ts` passed 40 files and 596 tests. A complete
+  `NODE_ENV=test npm test` run in the restricted environment separately passed
+  598 tests; the remaining 89 tests are all in `server/server.test.ts` and
+  uniformly reported `EPERM` because the environment forbids binding
+  `127.0.0.1`, rather than assertion failures. The previous commit records 41
+  files and 684 tests passing in an environment that permits loopback binding.
+- The visual fixture now asserts long approval content, stable decision and
+  repeated-click positions on desktop and mobile, and non-overlapping long
+  titles and Ready status at 320/390 pixels. `node --check
+  scripts/visual-check.mjs` passed. The restricted environment forbids both a
+  loopback listener on port 4173 and Chromium sockets, so the full
+  `npm run check:visual` suite was not rerun for this approval layout. The
+  production visual baseline recorded by the previous commit remains passing,
+  but is not treated as verification of the new assertions.
+- Markdown AST parsing covered all 60 Markdown files in the repository, and all
+  221 checked relative-link targets exist.

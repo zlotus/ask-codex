@@ -33,56 +33,83 @@ function ApprovalRequest({
   const rejectionDecision = decisionIsAvailable(decisions.decline)
     ? decisions.decline
     : decisionIsAvailable(decisions.cancel) ? decisions.cancel : null;
+  const rejectionLabel = rejectionDecision === decisions.decline ? "Decline" : "Cancel";
+  const grantRoot = isFile ? readString(request.params.grantRoot) : undefined;
   const context = Object.fromEntries(Object.entries(request.params).filter(([key, value]) => (
     value !== undefined &&
     value !== null &&
     !["threadId", "turnId", "conversationId", "itemId", "callId", "approvalId", "startedAtMs", "reason", "command", "availableDecisions"].includes(key)
   )));
   const hasContext = Object.keys(context).length > 0;
+  const hasBody = !isFile || Boolean(grantRoot) || hasContext;
   return (
     <section className="approval-card" aria-label={isFile ? "File change approval" : "Command approval"}>
-      <div className="approval-title">
-        {isFile ? <FileCode2 size={17} aria-hidden="true" /> : <Terminal size={17} aria-hidden="true" />}
-        <div>
-          <strong>{isFile ? "Apply file changes?" : "Run this command?"}</strong>
-          {reason && <p>{reason}</p>}
+      <div className="approval-card-header">
+        <div className="approval-title">
+          {isFile ? <FileCode2 size={17} aria-hidden="true" /> : <Terminal size={17} aria-hidden="true" />}
+          <div>
+            <strong>{isFile ? "Apply file changes?" : "Run this command?"}</strong>
+            {reason && <p>{reason}</p>}
+          </div>
+        </div>
+        <div className="approval-actions approval-actions--compact" role="group" aria-label="Approval actions">
+          {decisionIsAvailable(decisions.session) && (
+            <button
+              type="button"
+              className="button button--quiet approval-action-button"
+              title="Accept for session"
+              aria-label="Accept for session"
+              onClick={() => onResolve(request.id, { decision: decisions.session })}
+            >
+              <CheckCheck size={16} aria-hidden="true" />
+            </button>
+          )}
+          {decisionIsAvailable(decisions.accept) && (
+            <button
+              type="button"
+              className="button button--primary approval-action-button"
+              title="Accept"
+              aria-label="Accept"
+              onClick={() => onResolve(request.id, { decision: decisions.accept })}
+            >
+              <Check size={16} aria-hidden="true" />
+            </button>
+          )}
+          {rejectionDecision ? (
+            <button
+              type="button"
+              className="button button--danger approval-action-button"
+              title={rejectionLabel}
+              aria-label={rejectionLabel}
+              onClick={() => onResolve(request.id, { decision: rejectionDecision })}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button button--danger approval-action-button"
+              title="Reject request"
+              aria-label="Reject request"
+              onClick={() => onReject(request.id, `Ask Codex cannot return any offered decision for ${request.method}`)}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
-      {!isFile && <pre className="approval-command"><code>{command}</code></pre>}
-      {isFile && readString(request.params.grantRoot) && (
-        <p className="approval-path"><code>{readString(request.params.grantRoot)}</code></p>
-      )}
-      {hasContext && (
-        <div className="approval-context">
-          <span>Request details</span>
-          <pre>{JSON.stringify(context, null, 2)}</pre>
+      {hasBody && (
+        <div className="approval-body">
+          {!isFile && <pre className="approval-command"><code>{command}</code></pre>}
+          {grantRoot && <p className="approval-path"><code>{grantRoot}</code></p>}
+          {hasContext && (
+            <div className="approval-context">
+              <span>Request details</span>
+              <pre>{JSON.stringify(context, null, 2)}</pre>
+            </div>
+          )}
         </div>
       )}
-      <div className="approval-actions">
-        {decisionIsAvailable(decisions.accept) && (
-          <button type="button" className="button button--primary" onClick={() => onResolve(request.id, { decision: decisions.accept })}>
-            <Check size={15} aria-hidden="true" />Accept
-          </button>
-        )}
-        {decisionIsAvailable(decisions.session) && (
-          <button type="button" className="button button--quiet" onClick={() => onResolve(request.id, { decision: decisions.session })}>
-            <CheckCheck size={15} aria-hidden="true" />For session
-          </button>
-        )}
-        {rejectionDecision ? (
-          <button type="button" className="button button--danger" onClick={() => onResolve(request.id, { decision: rejectionDecision })}>
-            <X size={15} aria-hidden="true" />{rejectionDecision === decisions.decline ? "Decline" : "Cancel"}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="button button--danger"
-            onClick={() => onReject(request.id, `Ask Codex cannot return any offered decision for ${request.method}`)}
-          >
-            <X size={15} aria-hidden="true" />Reject request
-          </button>
-        )}
-      </div>
     </section>
   );
 }
@@ -165,20 +192,26 @@ function QuestionRequest({ request, onResolve }: RequestCardProps) {
 function GenericRequest({ request, onReject }: RequestCardProps & Pick<ApprovalPanelProps, "onReject">) {
   return (
     <section className="approval-card">
-      <div className="approval-title">
-        <ShieldAlert size={17} aria-hidden="true" />
-        <div><strong>Codex requests permission</strong><p>{request.method}</p></div>
+      <div className="approval-card-header">
+        <div className="approval-title">
+          <ShieldAlert size={17} aria-hidden="true" />
+          <div><strong>Codex requests permission</strong><p>{request.method}</p></div>
+        </div>
+        <div className="approval-actions approval-actions--compact" role="group" aria-label="Approval actions">
+          <button
+            type="button"
+            className="button button--danger approval-action-button"
+            title="Reject request"
+            aria-label="Reject request"
+            onClick={() => onReject(request.id, `Unsupported app-server request: ${request.method}`)}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
       </div>
-      <pre className="code-output">{JSON.stringify(request.params, null, 2)}</pre>
-      <p className="unsupported-request">This request type is not supported by this client.</p>
-      <div className="approval-actions">
-        <button
-          type="button"
-          className="button button--danger"
-          onClick={() => onReject(request.id, `Unsupported app-server request: ${request.method}`)}
-        >
-          <X size={15} aria-hidden="true" />Reject request
-        </button>
+      <div className="approval-body">
+        <pre className="code-output">{JSON.stringify(request.params, null, 2)}</pre>
+        <p className="unsupported-request">This request type is not supported by this client.</p>
       </div>
     </section>
   );
@@ -190,19 +223,25 @@ function FailClosedRequest({ request, onResolve }: RequestCardProps) {
     : { action: "decline", content: null, _meta: null };
   return (
     <section className="approval-card">
-      <div className="approval-title">
-        <ShieldAlert size={17} aria-hidden="true" />
-        <div><strong>Codex requests permission</strong><p>{request.method}</p></div>
+      <div className="approval-card-header">
+        <div className="approval-title">
+          <ShieldAlert size={17} aria-hidden="true" />
+          <div><strong>Codex requests permission</strong><p>{request.method}</p></div>
+        </div>
+        <div className="approval-actions approval-actions--compact" role="group" aria-label="Approval actions">
+          <button
+            type="button"
+            className="button button--danger approval-action-button"
+            title="Decline"
+            aria-label="Decline"
+            onClick={() => onResolve(request.id, result)}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
       </div>
-      <pre className="code-output">{JSON.stringify(request.params, null, 2)}</pre>
-      <div className="approval-actions">
-        <button
-          type="button"
-          className="button button--danger"
-          onClick={() => onResolve(request.id, result)}
-        >
-          <X size={15} aria-hidden="true" />Decline
-        </button>
+      <div className="approval-body">
+        <pre className="code-output">{JSON.stringify(request.params, null, 2)}</pre>
       </div>
     </section>
   );

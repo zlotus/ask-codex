@@ -922,6 +922,149 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
   return { collapsed, expanded, terminal, dismissed: true };
 }
 
+let approvalLayoutSequence = 0;
+
+async function inspectApprovalLayout(page, fixture, screenshotPath) {
+  const sequence = ++approvalLayoutSequence;
+  const command = Array.from(
+    { length: 12 },
+    (_, index) => `verify-approval-step-${index + 1} --with-a-long-argument=value-${index + 1}`,
+  ).join(" && ");
+  const details = {
+    cwd: fixtureThread.cwd,
+    networkApprovalContext: {
+      host: "api.example.com",
+      protocol: "https",
+      addresses: Array.from({ length: 10 }, (_, index) => `192.0.2.${index + 1}`),
+    },
+    proposedExecpolicyAmendment: Array.from(
+      { length: 12 },
+      (_, index) => `verify-approval-step-${index + 1}`,
+    ),
+  };
+  fixture.request(`visual-approval-layout-${sequence}-first`, "item/commandExecution/requestApproval", {
+    threadId: fixtureThread.id,
+    turnId: "turn-newest",
+    itemId: `visual-approval-layout-command-${sequence}-first`,
+    command,
+    reason: "Review a long command and its security context without moving the decision controls",
+    availableDecisions: ["accept", "acceptForSession", "decline"],
+    ...details,
+  });
+  fixture.request(`visual-approval-layout-${sequence}-second`, "item/commandExecution/requestApproval", {
+    threadId: fixtureThread.id,
+    turnId: "turn-newest",
+    itemId: `visual-approval-layout-command-${sequence}-second`,
+    command,
+    reason: "Keep repeated approval targets aligned after the preceding request is resolved",
+    availableDecisions: ["accept", "decline"],
+    ...details,
+  });
+
+  const panel = page.locator(".approval-panel");
+  await panel.waitFor();
+  await page.waitForFunction(() => (
+    document.querySelectorAll('.approval-card[aria-label="Command approval"]').length === 2
+  ));
+  const layout = await page.evaluate(() => {
+    const panel = document.querySelector(".approval-panel");
+    const cards = [...document.querySelectorAll('.approval-card[aria-label="Command approval"]')];
+    if (!panel || cards.length !== 2) return { complete: false, cards: [] };
+    const panelBox = panel.getBoundingClientRect();
+    const minimumTarget = window.innerWidth <= 600 ? 40 : 36;
+    const cardLayouts = cards.map((card) => {
+      const cardBox = card.getBoundingClientRect();
+      const header = card.querySelector(".approval-card-header")?.getBoundingClientRect();
+      const body = card.querySelector(".approval-body");
+      const bodyBox = body?.getBoundingClientRect();
+      const buttons = [...card.querySelectorAll(".approval-action-button")];
+      const buttonBoxes = buttons.map((button) => button.getBoundingClientRect());
+      const accept = card.querySelector('[aria-label="Accept"]')?.getBoundingClientRect();
+      const decline = card.querySelector('[aria-label="Decline"]')?.getBoundingClientRect();
+      return {
+        width: cardBox.width,
+        top: cardBox.top,
+        right: cardBox.right,
+        bottom: cardBox.bottom,
+        labels: buttons.map((button) => button.getAttribute("aria-label")),
+        titlesMatch: buttons.every((button) => button.title === button.getAttribute("aria-label")),
+        iconOnly: buttons.every((button) => button.textContent?.trim() === ""),
+        usableTargets: buttonBoxes.every((box) => box.width >= minimumTarget && box.height >= minimumTarget),
+        buttonsContained: buttonBoxes.every((box) => (
+          box.left >= cardBox.left && box.right <= cardBox.right &&
+          box.top >= cardBox.top && box.bottom <= cardBox.bottom
+        )),
+        actionsBeforeBody: Boolean(header && bodyBox && header.bottom <= bodyBox.top),
+        bodyScrollable: Boolean(body && body.scrollHeight > body.clientHeight),
+        bodyOverflow: body ? window.getComputedStyle(body).overflowY : null,
+        bodyBounded: Boolean(bodyBox && bodyBox.height <= (window.innerWidth <= 600 ? 180 : 210) + 0.5),
+        acceptRightOffset: accept ? cardBox.right - accept.right : null,
+        acceptTopOffset: accept ? accept.top - cardBox.top : null,
+        declineRightOffset: decline ? cardBox.right - decline.right : null,
+        declineTopOffset: decline ? decline.top - cardBox.top : null,
+      };
+    });
+    const [first, second] = cardLayouts;
+    const close = (left, right) => left !== null && right !== null && Math.abs(left - right) <= 0.5;
+    const vertical = window.innerWidth <= 600;
+    return {
+      complete: true,
+      cards: cardLayouts,
+      flowCorrect: vertical
+        ? second.top > first.bottom
+        : Math.abs(first.top - second.top) <= 0.5 && second.right > first.right,
+      commonTargetsAligned: close(first.acceptRightOffset, second.acceptRightOffset) &&
+        close(first.acceptTopOffset, second.acceptTopOffset) &&
+        close(first.declineRightOffset, second.declineRightOffset) &&
+        close(first.declineTopOffset, second.declineTopOffset),
+      firstActionsVisible: first.top >= panelBox.top && first.top + minimumTarget <= panelBox.bottom,
+      equalCardWidths: Math.abs(first.width - second.width) <= 0.5,
+      panelContained: panelBox.left >= 0 && panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  const firstAccept = page.getByRole("button", { name: "Accept", exact: true }).first();
+  const before = await firstAccept.boundingBox();
+  await firstAccept.click();
+  await page.waitForFunction(() => (
+    document.querySelectorAll('.approval-card[aria-label="Command approval"]').length === 1
+  ));
+  const after = await page.getByRole("button", { name: "Accept", exact: true }).boundingBox();
+  const stableAfterResolve = Boolean(
+    before && after && Math.abs(before.x - after.x) <= 0.5 && Math.abs(before.y - after.y) <= 0.5
+  );
+  await page.getByRole("button", { name: "Decline", exact: true }).click();
+  await panel.waitFor({ state: "hidden" });
+  return { ...layout, stableAfterResolve, dismissed: true };
+}
+
+function approvalLayoutInvalid(layout) {
+  return !layout.complete ||
+    layout.cards.length !== 2 ||
+    layout.cards.some((card) => (
+      !card.titlesMatch ||
+      !card.iconOnly ||
+      !card.usableTargets ||
+      !card.buttonsContained ||
+      !card.actionsBeforeBody ||
+      !card.bodyScrollable ||
+      card.bodyOverflow !== "auto" ||
+      !card.bodyBounded
+    )) ||
+    layout.cards[0].labels.join(",") !== "Accept for session,Accept,Decline" ||
+    layout.cards[1].labels.join(",") !== "Accept,Decline" ||
+    !layout.flowCorrect ||
+    !layout.commonTargetsAligned ||
+    !layout.firstActionsVisible ||
+    !layout.equalCardWidths ||
+    !layout.panelContained ||
+    layout.horizontalOverflow ||
+    !layout.stableAfterResolve ||
+    !layout.dismissed;
+}
+
 async function inspectMessageQueueDock(page, screenshotPath) {
   const dock = page.getByRole("region", { name: "Message queue" });
   await dock.waitFor();
@@ -1361,6 +1504,53 @@ async function reloadAndInspectFixtureImage(page) {
   return inspectSentFixtureImage(page);
 }
 
+async function inspectLongMobileToolbarTitle(page, screenshotPath) {
+  const originalViewport = page.viewportSize();
+  const title = page.locator(".toolbar-title strong");
+  const originalTitle = await title.textContent();
+  await title.evaluate((element) => {
+    element.textContent = "ExtremelyLongUnbrokenSessionTitleThatMustNeverOverlapTheReadyStatusWindow1234567890";
+  });
+
+  try {
+    const samples = [];
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      samples.push(await page.evaluate(() => {
+        const toolbar = document.querySelector(".toolbar")?.getBoundingClientRect();
+        const titleContainer = document.querySelector(".toolbar-title")?.getBoundingClientRect();
+        const titleText = document.querySelector(".toolbar-title strong");
+        const titleTextBox = titleText?.getBoundingClientRect();
+        const actions = document.querySelector(".toolbar-actions")?.getBoundingClientRect();
+        const status = document.querySelector(".toolbar-status")?.getBoundingClientRect();
+        const statusLabel = document.querySelector(".toolbar-status-label");
+        const statusLabelBox = statusLabel?.getBoundingClientRect();
+        return {
+          width: window.innerWidth,
+          titleEllipsized: Boolean(titleText && titleText.scrollWidth > titleText.clientWidth),
+          titleActionsSeparated: Boolean(titleContainer && actions && titleContainer.right <= actions.left),
+          titleStatusSeparated: Boolean(titleTextBox && status && titleTextBox.right <= status.left),
+          actionsContained: Boolean(actions && actions.left >= 0 && actions.right <= window.innerWidth),
+          readyVisible: Boolean(
+            status && statusLabel && statusLabelBox && statusLabel.textContent === "Ready" &&
+            statusLabelBox.width > 0 && statusLabel.clientWidth >= statusLabel.scrollWidth &&
+            statusLabelBox.left >= status.left && statusLabelBox.right <= status.right
+          ),
+          toolbarContained: Boolean(toolbar && toolbar.left >= 0 && toolbar.right <= window.innerWidth),
+          horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        };
+      }));
+      if (width === 320) await page.screenshot({ path: screenshotPath, fullPage: true });
+    }
+    return samples;
+  } finally {
+    await title.evaluate((element, value) => {
+      element.textContent = value;
+    }, originalTitle);
+    if (originalViewport) await page.setViewportSize(originalViewport);
+  }
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const fixture = await installFixture(page);
@@ -1488,6 +1678,11 @@ try {
     fixture,
     `${outputDirectory}/desktop-plan`,
   );
+  const desktopApprovalLayout = await inspectApprovalLayout(
+    page,
+    fixture,
+    `${outputDirectory}/desktop-approvals.png`,
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
@@ -1516,6 +1711,10 @@ try {
       return box.left >= 0 && box.right <= window.innerWidth;
     }),
   }));
+  const mobileLongToolbarTitle = await inspectLongMobileToolbarTitle(
+    page,
+    `${outputDirectory}/mobile-long-toolbar-title.png`,
+  );
   await page.screenshot({ path: `${outputDirectory}/mobile.png`, fullPage: true });
   const mobileAttachmentMenu = await inspectAttachmentMenu(
     page,
@@ -1615,6 +1814,11 @@ try {
     fixture,
     `${outputDirectory}/mobile-plan`,
   );
+  const mobileApprovalLayout = await inspectApprovalLayout(
+    page,
+    fixture,
+    `${outputDirectory}/mobile-approvals.png`,
+  );
   const mobileOneTurnAutoRun = await inspectOneTurnAutoRun(page, {
     dialog: `${outputDirectory}/mobile-first-turn-dialog.png`,
     armedDraft: `${outputDirectory}/mobile-first-turn-auto.png`,
@@ -1642,10 +1846,12 @@ try {
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
       activePlan: desktopActivePlan,
+      approvalLayout: desktopApprovalLayout,
       oneTurnAutoRun: desktopOneTurnAutoRun,
     },
     mobile: {
       ...mobileBefore,
+      longToolbarTitle: mobileLongToolbarTitle,
       attachmentMenu: mobileAttachmentMenu,
       composerImage: mobileComposerImage,
       sentImage: mobileSentImage,
@@ -1665,6 +1871,7 @@ try {
       activeReasoning: mobileActiveReasoning,
       failedSubmission: mobileFailedSubmission,
       activePlan: mobileActivePlan,
+      approvalLayout: mobileApprovalLayout,
       oneTurnAutoRun: mobileOneTurnAutoRun,
       splitActionHidden,
     },
@@ -1810,6 +2017,15 @@ try {
     mobileBefore.autoRunChecked ||
     mobileBefore.defaultLabels > 0 ||
     !mobileBefore.composerSettingsVisible ||
+    mobileLongToolbarTitle.some((sample) => (
+      !sample.titleEllipsized ||
+      !sample.titleActionsSeparated ||
+      !sample.titleStatusSeparated ||
+      !sample.actionsContained ||
+      !sample.readyVisible ||
+      !sample.toolbarContained ||
+      sample.horizontalOverflow
+    )) ||
     oneTurnAutoRunInvalid(mobileOneTurnAutoRun) ||
     mobileComposerImage.count !== 1 ||
     !mobileComposerImage.previewLoaded ||
@@ -1986,6 +2202,7 @@ try {
     !desktopActivePlan.terminal.spinnerStopped ||
     desktopActivePlan.terminal.horizontalOverflow ||
     !desktopActivePlan.dismissed ||
+    approvalLayoutInvalid(desktopApprovalLayout) ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
     mobileRich.reasoningBlocks !== 1 ||
@@ -2048,6 +2265,7 @@ try {
     !mobileActivePlan.terminal.spinnerStopped ||
     mobileActivePlan.terminal.horizontalOverflow ||
     !mobileActivePlan.dismissed ||
+    approvalLayoutInvalid(mobileApprovalLayout) ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||
     pageErrors.length > 0

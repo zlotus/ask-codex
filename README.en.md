@@ -54,6 +54,10 @@ accepts arbitrary paths.
   generation.
 - Review command and file-change approvals in the browser, and keep captured
   approval rationale attached to the matching command for the browser session.
+  Decision icons stay beside the card title while long commands and request
+  details scroll inside the card. Multiple cards run horizontally on desktop
+  and vertically on mobile, keeping common decisions at a stable position after
+  the preceding request is resolved.
 - Every ordinary direct turn defaults to strict `untrusted` approval. An
   existing idle thread or configured new-thread draft can temporarily arm the
   next direct turn for `on-request` sandbox-aware auto-run. Actions already
@@ -61,10 +65,13 @@ accepts arbitrary paths.
   restricted network access, and writes outside the workspace still surface
   for human approval. The control is disabled while Working, restores the
   strict default after completion or a failed start, and must be armed again
-  for each later turn. Thread creation, resume, fork, and cross-device queued
-  sends remain fixed to `on-request`, while steering carries no policy. The
-  browser cannot submit `never`, `granular`, or reviewer values, and the design
-  uses no experimental settings API.
+  for each later turn. A started turn retains the policy captured at launch;
+  switching to another session and back still shows that turn's locked state
+  without inheriting or replacing another session's next-turn choice. Thread
+  creation, resume, fork, and cross-device queued sends remain fixed to
+  `on-request`, while steering carries no policy. The browser cannot submit
+  `never`, `granular`, or reviewer values, and the design uses no experimental
+  settings API.
 - Answer structured questions from `request_user_input`.
 - Choose the absolute working directory and sandbox when starting a thread,
   then select the next-turn model and reasoning effort beside the composer.

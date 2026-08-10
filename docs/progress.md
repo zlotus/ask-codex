@@ -2,7 +2,7 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-09
+最后审阅：2026-08-10
 
 ## 当前里程碑
 
@@ -24,7 +24,8 @@ P3 持久 Activity 审计，尚未开始。一次性沙箱内自动运行按 tur
 - 输入区提供一次性沙箱内自动运行开关，只在当前选中的已有空闲线程，或新线程草稿完成配置后
   可修改。普通直接 turn 显式使用 `approvalPolicy: "untrusted"`；开启后，下一次直接
   `turn/start` 使用 `approvalPolicy: "on-request"`，但仍由用户审批 sandbox 升级、受限网络和
-  工作区外写入。Working 时开关保持显示但禁用，轮次结束、取消、失败或启动结果无效时关闭，
+  工作区外写入。Working 时开关保持显示但禁用，并显示该活跃 turn 启动时捕获的策略；切换到
+  其他会话再返回不会丢失或改写这份逐 turn 状态。轮次结束、取消、失败或启动结果无效时关闭，
   下一轮必须重新开启。新线程创建、恢复、fork 和队列继续固定 `on-request`，steering 不携带
   策略；只有创建成功后独立发起的首个 `turn/start` 可使用草稿上的当次选择。网关始终注入
   用户 reviewer，并拒绝浏览器提交 `never`、`granular` 或 reviewer。
@@ -117,7 +118,9 @@ P3 持久 Activity 审计，尚未开始。一次性沙箱内自动运行按 tur
 - 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。审批按钮和
   网关响应都收窄到协议允许且 app-server 在 `availableDecisions` 中实际提供的字符串决策；
   畸形、未知或只有客户端不支持的结构化决策会失败关闭。捕获到的命令审批理由会在当前
-  浏览器会话中继续绑定到对应的确切命令条目。
+  浏览器会话中继续绑定到对应的确切命令条目。命令和文件审批把图标决策固定在卡片标题右侧，
+  长命令与请求详情在有界内容区内滚动；多张卡片在桌面端横向排列、移动端纵向排列，处理前一项
+  后常用决策保持相同位置。结构化 `request_user_input` 仍保留完整表单和 Submit 流程。
 - 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
   控件，以及中断活跃轮次。有当前选择时，新线程 cwd 依次取精确匹配的当前线程、Active
   或 Archived 摘要；没有选择时取 bootstrap 默认 cwd。新线程沙箱始终重置为
@@ -268,12 +271,12 @@ P3 持久 Activity 审计，尚未开始。一次性沙箱内自动运行按 tur
 
 ## 验证
 
-当前工作树已于 2026-08-09 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
-`0.147.0` 完成验证：
+当前工作树已于 2026-08-10 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
+`0.147.0` 执行以下验证：
 
 - 既有基线曾在 2026-08-07 从同版本 CLI 生成 bindings，并核对恢复 sandbox、审批 decision、
-  turn/steering/fork、Plan 完整快照、历史模式和通知 revision 等相关结构。本轮审批变更只运行
-  不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
+  turn/steering/fork、Plan 完整快照、历史模式和通知 revision 等相关结构。2026-08-09 的自动
+  运行协议核对只运行不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
   `TurnStartParams.approvalPolicy` 引用的 `AskForApproval` 包含 `untrusted` 和 `on-request`，且
   `approvalsReviewer` 是稳定字段；实现只使用成熟的直接 `turn/start`，未调用实验性的设置 RPC
   或其他实验性 API。队列此前还核对了稳定 `TurnStartParams.clientUserMessageId` 与
@@ -281,20 +284,14 @@ P3 持久 Activity 审计，尚未开始。一次性沙箱内自动运行按 tur
   因此实现未提交前者，也未调用后者。普通文件输入此前完成的真实协议验证仍有效；没有仅为
   本轮自动化检查创建真实 turn 或持久测试 fork。
 - `npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
-- `NODE_ENV=test npm test` 通过：41 个测试文件、684 项测试；服务端测试在允许绑定回环套接字
-  的环境中运行。队列覆盖原子持久化、损坏和配额失败关闭、重启恢复、跨客户端 revision、
-  忙线程、上下文变化、未知发送结果、审批 owner 以及浏览器状态；Plan 覆盖同步竞态的 revision
-  比较、缺失 revision 的保守重放，以及终态 turn 遗留 `in_progress` 快照时停止动画。审批覆盖
-  已有线程和新线程首轮的一次性 `on-request`、后续显式恢复 `untrusted`、创建或启动失败后恢复
-  严格模式，以及自动 turn 遇到 sandbox 越界请求时仍显示人工命令审批并可接受。
-- `CHROME_BIN=/usr/bin/chromium ASK_CODEX_VISUAL_URL=http://127.0.0.1:4173
-  ASK_CODEX_VISUAL_OUTPUT=/tmp/ask-codex-sandbox-auto-run-visual.C8eV16 npm run check:visual`
-  针对当前生产构建通过。桌面端和 390x844 移动端夹具覆盖审批、项目导航、Activity、Skills、
-  Usage、Agent 输出下载、富内容、推理状态槽、图片、Plan、运行中 steering 输入区，以及新的
-  跨设备队列、一次性沙箱自动运行开关、附件 `+` 菜单和普通文件历史卡片；验证了 Queue 默认收起、
-  终态 Plan 停止旋转，以及已有线程和已配置新草稿都可逐轮开启并在切换后清除选择。队列展开
-  和折叠时按钮、状态文字与输入框均保持可用，同源 Blob 缺失时的不可下载状态也保持完整。
-  未发现水平溢出、裁切、内容重叠、
-  console error 或 page error。所有 RPC、上传和下载均由确定性浏览器夹具拦截；线程动作菜单
-  在两种视口均包含且容纳 Fork，没有创建真实 Codex 轮次或 fork。
-- 对 16 个本轮相关中英文文档执行了本地 Markdown 相对链接检查，全部目标均存在。
+- `src/components/ApprovalPanel.test.tsx` 的 8 项测试和 `src/App.test.tsx` 的 69 项测试通过，
+  覆盖图标决策顺序、协议允许的审批结果、逐 turn 启动策略、跨会话查看和完成先于启动响应的
+  竞态。`NODE_ENV=test npx vitest run --exclude server/server.test.ts` 通过：40 个文件、596 项
+  测试。受限环境中的完整 `NODE_ENV=test npm test` 另有 598 项通过；其余 89 项均属于
+  `server/server.test.ts`，因环境禁止监听 `127.0.0.1` 而统一报 `EPERM`，不是断言失败。上一
+  提交记录的 41 个文件、684 项测试已在允许绑定回环套接字的环境中通过。
+- 视觉夹具新增桌面端与移动端长审批内容、固定决策位置、连续处理坐标，以及 320/390 像素
+  长标题与 Ready 状态互不遮挡的断言；`node --check scripts/visual-check.mjs` 通过。当前受限环境
+  同时禁止 4173 回环监听和 Chromium socket，因此未对本次审批布局重新执行完整
+  `npm run check:visual`。上一提交记录的生产视觉基线仍然通过，但不作为本次新增断言的验证结果。
+- 使用 Markdown AST 解析了仓库中的 60 个 Markdown 文件，检查的 221 个相对链接目标均存在。

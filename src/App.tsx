@@ -129,6 +129,8 @@ const MAX_REASONING_PARTS = 16;
 const MAX_PENDING_CANONICAL_THREADS = 8;
 const MAX_SKILLS_PROJECT_CWDS = 16;
 const MAX_THREAD_USAGE_SNAPSHOTS = 32;
+const MAX_ACTIVE_TURN_LAUNCH_CONTEXTS = 32;
+const MAX_RECENT_COMPLETED_TURNS = 64;
 const MAX_ACTIVITY_EVENTS = 48;
 const MAX_RATE_LIMIT_UPDATE_EVENTS = 64;
 const THREAD_HYDRATION_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
@@ -178,6 +180,26 @@ interface PendingFileAttachmentGroup {
 }
 
 type NextTurnSettings = Pick<ThreadSettings, "model" | "effort">;
+
+interface ActiveTurnLaunchContext {
+  turnId: string;
+  approvalPolicy: "untrusted" | "on-request";
+}
+
+function turnIdentity(threadId: string, turnId: string): string {
+  return JSON.stringify([threadId, turnId]);
+}
+
+function rememberRecentCompletedTurn(turns: Set<string>, threadId: string, turnId: string): void {
+  const identity = turnIdentity(threadId, turnId);
+  turns.delete(identity);
+  turns.add(identity);
+  while (turns.size > MAX_RECENT_COMPLETED_TURNS) {
+    const oldestIdentity = turns.values().next().value as string | undefined;
+    if (oldestIdentity === undefined) break;
+    turns.delete(oldestIdentity);
+  }
+}
 
 function reasoningPartIndex(value: unknown): number | null {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < MAX_REASONING_PARTS
@@ -293,6 +315,9 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [nextTurnSettings, setNextTurnSettings] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [autoRunNextTurn, setAutoRunNextTurn] = useState(false);
+  const [activeTurnLaunchContexts, setActiveTurnLaunchContexts] = useState(
+    () => new Map<string, ActiveTurnLaunchContext>(),
+  );
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
@@ -304,6 +329,7 @@ export default function App() {
   const selectedThreadIdRef = useRef<string | null>(state.selectedThreadId);
   const approvalSelectionRef = useRef<string | null>(state.selectedThreadId);
   const previousActiveTurnIdRef = useRef<string | null>(state.activeTurnId);
+  const recentCompletedTurnsRef = useRef(new Set<string>());
   const currentThreadRef = useRef<CodexThread | null>(state.currentThread);
   const historyLoadsRef = useRef(new Set<string>());
   const detailLoadsRef = useRef(new Set<string>());
@@ -581,6 +607,43 @@ export default function App() {
     window.setTimeout(() => dispatch({ type: "removeToast", id }), 5_500);
   }, []);
 
+  const rememberActiveTurnLaunchContext = useCallback((
+    threadId: string,
+    context: ActiveTurnLaunchContext,
+  ): void => {
+    setActiveTurnLaunchContexts((current) => {
+      const existing = current.get(threadId);
+      if (
+        existing?.turnId === context.turnId &&
+        existing.approvalPolicy === context.approvalPolicy
+      ) {
+        return current;
+      }
+      const next = new Map(current);
+      next.delete(threadId);
+      next.set(threadId, context);
+      while (next.size > MAX_ACTIVE_TURN_LAUNCH_CONTEXTS) {
+        const oldestThreadId = next.keys().next().value as string | undefined;
+        if (oldestThreadId === undefined) break;
+        next.delete(oldestThreadId);
+      }
+      return next;
+    });
+  }, []);
+
+  const forgetActiveTurnLaunchContext = useCallback((
+    threadId: string,
+    turnId?: string,
+  ): void => {
+    setActiveTurnLaunchContexts((current) => {
+      const existing = current.get(threadId);
+      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return current;
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+  }, []);
+
   const removeLocalAttachmentsForThread = useCallback((threadId: string): void => {
     removedImagePreviewThreadIdsRef.current.add(threadId);
     for (const key of [...pendingImagePreviewGroupsRef.current.keys()]) {
@@ -766,6 +829,7 @@ export default function App() {
             authorityRevision: captureThreadCwdAuthorityRevision(),
           });
           pendingCanonicalThreadIdsRef.current.delete(threadId);
+          forgetActiveTurnLaunchContext(threadId);
           invalidateSelectedThread(threadId);
           removeLocalAttachmentsForThread(threadId);
           dispatch({ type: "deleteThread", threadId });
@@ -805,6 +869,11 @@ export default function App() {
       }
       case "turn/completed": {
         const turn = normalizeTurn(params.turn);
+        const completedTurnId = turn?.id ?? turnId;
+        if (threadId && completedTurnId) {
+          rememberRecentCompletedTurn(recentCompletedTurnsRef.current, threadId, completedTurnId);
+          forgetActiveTurnLaunchContext(threadId, completedTurnId);
+        }
         if (turn) dispatch({ type: "upsertTurn", turn, threadId });
         else if (turnId) dispatch({ type: "setTurnStatus", turnId, status: readString(params.status) ?? "completed", error: params.error });
         if (threadId) setThreadHydrationSignal((current) => current + 1);
@@ -902,6 +971,7 @@ export default function App() {
     }
   }, [
     captureThreadCwdAuthorityRevision,
+    forgetActiveTurnLaunchContext,
     invalidateSelectedThread,
     rememberAuthoritativeThreadCwd,
     removeLocalAttachmentsForThread,
@@ -1933,14 +2003,23 @@ export default function App() {
       });
       turnAccepted = true;
       const turn = extractTurn(result);
-      if (autoRunSelected && (!turn || turn.status !== "inProgress")) {
+      const completedBeforeStartResult = turn
+        ? recentCompletedTurnsRef.current.delete(turnIdentity(thread.id, turn.id))
+        : false;
+      if (turn?.status === "inProgress" && !completedBeforeStartResult) {
+        rememberActiveTurnLaunchContext(thread.id, {
+          turnId: turn.id,
+          approvalPolicy,
+        });
+      }
+      if (autoRunSelected) {
         setAutoRunNextTurn(false);
       }
       if (turn) {
         rememberImagePreviews(thread.id, turn.id, images, uploadedImages);
         rememberFileAttachments(thread.id, turn.id, files, uploadedFiles);
       }
-      if (turn && selectionGeneration === selectionGenerationRef.current) {
+      if (turn && !completedBeforeStartResult && selectionGeneration === selectionGenerationRef.current) {
         dispatch({ type: "upsertTurn", turn, threadId: thread.id });
       }
       void refreshThreads();
@@ -1960,6 +2039,7 @@ export default function App() {
     nextTurnSettings,
     refreshThreads,
     rememberAuthoritativeThreadCwd,
+    rememberActiveTurnLaunchContext,
     rememberFileAttachments,
     rememberImagePreviews,
     rpc,
@@ -2331,6 +2411,13 @@ export default function App() {
         turn.id === state.activeTurnId && turn.status === "inProgress"
       ))
     : undefined;
+  const activeTurnLaunchContext = state.activeTurnId && state.currentThread?.id === state.selectedThreadId
+    ? activeTurnLaunchContexts.get(state.currentThread.id)
+    : undefined;
+  const composerAutoRunEnabled = state.activeTurnId
+    ? activeTurnLaunchContext?.turnId === state.activeTurnId &&
+      activeTurnLaunchContext.approvalPolicy === "on-request"
+    : autoRunNextTurn;
   const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
   const syncing = resyncing;
   const queueSendDisabled = connection !== "connected" || loadingThread || syncing ||
@@ -2435,7 +2522,7 @@ export default function App() {
               state.currentThread?.id && state.currentThread.id === state.selectedThreadId
             ),
           )}
-          autoRunNextTurn={autoRunNextTurn}
+          autoRunNextTurn={composerAutoRunEnabled}
           disabled={connection !== "connected" || loadingThread || syncing || resyncError !== null || threadLoadError !== null}
           running={Boolean(state.activeTurnId)}
           settings={composerSettings}

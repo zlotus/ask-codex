@@ -912,7 +912,7 @@ pre {
 }
 
 .toolbar-actions {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: 7px;
   min-width: 0;
@@ -2882,6 +2882,7 @@ details[open] > summary .details-chevron {
 
 .approval-panel {
   display: flex;
+  align-items: flex-start;
   gap: 10px;
   max-height: min(42vh, 440px);
   padding: 10px max(18px, calc((100% - 840px) / 2));
@@ -2892,9 +2893,10 @@ details[open] > summary .details-chevron {
 }
 
 .approval-card {
-  flex: 1 0 min(100%, 430px);
+  flex: 0 0 430px;
+  width: 430px;
   min-width: 280px;
-  max-width: 620px;
+  max-width: 100%;
   padding: 12px;
   background: var(--surface-strong);
   border: 1px solid #d4d3cc;
@@ -2902,11 +2904,22 @@ details[open] > summary .details-chevron {
   border-radius: 6px;
 }
 
+.approval-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
 .approval-title {
   display: flex;
   align-items: flex-start;
   gap: 9px;
   color: #4b504b;
+}
+
+.approval-title > svg {
+  flex: 0 0 auto;
 }
 
 .approval-title > div {
@@ -2941,17 +2954,32 @@ details[open] > summary .details-chevron {
 }
 
 .approval-context > pre {
-  max-height: 150px;
   margin: 4px 0 0;
   padding: 8px 10px;
   color: #343934;
   font-size: 10.5px;
   line-height: 15px;
   white-space: pre-wrap;
-  overflow: auto;
   overflow-wrap: anywhere;
   background: #eeece6;
   border-radius: 4px;
+}
+
+.approval-body {
+  max-height: min(24dvh, 210px);
+  margin-top: 9px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.approval-body > :first-child {
+  margin-top: 0;
+}
+
+.approval-body > .code-output,
+.approval-body .approval-context > pre {
+  overflow: visible;
 }
 
 .approval-actions {
@@ -2960,6 +2988,20 @@ details[open] > summary .details-chevron {
   justify-content: flex-end;
   gap: 6px;
   margin-top: 11px;
+}
+
+.approval-actions--compact {
+  flex-wrap: nowrap;
+  align-self: start;
+  margin-top: 0;
+}
+
+.approval-action-button {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
 }
 
 .unsupported-request {
@@ -4252,6 +4294,17 @@ details[open] > summary .details-chevron {
     width: 100%;
     min-width: 0;
     margin-bottom: 8px;
+  }
+
+  .approval-body {
+    max-height: min(22dvh, 180px);
+  }
+
+  .approval-action-button {
+    flex-basis: 40px;
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
   }
 
   .composer-wrap {
