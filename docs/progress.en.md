@@ -344,6 +344,12 @@ not delivery commitments.
   consumed explicitly by a synchronized browser. It does not auto-execute,
   replay unknown results, support attachments, or act as a shared database
   between gateways or hosts.
+- Under ADR 0025, the current mobile deployment protected by Cloudflare Access
+  intentionally ships no Web App Manifest, PWA installation icons, or Service
+  Worker. Adding them on the tested device regressed to an account-initial icon
+  and an address bar; rolling them back restored the robot icon and chrome-less
+  launch. Reintroduction requires controlled physical-device validation and
+  must not weaken Access.
 - The browser cannot submit arbitrary commands or gain an implicit shell. Fixed
   actions and a PTY, even if implemented later, require explicit authorization
   and isolation boundaries separate from Codex approval.
@@ -472,5 +478,5 @@ Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
   Ready status at 320/390 pixels. Mobile approval button coordinates remained at
   `deltaX=0`, `deltaY=0` across consecutive decisions, with no browser console
   or page errors.
-- Markdown AST parsing covered all 64 Markdown files in the repository, and all
-  144 checked relative-link and image targets exist.
+- Markdown AST parsing covered all 66 Markdown files in the repository, and all
+  148 checked relative-link and image targets exist.

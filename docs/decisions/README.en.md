@@ -29,6 +29,7 @@ the records relevant to the current task.
 | [0022](0022-sandbox-aware-one-turn-auto-run.en.md) | Superseded by 0023 | Use `untrusted` for ordinary direct turns and `on-request` for one-shot auto-run while retaining human review at the sandbox boundary. |
 | [0023](0023-per-turn-manual-and-auto-execution-environments.en.md) | Superseded by 0024 | Have the gateway independently pin each direct turn to a manual or automatic approval and sandbox combination. |
 | [0024](0024-codex-aligned-manual-and-one-turn-auto.en.md) | Accepted | Match manual mode to normal Codex permissions and keep human fallback in one broadly automatic turn. |
+| [0025](0025-prioritize-chrome-less-mobile-launch-over-pwa-installation.en.md) | Accepted | Prioritize address-bar-free mobile launch and omit a PWA Manifest for now. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

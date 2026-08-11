@@ -435,6 +435,26 @@ https://codex.example.com
 不要用能否看到登录页作为最终验证；至少再创建一个测试会话，确认 WebSocket、Codex
 启动和审批交互都正常。
 
+### Android 主屏幕无地址栏启动
+
+当前仓库有意不提供 Web App Manifest、PWA 安装图标或 Service Worker。受 Cloudflare
+Access 保护的真机路径曾在加入这些资源后退化为灰底账号首字母图标和带地址栏窗口；移除后，
+原有机器人图标与无地址栏启动恢复。Access 可能参与了 Chrome 的安装资源获取或认证跳转，
+但现有证据不能证明它是唯一原因。完整决策与重新验证条件见
+[ADR 0025](decisions/0025-prioritize-chrome-less-mobile-launch-over-pwa-installation.md)。
+
+需要尽量扩大移动端显示面积时：
+
+1. 先在 Chrome 中完成 Cloudflare Access 登录并打开可正常使用的 Ask Codex。
+2. 使用 Chrome 的“添加到主屏幕”入口。菜单文案和创建耗时会随版本变化；提交一次后可等待片刻，
+   再检查桌面，避免因异步完成而重复创建。
+3. 从新图标启动，以没有地址栏和可用视口增大作为成功标准，不要求 Android 应用信息显示
+   Web App 或 WebAPK。
+
+若得到灰底账号首字母图标并仍有地址栏，只删除这个失败入口，回到已完成 Access 登录的 Chrome
+页面后重新创建。不要清除 Ask Codex 的站点数据作为常规排障步骤；这样会删除同源 IndexedDB
+中保存的附件预览和下载副本。不得为了改善安装行为而绕过或弱化 Access。
+
 ## 11. 常见故障
 
 ### 本机 Host/Origin 检查返回 HTTP 403

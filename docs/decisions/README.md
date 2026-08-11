@@ -28,6 +28,7 @@
 | [0022](0022-sandbox-aware-one-turn-auto-run.md) | 由 0023 取代 | 默认直接 turn 使用 `untrusted`，一次性自动 turn 使用 `on-request` 并保留沙箱越界人工审批。 |
 | [0023](0023-per-turn-manual-and-auto-execution-environments.md) | 由 0024 取代 | 每个直接 turn 由网关独立固定手动或自动审批与 sandbox 组合。 |
 | [0024](0024-codex-aligned-manual-and-one-turn-auto.md) | 已接受 | 默认手动模式对齐 Codex 常规权限，一次性自动模式广泛放行并保留必要的人工确认。 |
+| [0025](0025-prioritize-chrome-less-mobile-launch-over-pwa-installation.md) | 已接受 | 移动端优先保留无地址栏启动，暂不发布 PWA Manifest。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

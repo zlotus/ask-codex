@@ -431,6 +431,36 @@ Do not weaken or remove `ASK_CODEX_TOKEN` after Access works. Access protects
 the Cloudflare route; the application token remains useful if Access or route
 configuration is changed accidentally.
 
+### Address-bar-free Android home-screen launch
+
+The repository intentionally does not provide a Web App Manifest, PWA
+installation icons, or a Service Worker. On the tested physical-device path
+protected by Cloudflare Access, adding those resources regressed to a gray
+account-initial icon and a window with the address bar. Removing them restored
+the robot icon and address-bar-free launch. Access may have affected Chrome's
+installation-resource fetch or authentication transition, but the evidence does
+not establish it as the only cause. See
+[ADR 0025](decisions/0025-prioritize-chrome-less-mobile-launch-over-pwa-installation.en.md)
+for the complete decision and revalidation gate.
+
+To maximize the mobile viewport:
+
+1. Complete Cloudflare Access authentication in Chrome and open a working Ask
+   Codex page.
+2. Use Chrome's Add to Home screen action. Labels and completion time vary by
+   version; after submitting it once, wait briefly and check the launcher before
+   creating a duplicate.
+3. Launch from the new icon. Treat the absence of the address bar and the larger
+   usable viewport as success; Android App info does not need to identify it as
+   a Web App or WebAPK.
+
+If Chrome creates a gray account-initial icon that still opens with the address
+bar, delete only that failed entry, return to the Access-authenticated page in
+Chrome, and create it again. Do not clear Ask Codex site data as routine
+troubleshooting because that removes attachment previews and download copies
+stored in same-Origin IndexedDB. Do not bypass or weaken Access to improve the
+installation result.
+
 ## Troubleshooting
 
 ### Local Host/Origin probe returns 403
