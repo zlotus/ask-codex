@@ -58,11 +58,6 @@ const MAX_SANDBOX_WRITABLE_ROOTS = 64;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const MESSAGE_QUEUE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
-const SANDBOX_MODES = new Set([
-  "read-only",
-  "workspace-write",
-  "danger-full-access",
-]);
 const SANDBOX_POLICY_TYPES = new Set([
   "dangerFullAccess",
   "readOnly",
@@ -476,25 +471,16 @@ function sanitizeThreadSettings(
         "threadId",
         "cwd",
         "model",
-        "sandbox",
-        "approvalPolicy",
-        "approvalsReviewer",
         "excludeTurns",
         "initialTurnsPage",
       ]
-    : ["cwd", "model", "sandbox", "approvalPolicy", "approvalsReviewer"];
+    : ["cwd", "model"];
   assertOnlyKeys(method, input, allowed);
-
-  if (input.approvalPolicy !== undefined && input.approvalPolicy !== "on-request") {
-    throw new ClientInputError(`${method} approvalPolicy must be on-request`);
-  }
-  if (input.approvalsReviewer !== undefined && input.approvalsReviewer !== "user") {
-    throw new ClientInputError(`${method} approvalsReviewer must be user`);
-  }
 
   const output: Record<string, unknown> = {
     approvalPolicy: "on-request",
     approvalsReviewer: "user",
+    ...(method === "thread/start" ? { sandbox: "workspace-write" } : {}),
   };
   if (method === "thread/resume") {
     output.threadId = requiredString(method, input, "threadId");
@@ -512,12 +498,6 @@ function sanitizeThreadSettings(
   }
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));
-
-  const sandbox = optionalString(method, input, "sandbox");
-  if (sandbox !== undefined && !SANDBOX_MODES.has(sandbox)) {
-    throw new ClientInputError(`${method} sandbox is invalid`);
-  }
-  assignDefined(output, "sandbox", sandbox);
   return output;
 }
 
@@ -753,27 +733,21 @@ export function materializeTurnExecutionPolicy(
   if (executionMode !== "manual" && executionMode !== "auto") {
     throw new ClientInputError(`${method} executionMode must be manual or auto`);
   }
-  if (
-    executionMode === "auto" &&
-    (authority.current.type === "dangerFullAccess" || authority.current.type === "externalSandbox")
-  ) {
+  if (executionMode === "auto" && authority.current.type === "externalSandbox") {
     throw new ClientInputError(
       `${method} auto mode is unavailable for ${authority.current.type}`,
     );
   }
   const output = { ...input };
   delete output.executionMode;
-  let sandboxPolicy: GatewaySandboxPolicy | undefined;
-  if (authority.current.type === "dangerFullAccess") {
-    sandboxPolicy = { type: "dangerFullAccess" };
-  } else if (authority.current.type !== "externalSandbox") {
-    sandboxPolicy = executionMode === "manual"
-      ? { type: "readOnly", networkAccess: false }
+  const sandboxPolicy: GatewaySandboxPolicy | undefined = authority.current.type === "externalSandbox"
+    ? undefined
+    : executionMode === "auto"
+      ? { type: "dangerFullAccess" }
       : authority.workspaceWrite ?? DEFAULT_WORKSPACE_WRITE_SANDBOX;
-  }
   return {
     ...output,
-    approvalPolicy: executionMode === "manual" ? "untrusted" : "on-request",
+    approvalPolicy: "on-request",
     approvalsReviewer: "user",
     ...(sandboxPolicy === undefined ? {} : {
       sandboxPolicy: sandboxPolicy.type === "workspaceWrite"

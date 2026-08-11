@@ -32,7 +32,7 @@ describe("Composer", () => {
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
   });
 
-  it("arms one-turn sandbox auto-run only in an eligible idle composer", () => {
+  it("arms one-turn automatic mode only in an eligible idle composer", () => {
     const onAutoRunNextTurnChange = vi.fn();
     const props = {
       disabled: false,
@@ -45,7 +45,7 @@ describe("Composer", () => {
       onAutoRunNextTurnChange,
     };
     const { rerender } = render(<Composer {...props} />);
-    const toggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const toggle = screen.getByLabelText("Automatic mode for next turn");
 
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
@@ -58,6 +58,22 @@ describe("Composer", () => {
     rerender(<Composer {...props} disabled autoRunNextTurn />);
     expect(toggle).toBeChecked();
     expect(toggle).toBeEnabled();
+
+    rerender(<Composer
+      {...props}
+      settings={{ ...props.settings, sandbox: "danger-full-access" }}
+    />);
+    expect(toggle).toBeEnabled();
+
+    rerender(<Composer
+      {...props}
+      settings={{ ...props.settings, sandbox: "external" }}
+    />);
+    expect(toggle).toBeDisabled();
+    expect(toggle.closest("label")).toHaveAttribute(
+      "title",
+      "This thread uses an externally managed sandbox",
+    );
 
     rerender(<Composer {...props} autoRunAvailable={false} />);
     expect(toggle).not.toBeChecked();

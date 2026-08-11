@@ -6,7 +6,7 @@ the records relevant to the current task.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-codex-app-server-stdio.md) | Accepted | Use the documented Codex app-server protocol over JSONL stdio. |
-| [0002](0002-security-gateway-and-manual-approval.md) | Accepted; amended by 0020, with the relevant policy last amended by 0023 | Keep the gateway as a strict policy boundary and enforce manual approval. |
+| [0002](0002-security-gateway-and-manual-approval.md) | Accepted; amended by 0020, with the relevant policy last amended by 0024 | Keep the gateway as a strict policy boundary and enforce manual approval. |
 | [0003](0003-cloudflare-access-dual-gate.md) | Accepted | Use Cloudflare Access and the Ask Codex token as independent remote-access gates. |
 | [0004](0004-versioned-project-context.md) | Accepted | Keep concise cross-device development context in versioned documents. |
 | [0005](0005-thread-and-turn-settings.md) | Accepted; amended by 0006 | Separate thread identity and sandbox settings from next-turn model controls. |
@@ -27,7 +27,8 @@ the records relevant to the current task.
 | [0020](0020-one-turn-prompt-free-approval.en.md) | Superseded by 0022 | Keep manual approval as the default while allowing one explicitly armed prompt-free turn on an existing idle thread. |
 | [0021](0021-first-turn-one-shot-prompt-free-approval.en.md) | Superseded by 0022 | Default every turn to manual and extend the explicit one-shot choice to a configured new thread's first turn. |
 | [0022](0022-sandbox-aware-one-turn-auto-run.en.md) | Superseded by 0023 | Use `untrusted` for ordinary direct turns and `on-request` for one-shot auto-run while retaining human review at the sandbox boundary. |
-| [0023](0023-per-turn-manual-and-auto-execution-environments.en.md) | Accepted | Have the gateway independently pin each direct turn to a manual or automatic approval and sandbox combination. |
+| [0023](0023-per-turn-manual-and-auto-execution-environments.en.md) | Superseded by 0024 | Have the gateway independently pin each direct turn to a manual or automatic approval and sandbox combination. |
+| [0024](0024-codex-aligned-manual-and-one-turn-auto.en.md) | Accepted | Match manual mode to normal Codex permissions and keep human fallback in one broadly automatic turn. |
 
 For the primary Simplified Chinese index, see [README.md](README.md).
 

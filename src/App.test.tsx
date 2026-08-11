@@ -326,7 +326,7 @@ describe("App thread settings lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
 
     expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/default-one");
-    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
   });
 
   it("queues composer text for the selected thread and explicitly sends it", async () => {
@@ -360,11 +360,11 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(screen.queryByText("Continue this later")).not.toBeInTheDocument());
   });
 
-  it("uses sandbox-aware auto-run for one direct turn, then restores strict approval", async () => {
+  it("uses broad automatic mode with human fallback for one turn, then restores manual", async () => {
     installBootstrapFixture();
     render(<App />);
 
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     expect(autoToggle).toBeDisabled();
     fireEvent.click(await screen.findByText("Existing thread"));
     await screen.findByTitle("Existing thread");
@@ -393,21 +393,21 @@ describe("App thread settings lifecycle", () => {
 
     act(() => socket.onRequest?.({
       type: "request",
-      id: "sandbox-escalation",
+      id: "auto-turn-confirmation",
       method: "item/commandExecution/requestApproval",
       params: {
         threadId: existingThread.id,
         turnId: "turn-new",
-        itemId: "command-escalation",
-        command: "npm install",
+        itemId: "command-confirmation",
+        command: "publish release",
         cwd: existingThread.cwd,
-        reason: "Requires network access",
+        reason: "This action still requires explicit confirmation",
         availableDecisions: ["accept", "decline"],
       },
     }));
     expect(screen.getByText("Run this command?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(socket.respond).toHaveBeenCalledWith("sandbox-escalation", { decision: "accept" });
+    expect(socket.respond).toHaveBeenCalledWith("auto-turn-confirmation", { decision: "accept" });
 
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "steer without consuming auto mode" },
@@ -443,7 +443,7 @@ describe("App thread settings lifecycle", () => {
     }));
   });
 
-  it("auto-runs a thread left read-only without changing its sandbox through resume", async () => {
+  it("starts automatic mode from a read-only thread without a resume override", async () => {
     const baseRpc = socket.rpc.getMockImplementation()!;
     socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
       const request = params as { initialTurnsPage?: unknown } | undefined;
@@ -464,7 +464,7 @@ describe("App thread settings lifecycle", () => {
     fireEvent.click(await screen.findByText("Existing thread"));
     await screen.findByTitle("Existing thread");
 
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     await sendMessage();
 
@@ -535,7 +535,7 @@ describe("App thread settings lifecycle", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
     await screen.findByTitle("Existing thread");
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     await sendMessage();
     await waitFor(() => {
@@ -570,15 +570,28 @@ describe("App thread settings lifecycle", () => {
     });
   });
 
-  it("clears an armed auto turn when the selected thread becomes externally sandboxed", async () => {
+  it("keeps automatic mode across full access updates but clears it for external sandboxes", async () => {
     installBootstrapFixture();
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
     await screen.findByTitle("Existing thread");
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     expect(autoToggle).toBeChecked();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { sandboxPolicy: { type: "dangerFullAccess" } },
+      },
+    }));
+    await waitFor(() => {
+      expect(autoToggle).toBeChecked();
+      expect(autoToggle).toBeEnabled();
+    });
 
     act(() => socket.onNotification?.({
       type: "notification",
@@ -617,7 +630,7 @@ describe("App thread settings lifecycle", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
     await screen.findByTitle("Existing thread");
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "complete immediately" },
@@ -647,12 +660,12 @@ describe("App thread settings lifecycle", () => {
     expect(screen.queryByRole("button", { name: "Steer active turn" })).not.toBeInTheDocument();
   });
 
-  it("uses sandbox-aware auto-run for the first turn of a configured new thread", async () => {
+  it("uses broad automatic mode for the first turn of a configured new thread", async () => {
     const fetchMock = installBootstrapFixture();
     render(<App />);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     expect(autoToggle).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
@@ -663,9 +676,9 @@ describe("App thread settings lifecycle", () => {
 
     await sendMessage();
 
-    expect(socket.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({
-      approvalPolicy: "on-request",
-    }));
+    const threadStart = socket.rpc.mock.calls.find(([method]) => method === "thread/start")?.[1];
+    expect(threadStart).not.toHaveProperty("approvalPolicy");
+    expect(threadStart).not.toHaveProperty("sandbox");
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       threadId: newThread.id,
       executionMode: "auto",
@@ -685,7 +698,7 @@ describe("App thread settings lifecycle", () => {
     expect(autoToggle).toBeEnabled();
   });
 
-  it("restores strict approval when an armed new thread cannot be created", async () => {
+  it("restores manual mode when an armed new thread cannot be created", async () => {
     const baseRpc = socket.rpc.getMockImplementation();
     socket.rpc.mockImplementation((method: string, params?: unknown) => (
       method === "thread/start"
@@ -698,7 +711,7 @@ describe("App thread settings lifecycle", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
     fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "start automatically" },
@@ -711,7 +724,7 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
   });
 
-  it("restores strict approval when an auto turn start fails", async () => {
+  it("restores manual mode when an auto turn start fails", async () => {
     const baseRpc = socket.rpc.getMockImplementation();
     socket.rpc.mockImplementation((method: string, params?: unknown) => (
       method === "turn/start"
@@ -723,7 +736,7 @@ describe("App thread settings lifecycle", () => {
 
     fireEvent.click(await screen.findByText("Existing thread"));
     await screen.findByTitle("Existing thread");
-    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    const autoToggle = screen.getByLabelText("Automatic mode for next turn");
     fireEvent.click(autoToggle);
     await sendMessage();
 
@@ -776,7 +789,7 @@ describe("App thread settings lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
 
     expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/default-one");
-    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
   });
 
   it("uses the selected active summary cwd when loading that thread fails", async () => {
@@ -871,14 +884,15 @@ describe("App thread settings lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "New thread" }));
 
     expect(screen.getByLabelText("Working directory")).toHaveValue("/workspace/updated");
-    expect(screen.getByLabelText("Sandbox")).toHaveValue("workspace-write");
+    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create thread" }));
     await sendMessage();
 
     expect(socket.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({
       cwd: "/workspace/updated",
-      sandbox: "workspace-write",
     }));
+    const threadStart = socket.rpc.mock.calls.find(([method]) => method === "thread/start")?.[1];
+    expect(threadStart).not.toHaveProperty("sandbox");
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       cwd: "/workspace/updated",
     }));

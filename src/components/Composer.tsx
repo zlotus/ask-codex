@@ -8,7 +8,7 @@ import {
   Plus,
   RotateCcw,
   Send,
-  ShieldCheck,
+  ShieldOff,
   Sparkles,
   Square,
   X,
@@ -130,8 +130,7 @@ export function Composer({
       (images.length === 0 || imageInputSupported));
   const canEnqueue = !controlsDisabled && Boolean(onEnqueue) && Boolean(value.trim()) &&
     images.length === 0 && files.length === 0;
-  const autoRunSandboxAvailable = settings.sandbox !== "danger-full-access" &&
-    settings.sandbox !== "external";
+  const autoRunSandboxAvailable = settings.sandbox !== "external";
   const autoRunDisabled = running || sending || !autoRunAvailable || !autoRunSandboxAvailable;
 
   useEffect(() => {
@@ -512,16 +511,16 @@ export function Composer({
             className={`composer-approval-toggle${autoRunNextTurn ? " composer-approval-toggle--active" : ""}`}
             title={!autoRunAvailable
               ? "Choose an idle thread or finish configuring a new one before enabling one-turn auto mode"
-              : settings.sandbox === "danger-full-access"
-                ? "Full access is configured separately and already removes sandbox restrictions"
-                : settings.sandbox === "external"
-                  ? "This thread uses an externally managed sandbox"
-                  : "Use workspace-write for this turn; ask before sandbox escalation"}
+              : settings.sandbox === "external"
+                ? "This thread uses an externally managed sandbox"
+                : autoRunNextTurn && running
+                  ? "Run without workspace restrictions; ask only when confirmation is still required"
+                  : "Run the next turn without workspace restrictions; ask only when confirmation is still required"}
           >
-            <ShieldCheck size={13} aria-hidden="true" />
+            <ShieldOff size={13} aria-hidden="true" />
             <input
               type="checkbox"
-              aria-label="Auto-run sandboxed actions for next turn"
+              aria-label="Automatic mode for next turn"
               checked={autoRunNextTurn}
               disabled={autoRunDisabled}
               onChange={(event) => onAutoRunNextTurnChange(event.target.checked)}

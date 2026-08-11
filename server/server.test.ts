@@ -355,6 +355,13 @@ describe("AskCodexServer", () => {
       }],
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
     });
     expect(gateway.request.mock.calls.find(([method]) => method === "thread/resume")?.[1]).toEqual({
       threadId: "thread-queue",
@@ -2061,6 +2068,7 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
+      sandbox: "workspace-write",
     });
 
     gateway.emit(
@@ -3031,7 +3039,7 @@ describe("AskCodexServer", () => {
     },
   );
 
-  it("probes sandbox authority before a direct manual turn and rebuilds its policy", async () => {
+  it("probes sandbox authority before a direct manual turn and restores writable defaults", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
@@ -3069,15 +3077,15 @@ describe("AskCodexServer", () => {
         {
           threadId: "thread-manual-policy",
           input: [{ type: "text", text: "inspect", text_elements: [] }],
-          approvalPolicy: "untrusted",
+          approvalPolicy: "on-request",
           approvalsReviewer: "user",
-          sandboxPolicy: { type: "readOnly", networkAccess: false },
+          sandboxPolicy: workspaceSandbox(),
         },
       ],
     ]);
   });
 
-  it("reuses authoritative workspace roots for an auto turn", async () => {
+  it("uses full access with manual fallback for an automatic turn", async () => {
     const gateway = new FakeGateway();
     const authoritativeSandbox = workspaceSandbox(["/workspace/shared"]);
     gateway.request.mockImplementation(async (method, params) => {
@@ -3132,7 +3140,7 @@ describe("AskCodexServer", () => {
         input: [{ type: "text", text: "edit", text_elements: [] }],
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
-        sandboxPolicy: authoritativeSandbox,
+        sandboxPolicy: { type: "dangerFullAccess" },
       });
   });
 
@@ -3184,393 +3192,10 @@ describe("AskCodexServer", () => {
 
     const turnParams = gateway.request.mock.calls.find(([method]) => method === "turn/start")?.[1];
     expect(turnParams).toEqual(expect.objectContaining({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "on-request",
       approvalsReviewer: "user",
     }));
     expect(turnParams).not.toHaveProperty("sandboxPolicy");
-  });
-
-  it.each([
-    [
-      "external sandbox",
-      { thread: { id: "thread-probed" }, sandbox: { type: "externalSandbox", networkAccess: "restricted" } },
-      "thread/resume cannot override an externally managed sandbox",
-    ],
-    [
-      "missing sandbox",
-      { thread: { id: "thread-probed" } },
-      "thread/resume could not verify the existing sandbox",
-    ],
-    [
-      "unknown sandbox",
-      { thread: { id: "thread-probed" }, sandbox: { type: "futureSandbox" } },
-      "thread/resume could not verify the existing sandbox",
-    ],
-    [
-      "mismatched thread",
-      { thread: { id: "thread-other" }, sandbox: workspaceSandbox() },
-      "thread/resume could not verify the existing sandbox",
-    ],
-  ])("fails closed before a sandbox override for %s", async (_label, probeResult, message) => {
-    const gateway = new FakeGateway();
-    gateway.request.mockResolvedValueOnce(probeResult);
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const client = connect(url, "test-token");
-    await once(client.socket, "open");
-    await waitForMessage(client.messages, (entry) => entry.type === "status");
-
-    client.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "guarded-sandbox-override",
-      method: "thread/resume",
-      params: {
-        threadId: "thread-probed",
-        sandbox: "danger-full-access",
-        excludeTurns: false,
-        initialTurnsPage: { limit: 25, itemsView: "full" },
-      },
-    }));
-    const error = await waitForMessage(
-      client.messages,
-      (entry) => entry.type === "rpcError" && entry.id === "guarded-sandbox-override",
-    );
-
-    expect(error).toEqual({
-      type: "rpcError",
-      id: "guarded-sandbox-override",
-      error: { code: -32602, message },
-    });
-    expect(gateway.request.mock.calls.filter(([method]) => method === "thread/resume"))
-      .toEqual([[
-        "thread/resume",
-        {
-          threadId: "thread-probed",
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          excludeTurns: true,
-        },
-      ]]);
-  });
-
-  it.each([
-    ["external sandbox", { sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" } }],
-    ["missing sandbox", {}],
-    ["null sandbox", { sandboxPolicy: null }],
-    ["unknown sandbox", { sandboxPolicy: { type: "futureSandbox" } }],
-  ])("fails closed when %s authority arrives during an override probe", async (
-    _label,
-    threadSettings,
-  ) => {
-    const gateway = new FakeGateway();
-    let resolveProbe: ((result: unknown) => void) | undefined;
-    const pendingProbe = new Promise<unknown>((resolve) => {
-      resolveProbe = resolve;
-    });
-    gateway.request.mockImplementation(async (method) => (
-      method === "thread/resume" ? pendingProbe : { ok: true }
-    ));
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const client = connect(url, "test-token");
-    await once(client.socket, "open");
-    await waitForMessage(client.messages, (entry) => entry.type === "status");
-
-    client.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "sandbox-changed-during-probe",
-      method: "thread/resume",
-      params: { threadId: "thread-changing", sandbox: "read-only" },
-    }));
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledTimes(1));
-
-    resolveProbe?.({
-      thread: { id: "thread-changing" },
-      sandbox: workspaceSandbox(),
-    });
-    gateway.emit("notification", "thread/settings/updated", {
-      threadId: "thread-changing",
-      threadSettings,
-    });
-
-    const error = await waitForMessage(
-      client.messages,
-      (entry) => entry.type === "rpcError" && entry.id === "sandbox-changed-during-probe",
-    );
-    expect(error).toEqual({
-      type: "rpcError",
-      id: "sandbox-changed-during-probe",
-      error: {
-        code: -32602,
-        message: "thread/resume could not verify the existing sandbox",
-      },
-    });
-    expect(gateway.request).toHaveBeenCalledTimes(1);
-
-    gateway.request
-      .mockResolvedValueOnce({
-        thread: { id: "thread-changing" },
-        sandbox: workspaceSandbox(),
-      })
-      .mockResolvedValueOnce({
-        thread: { id: "thread-changing" },
-        sandbox: { type: "readOnly", networkAccess: false },
-      });
-    client.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "sandbox-probe-retry",
-      method: "thread/resume",
-      params: { threadId: "thread-changing", sandbox: "read-only" },
-    }));
-    await waitForMessage(
-      client.messages,
-      (entry) => entry.type === "rpcResult" && entry.id === "sandbox-probe-retry",
-    );
-    expect(gateway.request).toHaveBeenCalledTimes(3);
-    expect(gateway.request.mock.calls.slice(1)).toEqual([
-      [
-        "thread/resume",
-        {
-          threadId: "thread-changing",
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          excludeTurns: true,
-        },
-      ],
-      [
-        "thread/resume",
-        {
-          threadId: "thread-changing",
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          sandbox: "read-only",
-        },
-      ],
-    ]);
-  });
-
-  it("does not block a sandbox override for safe or unrelated settings updates", async () => {
-    const gateway = new FakeGateway();
-    let resolveProbe: ((result: unknown) => void) | undefined;
-    const pendingProbe = new Promise<unknown>((resolve) => {
-      resolveProbe = resolve;
-    });
-    gateway.request
-      .mockImplementationOnce(async () => pendingProbe)
-      .mockResolvedValueOnce({
-        thread: { id: "thread-still-safe" },
-        sandbox: { type: "readOnly", networkAccess: false },
-      });
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const client = connect(url, "test-token");
-    await once(client.socket, "open");
-    await waitForMessage(client.messages, (entry) => entry.type === "status");
-
-    client.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "sandbox-remains-safe",
-      method: "thread/resume",
-      params: { threadId: "thread-still-safe", sandbox: "read-only" },
-    }));
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledTimes(1));
-    gateway.emit("notification", "thread/settings/updated", {
-      threadId: "thread-other",
-      threadSettings: {
-        sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
-      },
-    });
-    gateway.emit("notification", "thread/settings/updated", {
-      threadId: "thread-still-safe",
-      threadSettings: {
-        sandboxPolicy: { type: "workspaceWrite" },
-      },
-    });
-    resolveProbe?.({
-      thread: { id: "thread-still-safe" },
-      sandbox: workspaceSandbox(),
-    });
-
-    await waitForMessage(
-      client.messages,
-      (entry) => entry.type === "rpcResult" && entry.id === "sandbox-remains-safe",
-    );
-    expect(gateway.request).toHaveBeenCalledTimes(2);
-  });
-
-  it("applies a sandbox override only after a non-external probe and then changes owner", async () => {
-    const gateway = new FakeGateway();
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const owner = connect(url, "test-token");
-    const challenger = connect(url, "test-token");
-    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
-    await waitForMessage(owner.messages, (entry) => entry.type === "status");
-    await waitForMessage(challenger.messages, (entry) => entry.type === "status");
-
-    owner.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "sandbox-owner",
-      method: "thread/start",
-      params: { cwd: process.cwd() },
-    }));
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "rpcResult" && entry.id === "sandbox-owner",
-    );
-
-    gateway.request.mockClear();
-    let resolveOverride: ((result: unknown) => void) | undefined;
-    const pendingOverride = new Promise<unknown>((resolve) => {
-      resolveOverride = resolve;
-    });
-    gateway.request
-      .mockResolvedValueOnce({
-        thread: { id: "thread-owned" },
-        sandbox: workspaceSandbox(),
-      })
-      .mockImplementationOnce(async () => pendingOverride);
-    challenger.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "safe-sandbox-override",
-      method: "thread/resume",
-      params: {
-        threadId: "thread-owned",
-        sandbox: "read-only",
-        excludeTurns: true,
-      },
-    }));
-    await vi.waitFor(() => expect(gateway.request.mock.calls).toEqual([
-      [
-        "thread/resume",
-        {
-          threadId: "thread-owned",
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          excludeTurns: true,
-        },
-      ],
-      [
-        "thread/resume",
-        {
-          threadId: "thread-owned",
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          excludeTurns: true,
-          sandbox: "read-only",
-        },
-      ],
-    ]));
-
-    gateway.emit(
-      "request",
-      99,
-      "item/commandExecution/requestApproval",
-      { threadId: "thread-owned", command: "true" },
-    );
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "request" && entry.id === 99,
-    );
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    expect(challenger.messages.some((entry) => entry.type === "request" && entry.id === 99))
-      .toBe(false);
-    owner.socket.send(JSON.stringify({
-      type: "response",
-      id: 99,
-      result: { decision: "accept" },
-    }));
-    await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
-      99,
-      { decision: "accept" },
-    ));
-
-    resolveOverride?.({
-      thread: { id: "thread-owned" },
-      sandbox: { type: "readOnly", networkAccess: false },
-    });
-    await waitForMessage(
-      challenger.messages,
-      (entry) => entry.type === "rpcResult" && entry.id === "safe-sandbox-override",
-    );
-
-    gateway.emit(
-      "request",
-      94,
-      "item/commandExecution/requestApproval",
-      { threadId: "thread-owned", command: "true" },
-    );
-    await waitForMessage(
-      challenger.messages,
-      (entry) => entry.type === "request" && entry.id === 94,
-    );
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    expect(owner.messages.some((entry) => entry.type === "request" && entry.id === 94))
-      .toBe(false);
-  });
-
-  it("keeps the previous owner when the sandbox override fails after its probe", async () => {
-    const gateway = new FakeGateway();
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const owner = connect(url, "test-token");
-    const challenger = connect(url, "test-token");
-    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
-    await waitForMessage(owner.messages, (entry) => entry.type === "status");
-    await waitForMessage(challenger.messages, (entry) => entry.type === "status");
-
-    owner.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "failed-override-owner",
-      method: "thread/start",
-      params: { cwd: process.cwd() },
-    }));
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "rpcResult" && entry.id === "failed-override-owner",
-    );
-
-    gateway.request.mockClear();
-    gateway.request
-      .mockResolvedValueOnce({
-        thread: { id: "thread-owned" },
-        sandbox: workspaceSandbox(),
-      })
-      .mockRejectedValueOnce(new CodexRpcError({
-        code: -32_001,
-        message: "sandbox override rejected",
-      }));
-    challenger.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "failed-sandbox-override",
-      method: "thread/resume",
-      params: { threadId: "thread-owned", sandbox: "danger-full-access" },
-    }));
-    await waitForMessage(
-      challenger.messages,
-      (entry) => entry.type === "rpcError" && entry.id === "failed-sandbox-override",
-    );
-    expect(gateway.request.mock.calls.filter(([method]) => method === "thread/resume"))
-      .toHaveLength(2);
-
-    gateway.emit(
-      "request",
-      95,
-      "item/commandExecution/requestApproval",
-      { threadId: "thread-owned", command: "true" },
-    );
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "request" && entry.id === 95,
-    );
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    expect(challenger.messages.some((entry) => entry.type === "request" && entry.id === 95))
-      .toBe(false);
   });
 
   it("keeps an external resume without a sandbox override to one app-server request", async () => {
@@ -3683,152 +3308,6 @@ describe("AskCodexServer", () => {
       101,
       { decision: "accept" },
     ));
-  });
-
-  it("rejects an override result that does not match the requested sandbox", async () => {
-    const gateway = new FakeGateway();
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const owner = connect(url, "test-token");
-    const challenger = connect(url, "test-token");
-    await Promise.all([once(owner.socket, "open"), once(challenger.socket, "open")]);
-    await waitForMessage(owner.messages, (entry) => entry.type === "status");
-    await waitForMessage(challenger.messages, (entry) => entry.type === "status");
-
-    owner.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "mismatched-sandbox-existing-owner",
-      method: "thread/start",
-      params: { cwd: process.cwd() },
-    }));
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "rpcResult" &&
-        entry.id === "mismatched-sandbox-existing-owner",
-    );
-
-    gateway.request
-      .mockResolvedValueOnce({
-        thread: { id: "thread-owned" },
-        sandbox: workspaceSandbox(),
-      })
-      .mockResolvedValueOnce({
-        thread: { id: "thread-owned" },
-        sandbox: { type: "externalSandbox", networkAccess: "restricted" },
-      });
-    challenger.socket.send(JSON.stringify({
-      type: "rpc",
-      id: "mismatched-final-sandbox",
-      method: "thread/resume",
-      params: { threadId: "thread-owned", sandbox: "read-only" },
-    }));
-
-    const error = await waitForMessage(
-      challenger.messages,
-      (entry) => entry.type === "rpcError" && entry.id === "mismatched-final-sandbox",
-    );
-    expect(error).toEqual({
-      type: "rpcError",
-      id: "mismatched-final-sandbox",
-      error: {
-        code: -32602,
-        message: "thread/resume did not apply the requested sandbox",
-      },
-    });
-    expect(gateway.request.mock.calls.filter(([method]) => method === "thread/resume"))
-      .toHaveLength(2);
-
-    gateway.emit(
-      "request",
-      102,
-      "item/commandExecution/requestApproval",
-      { threadId: "thread-owned", command: "true" },
-    );
-    await waitForMessage(
-      owner.messages,
-      (entry) => entry.type === "request" && entry.id === 102,
-    );
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    expect(challenger.messages.some((entry) => entry.type === "request" && entry.id === 102))
-      .toBe(false);
-    owner.socket.send(JSON.stringify({
-      type: "response",
-      id: 102,
-      result: { decision: "accept" },
-    }));
-    await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
-      102,
-      { decision: "accept" },
-    ));
-  });
-
-  it("serializes sandbox probes and overrides for the same thread", async () => {
-    const gateway = new FakeGateway();
-    const resumeResolvers: Array<(result: unknown) => void> = [];
-    gateway.request.mockImplementation(async (method) => {
-      if (method !== "thread/resume") return { ok: true };
-      return await new Promise<unknown>((resolveResume) => {
-        resumeResolvers.push(resolveResume);
-      });
-    });
-    const service = new AskCodexServer(config("test-token"), gateway);
-    services.push(service);
-    const { url } = await service.start();
-    const client = connect(url, "test-token");
-    await once(client.socket, "open");
-    await waitForMessage(client.messages, (entry) => entry.type === "status");
-
-    for (const [id, sandbox] of [
-      ["serialized-read-only", "read-only"],
-      ["serialized-full-access", "danger-full-access"],
-    ]) {
-      client.socket.send(JSON.stringify({
-        type: "rpc",
-        id,
-        method: "thread/resume",
-        params: { threadId: "thread-serialized", sandbox },
-      }));
-    }
-
-    await vi.waitFor(() => expect(resumeResolvers).toHaveLength(1));
-    resumeResolvers[0]?.({
-      thread: { id: "thread-serialized" },
-      sandbox: workspaceSandbox(),
-    });
-    await vi.waitFor(() => expect(resumeResolvers).toHaveLength(2));
-    expect(gateway.request.mock.calls[1]?.[1]).toMatchObject({ sandbox: "read-only" });
-
-    resumeResolvers[1]?.({
-      thread: { id: "thread-serialized" },
-      sandbox: { type: "readOnly", networkAccess: false },
-    });
-    await vi.waitFor(() => expect(resumeResolvers).toHaveLength(3));
-    expect(gateway.request.mock.calls[2]?.[1]).not.toHaveProperty("sandbox");
-
-    resumeResolvers[2]?.({
-      thread: { id: "thread-serialized" },
-      sandbox: { type: "readOnly", networkAccess: false },
-    });
-    await vi.waitFor(() => expect(resumeResolvers).toHaveLength(4));
-    expect(gateway.request.mock.calls[3]?.[1]).toMatchObject({
-      sandbox: "danger-full-access",
-    });
-    resumeResolvers[3]?.({
-      thread: { id: "thread-serialized" },
-      sandbox: { type: "dangerFullAccess" },
-    });
-
-    await Promise.all([
-      waitForMessage(
-        client.messages,
-        (entry) => entry.type === "rpcResult" && entry.id === "serialized-read-only",
-      ),
-      waitForMessage(
-        client.messages,
-        (entry) => entry.type === "rpcResult" && entry.id === "serialized-full-access",
-      ),
-    ]);
   });
 
   it("serializes turn/steer with an in-flight ownership RPC for the same thread", async () => {
@@ -4124,21 +3603,21 @@ describe("AskCodexServer", () => {
     ))).toHaveLength(1);
   });
 
-  it("continues a queued ownership RPC after an override probe is explicitly rejected", async () => {
+  it("continues a queued ownership RPC after an ordinary resume is explicitly rejected", async () => {
     const gateway = new FakeGateway();
-    let rejectProbe: ((error: unknown) => void) | undefined;
-    const pendingProbe = new Promise<unknown>((_resolve, reject) => {
-      rejectProbe = reject;
+    let rejectResume: ((error: unknown) => void) | undefined;
+    const pendingResume = new Promise<unknown>((_resolve, reject) => {
+      rejectResume = reject;
     });
     gateway.request.mockImplementation(async (method) => {
-      if (method === "thread/resume") return await pendingProbe;
+      if (method === "thread/resume") return await pendingResume;
       if (method === "turn/start") {
-        return { turn: { id: "turn-after-probe-rejection", status: "inProgress", items: [] } };
+        return { turn: { id: "turn-after-resume-rejection", status: "inProgress", items: [] } };
       }
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
-    primeWorkspaceSandboxAuthority(service, "thread-probe-queue");
+    primeWorkspaceSandboxAuthority(service, "thread-resume-queue");
     services.push(service);
     const { url } = await service.start();
     const client = connect(url, "test-token");
@@ -4147,17 +3626,17 @@ describe("AskCodexServer", () => {
 
     client.socket.send(JSON.stringify({
       type: "rpc",
-      id: "rejected-probe-queue-head",
+      id: "rejected-resume-queue-head",
       method: "thread/resume",
-      params: { threadId: "thread-probe-queue", sandbox: "read-only" },
+      params: { threadId: "thread-resume-queue" },
     }));
     await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledTimes(1));
     client.socket.send(JSON.stringify({
       type: "rpc",
-      id: "turn-after-rejected-probe",
+      id: "turn-after-rejected-resume",
       method: "turn/start",
       params: {
-        threadId: "thread-probe-queue",
+        threadId: "thread-resume-queue",
         input: [{ type: "text", text: "continue", text_elements: [] }],
       },
     }));
@@ -4166,15 +3645,15 @@ describe("AskCodexServer", () => {
     ).toBe(2));
     expect(gateway.request).toHaveBeenCalledTimes(1);
 
-    rejectProbe?.(new CodexRpcError({ code: -32_001, message: "probe rejected" }));
+    rejectResume?.(new CodexRpcError({ code: -32_001, message: "resume rejected" }));
     await Promise.all([
       waitForMessage(
         client.messages,
-        (entry) => entry.type === "rpcError" && entry.id === "rejected-probe-queue-head",
+        (entry) => entry.type === "rpcError" && entry.id === "rejected-resume-queue-head",
       ),
       waitForMessage(
         client.messages,
-        (entry) => entry.type === "rpcResult" && entry.id === "turn-after-rejected-probe",
+        (entry) => entry.type === "rpcResult" && entry.id === "turn-after-rejected-resume",
       ),
     ]);
     expect(gateway.request.mock.calls.map(([method]) => method)).toEqual([
@@ -4535,7 +4014,7 @@ describe("AskCodexServer", () => {
     expect(JSON.stringify(error)).not.toMatch(/private|secret|opaque|email|description/i);
   });
 
-  it("fails closed for granular permissions and MCP elicitations", async () => {
+  it("rebuilds granular permission and MCP elicitation approvals", async () => {
     const gateway = new FakeGateway();
     const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
@@ -4547,7 +4026,16 @@ describe("AskCodexServer", () => {
       "request",
       91,
       "item/permissions/requestApproval",
-      { threadId: "thread-1", permissions: { network: { enabled: true } } },
+      {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "permission-1",
+        environmentId: null,
+        startedAtMs: Date.now(),
+        cwd: process.cwd(),
+        reason: "Needs network access",
+        permissions: { network: { enabled: true }, fileSystem: null },
+      },
     );
     await waitForMessage(
       client.messages,
@@ -4556,21 +4044,27 @@ describe("AskCodexServer", () => {
     client.socket.send(JSON.stringify({
       type: "response",
       id: 91,
-      result: {
-        permissions: { network: { enabled: true } },
-        scope: "session",
-      },
+      result: { decision: "accept" },
     }));
     await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
       91,
-      { permissions: {}, scope: "turn" },
+      { permissions: { network: { enabled: true } }, scope: "turn" },
     ));
 
     gateway.emit(
       "request",
       "mcp-92",
       "mcpServer/elicitation/request",
-      { threadId: "thread-1", mode: "form", message: "Credentials" },
+      {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        serverName: "accounts",
+        mode: "url",
+        _meta: null,
+        message: "Authorize access",
+        url: "https://example.com/authorize",
+        elicitationId: "elicitation-1",
+      },
     );
     await waitForMessage(
       client.messages,
@@ -4579,11 +4073,11 @@ describe("AskCodexServer", () => {
     client.socket.send(JSON.stringify({
       type: "response",
       id: "mcp-92",
-      error: { code: -32601, message: "unsupported" },
+      result: { action: "accept", content: null, _meta: null },
     }));
     await vi.waitFor(() => expect(gateway.respond).toHaveBeenCalledWith(
       "mcp-92",
-      { action: "decline", content: null, _meta: null },
+      { action: "accept", content: null, _meta: null },
     ));
   });
 

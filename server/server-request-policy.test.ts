@@ -13,32 +13,121 @@ function request(method: string, params: unknown = {}): RequestMessage {
 }
 
 describe("server request response policy", () => {
-  it("turns granular permission grants into an empty turn-scoped grant", () => {
+  it("rebuilds an accepted permission grant from the request and limits it to the turn", () => {
+    const permissionRequest = request("item/permissions/requestApproval", {
+      threadId: "thread-1",
+      permissions: {
+        network: { enabled: true },
+        fileSystem: {
+          read: null,
+          write: ["/workspace/output"],
+          entries: [{
+            path: { type: "glob_pattern", pattern: "/workspace/output/**" },
+            access: "write",
+          }],
+        },
+      },
+    });
     expect(normalizeServerRequestResponse(
-      request("item/permissions/requestApproval"),
+      permissionRequest,
       {
         type: "response",
         id: 1,
         result: {
-          permissions: { network: { enabled: true } },
+          decision: "accept",
+          permissions: { network: { enabled: false } },
           scope: "session",
-          strictAutoReview: false,
         },
       },
     )).toEqual({
-      result: { permissions: {}, scope: "turn" },
+      result: {
+        permissions: {
+          network: { enabled: true },
+          fileSystem: {
+            read: null,
+            write: ["/workspace/output"],
+            entries: [{
+              path: { type: "glob_pattern", pattern: "/workspace/output/**" },
+              access: "write",
+            }],
+          },
+        },
+        scope: "turn",
+      },
     });
+    expect(normalizeServerRequestResponse(
+      permissionRequest,
+      { type: "response", id: 1, result: { decision: "decline" } },
+    )).toEqual({ result: { permissions: {}, scope: "turn" } });
   });
 
-  it("uses complete MCP decline and cancel result shapes", () => {
+  it("accepts validated MCP forms and URLs while preserving decline and cancel", () => {
     expect(normalizeServerRequestResponse(
-      request("mcpServer/elicitation/request"),
+      request("mcpServer/elicitation/request", {
+        threadId: "thread-1",
+        mode: "form",
+        message: "Choose deployment settings",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            environment: { type: "string", enum: ["staging", "production"] },
+            replicas: { type: "integer", minimum: 1, maximum: 4 },
+          },
+          required: ["environment", "replicas"],
+        },
+      }),
+      {
+        type: "response",
+        id: "mcp-form",
+        result: {
+          action: "accept",
+          content: { environment: "staging", replicas: 2 },
+          _meta: { ignored: true },
+        },
+      },
+    )).toEqual({
+      result: {
+        action: "accept",
+        content: { environment: "staging", replicas: 2 },
+        _meta: null,
+      },
+    });
+    expect(normalizeServerRequestResponse(
+      request("mcpServer/elicitation/request", {
+        threadId: "thread-1",
+        mode: "url",
+        message: "Authorize access",
+        url: "https://example.com/authorize",
+        elicitationId: "elicitation-1",
+      }),
+      {
+        type: "response",
+        id: "mcp-url",
+        result: { action: "accept", content: { ignored: true }, _meta: { ignored: true } },
+      },
+    )).toEqual({
+      result: { action: "accept", content: null, _meta: null },
+    });
+    expect(normalizeServerRequestResponse(
+      request("mcpServer/elicitation/request", {
+        threadId: "thread-1",
+        mode: "url",
+        message: "Authorize access",
+        url: "https://example.com/authorize",
+        elicitationId: "elicitation-1",
+      }),
       { type: "response", id: "mcp-1", error: { code: -32601 } },
     )).toEqual({
       result: { action: "decline", content: null, _meta: null },
     });
     expect(normalizeServerRequestResponse(
-      request("mcpServer/elicitation/request"),
+      request("mcpServer/elicitation/request", {
+        threadId: "thread-1",
+        mode: "url",
+        message: "Authorize access",
+        url: "https://example.com/authorize",
+        elicitationId: "elicitation-1",
+      }),
       {
         type: "response",
         id: "mcp-2",
@@ -47,6 +136,124 @@ describe("server request response policy", () => {
     )).toEqual({
       result: { action: "cancel", content: null, _meta: null },
     });
+  });
+
+  it("rejects malformed permission grants and MCP form responses", () => {
+    expect(() => normalizeServerRequestResponse(
+      request("item/permissions/requestApproval", {
+        threadId: "thread-1",
+        permissions: { network: { enabled: true }, fileSystem: null },
+      }),
+      { type: "response", id: 1, result: { decision: "approve" } },
+    )).toThrow("permission approval decision is invalid");
+    expect(() => normalizeServerRequestResponse(
+      request("mcpServer/elicitation/request", {
+        threadId: "thread-1",
+        mode: "form",
+        message: "Choose",
+        requestedSchema: {
+          type: "object",
+          properties: { choice: { type: "string", enum: ["one", "two"] } },
+          required: ["choice"],
+        },
+      }),
+      {
+        type: "response",
+        id: "mcp-invalid",
+        result: { action: "accept", content: { choice: "three" }, _meta: null },
+      },
+    )).toThrow("MCP elicitation option is invalid");
+  });
+
+  it("rejects malformed permission requests and MCP schemas before browser routing", () => {
+    expect(() => assertServerRequestRoutable(request(
+      "item/permissions/requestApproval",
+      {
+        threadId: "thread-1",
+        permissions: {
+          network: { enabled: true, futureGrant: true },
+          fileSystem: null,
+        },
+      },
+    ))).toThrow("permission network request is invalid");
+
+    const invalidSchemas = [
+      {
+        type: "object",
+        properties: { choice: { type: "string", enum: ["one", "two"], default: "three" } },
+      },
+      {
+        type: "object",
+        properties: { replicas: { type: "integer", minimum: 4, maximum: 1 } },
+      },
+      {
+        type: "object",
+        properties: {
+          targets: {
+            type: "array",
+            items: { type: "string", enum: ["one", "two"] },
+            default: ["one", "one"],
+          },
+        },
+      },
+      {
+        type: "object",
+        properties: { choice: { type: "string" } },
+        required: ["missing"],
+      },
+      {
+        type: "object",
+        properties: { choice: { type: "string", futureConstraint: true } },
+      },
+    ];
+    for (const requestedSchema of invalidSchemas) {
+      expect(() => assertServerRequestRoutable(request(
+        "mcpServer/elicitation/request",
+        {
+          threadId: "thread-1",
+          mode: "form",
+          message: "Choose",
+          requestedSchema,
+        },
+      ))).toThrow(/MCP elicitation/);
+    }
+
+    expect(() => assertServerRequestRoutable(request(
+      "mcpServer/elicitation/request",
+      {
+        threadId: "thread-1",
+        mode: "url",
+        message: "Authorize",
+        url: "javascript:alert(1)",
+        elicitationId: "elicitation-1",
+      },
+    ))).toThrow("MCP elicitation URL is invalid");
+  });
+
+  it("surfaces openai/form elicitations for decline but never accepts unvalidated content", () => {
+    const elicitation = request("mcpServer/elicitation/request", {
+      threadId: "thread-1",
+      mode: "openai/form",
+      message: "Provide account details",
+      requestedSchema: { type: "future-form" },
+    });
+    expect(() => assertServerRequestRoutable(elicitation)).not.toThrow();
+    expect(normalizeServerRequestResponse(
+      elicitation,
+      {
+        type: "response",
+        id: "mcp-openai-form",
+        result: { action: "decline", content: null, _meta: null },
+      },
+    )).toEqual({ result: { action: "decline", content: null, _meta: null } });
+    expect(() => normalizeServerRequestResponse(
+      elicitation,
+      {
+        type: "response",
+        id: "mcp-openai-form",
+        result: { action: "accept", content: { unsafe: true }, _meta: null },
+      },
+    )).toThrow("openai/form MCP elicitation cannot be accepted");
   });
 
   it("leaves unrelated server request errors unchanged", () => {

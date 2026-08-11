@@ -1,6 +1,6 @@
 # ADR 0023: Pin an independent manual or automatic environment to each turn
 
-- Status: Accepted
+- Status: Superseded by [ADR 0024](0024-codex-aligned-manual-and-one-turn-auto.en.md)
 - Decision date: 2026-08-11
 - Supersedes: [ADR 0022](0022-sandbox-aware-one-turn-auto-run.en.md)
 - Amends: [ADR 0002](0002-security-gateway-and-manual-approval.md)

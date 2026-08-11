@@ -44,18 +44,19 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
 ## 安全不变量
 
 - 绝不暴露任意 app-server RPC 方法，也不要直接透传浏览器参数；必须根据允许列表重新构建参数。
-- 线程创建、恢复、fork 和队列消费必须在网关固定 `approvalPolicy: "on-request"`。直接
-  `turn/start` 的浏览器参数只允许逐字段重建后的 `executionMode: "manual" | "auto"`；网关为
-  默认 `manual` 注入 `approvalPolicy: "untrusted"` 与 `readOnly` sandbox，为显式 `auto` 注入
-  `approvalPolicy: "on-request"` 与从 app-server 权威状态恢复的 `workspaceWrite` sandbox，并始终
-  注入 `approvalsReviewer: "user"`。浏览器不得提交 approval、reviewer、完整 sandbox、writable
-  roots、network 或 tmp 策略。已显式配置的 `dangerFullAccess` 和 `externalSandbox` 必须保持独立，
-  UI 不得为其开放自动开关。每个直接 turn 都必须携带自己的最终策略，自动模式不得先用
+- 线程创建、恢复和 fork 必须在网关固定 `approvalPolicy: "on-request"`；新线程还固定
+  `sandbox: "workspace-write"`，恢复和 fork 不接受浏览器 sandbox override。直接 `turn/start` 的
+  浏览器参数只允许逐字段重建后的 `executionMode: "manual" | "auto"`；网关为默认 `manual`
+  注入 `approvalPolicy: "on-request"` 与 `workspaceWrite` sandbox，为显式 `auto` 注入
+  `approvalPolicy: "on-request"` 与 `dangerFullAccess` sandbox，并始终注入
+  `approvalsReviewer: "user"`。队列消费必须显式按 `manual` 物化最终 turn 策略。浏览器不得提交
+  approval、reviewer、完整 sandbox、writable roots、network 或 tmp 策略，UI 也不得开放 RO、RW
+  或 Full access 选择。每个直接 turn 都必须携带自己的最终策略，自动模式不得先用
   `thread/resume` 改 sandbox；当前 turn 启动后锁定其模式，跨线程查看不得丢失或覆盖。自动开关
   只允许在已有空闲线程，或已完成配置但尚未创建的新线程草稿上逐轮开启；Working 时禁止切换，
   轮次结束或启动失败后恢复关闭。新线程的 `thread/start`、steering、队列和后续 Ask Codex 轮次
-  不得继承该选择。浏览器提交 `never`、`granular` 或任何原始策略字段必须被拒绝，且不得依赖
-  实验性设置 API。
+  不得继承该选择。`externalSandbox` 必须保持独立且不开放自动模式。浏览器提交 `never`、
+  `granular` 或任何原始策略字段必须被拒绝，且不得依赖实验性设置 API。
 - 绝不将 `ASK_CODEX_TOKEN` 放进 URL，也不要把它传给 Codex、MCP 服务器、hook
   或命令。WebSocket 认证在第一条消息帧中完成。
 - 保持默认仅监听回环地址、严格的 Origin/Host 检查、连接和请求限制，以及非回环地址必须
@@ -72,7 +73,9 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
   都必须失败关闭。
 - 下载只允许普通文件，并必须保留对文件大小、capability 数量、并发、元数据和生命周期的明确
   资源上限。不得引入全局下载根目录，包括 `ASK_CODEX_DOWNLOAD_ROOTS`。
-- 不支持的细粒度权限授予和 MCP elicitation 必须默认拒绝。
+- 人工响应必须根据 app-server 原请求逐字段重建。细粒度权限接受时只能授予原请求内容并强制
+  scope 为当前 turn；标准 MCP typed form 和 HTTP(S) URL elicitation 可以接受或拒绝。无法安全
+  校验的 `openai/form` 和其他不支持的请求必须明确展示并失败关闭，不得静默扩大权限。
 - 恢复会话时保留已有的 `externalSandbox`，不要覆盖它。
 - 自动连接恢复和只读跨线程视图不得调用 `thread/resume` 或改变审批 owner；只能自动重试
   有界的只读请求，绝不重放未确认的写请求。

@@ -39,19 +39,11 @@ describe("thread settings helpers", () => {
     });
   });
 
-  it("only sends an explicitly selected sandbox when resuming an existing thread", () => {
-    expect(existingThreadResumeParams("thread-1", null, "workspace-write")).toEqual({
+  it("resumes an existing thread without browser-owned execution policy", () => {
+    expect(existingThreadResumeParams("thread-1")).toEqual({
       threadId: "thread-1",
       excludeTurns: true,
-      approvalPolicy: "on-request",
     });
-    expect(existingThreadResumeParams("thread-1", "read-only", "workspace-write")).toEqual({
-      threadId: "thread-1",
-      excludeTurns: true,
-      approvalPolicy: "on-request",
-      sandbox: "read-only",
-    });
-    expect(existingThreadResumeParams("thread-1", "workspace-write", "external")).not.toHaveProperty("sandbox");
   });
 
   it("keeps supported effort and selects a real fallback for a new model", () => {

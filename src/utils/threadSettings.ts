@@ -49,16 +49,10 @@ export function newThreadSettings(
 
 export function existingThreadResumeParams(
   threadId: string,
-  sandboxOverride: ThreadSettings["sandbox"] | null,
-  currentSandbox: ThreadSettings["sandbox"],
 ): Record<string, unknown> {
   return {
     threadId,
     excludeTurns: true,
-    approvalPolicy: "on-request",
-    ...(sandboxOverride && sandboxOverride !== "external" && currentSandbox !== "external"
-      ? { sandbox: sandboxOverride }
-      : {}),
   };
 }
 

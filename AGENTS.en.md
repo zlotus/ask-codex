@@ -53,24 +53,25 @@ accepted decision. Record only verification that was actually run.
 - Never expose arbitrary app-server RPC methods or pass browser params through
   without rebuilding them from an allowlist.
 - Fix `approvalPolicy: "on-request"` at the gateway for thread creation,
-  resume, fork, and queue consumption. Direct `turn/start` browser params may
-  contain only a field-rebuilt `executionMode: "manual" | "auto"`. For the
-  default `manual` mode, the gateway injects `approvalPolicy: "untrusted"` and
-  a `readOnly` sandbox. For an explicit `auto` mode, it injects
-  `approvalPolicy: "on-request"` and a `workspaceWrite` sandbox recovered from
-  authoritative app-server state. It always injects
-  `approvalsReviewer: "user"`. The browser must not submit approval, reviewer,
-  full sandbox, writable-root, network, or temporary-directory policy. Keep an
-  explicitly configured `dangerFullAccess` or `externalSandbox` independent
-  and do not offer auto mode for either. Every direct turn must carry its final
-  policy; auto mode must not first mutate the sandbox through `thread/resume`.
-  Lock a started turn to its launch mode, including while viewing other threads.
-  The user may arm auto mode only for the next turn on an existing idle thread
-  or configured new-thread draft. Disable the control while Working and clear
-  it after completion or a failed start. Thread creation, steering, queued
-  sends, and later turns must not inherit it. Reject browser-supplied `never`,
-  `granular`, or any raw policy field, and do not depend on experimental
-  settings APIs.
+  resume, and fork. New threads also use `sandbox: "workspace-write"`; resume
+  and fork accept no browser sandbox override. Direct `turn/start` browser
+  params may contain only a field-rebuilt
+  `executionMode: "manual" | "auto"`. For default `manual`, the gateway injects
+  `approvalPolicy: "on-request"` with a `workspaceWrite` sandbox. For explicit
+  `auto`, it injects `approvalPolicy: "on-request"` with a `dangerFullAccess`
+  sandbox. It always injects `approvalsReviewer: "user"`. Queue consumption
+  must explicitly materialize its final turn as `manual`. The browser must not
+  submit approval, reviewer, complete sandbox, writable-root, network, or
+  temporary-directory policy, and the UI must not expose RO, RW, or Full access
+  selectors. Every direct turn must carry its final policy; auto mode must not
+  first mutate the sandbox through `thread/resume`. Lock a started turn to its
+  launch mode, including while viewing other threads. The user may arm auto
+  only for the next turn on an existing idle thread or configured new-thread
+  draft. Disable the control while Working and clear it after completion or a
+  failed start. Thread creation, steering, queued sends, and later turns must
+  not inherit it. Keep `externalSandbox` independent and do not offer auto mode
+  for it. Reject browser-supplied `never`, `granular`, or any raw policy field,
+  and do not depend on experimental settings APIs.
 - Never put `ASK_CODEX_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
   or commands. WebSocket authentication happens in the first message frame.
 - Keep loopback-only defaults, strict Origin/Host checks, connection and request
@@ -91,7 +92,12 @@ accepted decision. Record only verification that was actually run.
 - Allow downloads only for regular files, and retain explicit resource limits
   on file size, capability count, concurrency, metadata, and lifecycle. Never
   introduce global download roots, including `ASK_CODEX_DOWNLOAD_ROOTS`.
-- Unsupported granular permission grants and MCP elicitations must fail closed.
+- Rebuild human responses field by field from the original app-server request.
+  An accepted granular permission grant may contain only the requested values
+  and must be scoped to the current turn. Standard MCP typed forms and HTTP(S)
+  URL elicitations may be accepted or declined. Show and fail closed for
+  `openai/form`, which cannot be safely validated, and every other unsupported
+  request; never expand permissions silently.
 - Preserve an existing `externalSandbox` instead of overriding it on resume.
 - Automatic connection recovery and read-only cross-thread views must not call
   `thread/resume` or change approval ownership. They may automatically retry

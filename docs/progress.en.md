@@ -19,12 +19,14 @@ aggregate long-history DOM budget, cwd continuity, Agent-output handoff, and
 gateway hardening remain in place. Persistent Activity audit is the next P3
 candidate and has not started. Manual and automatic environments are now pinned
 independently per turn: ordinary direct turns default to
-`untrusted + readOnly`, while an explicitly armed turn uses
-`on-request + workspaceWrite`. Auto mode permits routine workspace actions,
-boundary requests still go to the user, and completion or a failed start
-restores manual mode. Changing modes no longer first mutates the sandbox through
-`thread/resume`. Creation, resume, fork, and queue sends remain fixed to
-`on-request`; steering carries no policy, and no experimental API is used.
+`on-request + workspaceWrite`, while an explicitly armed turn uses
+`on-request + dangerFullAccess`. Auto removes filesystem and network sandbox
+boundaries so ordinary operations run silently when possible, while stable
+requests that still require an explicit decision continue to surface to the
+user. Completion or a failed start restores manual mode. Changing modes no
+longer first mutates the sandbox through `thread/resume`. Creation, resume, and
+fork remain fixed to `on-request`; queue sends explicitly materialize manual,
+steering carries no policy, and no experimental API is used.
 
 ## Current Baseline
 
@@ -33,20 +35,20 @@ The implementation currently provides:
 - A one-turn auto-run control in the composer, editable for the selected
   existing idle thread or after a new-thread draft is configured. Browser direct
   `turn/start` submits only `executionMode`; the gateway rebuilds default
-  `manual` as `untrusted + readOnly` and explicit `auto` as
-  `on-request + workspaceWrite`, always with the user reviewer. Complete
+  `manual` as `on-request + workspaceWrite` and explicit `auto` as
+  `on-request + dangerFullAccess`, always with the user reviewer. Complete
   workspace roots, network, and temporary-directory policy come only from
   strictly validated authoritative app-server state, while the browser sees
   only the sandbox type. The control remains visible but disabled while Working
   and reflects the active turn's captured launch mode; switching to another
   session and back cannot lose or rewrite this per-turn state. It clears after
   completion, cancellation, failure, or an invalid start result, so each later
-  turn must be armed again. Thread creation, resume, fork, and queue consumption
-  remain fixed to `on-request`; steering carries no policy. Only the separate
-  first `turn/start` after creation may use the draft's choice. Explicit Full
-  access and external sandboxes remain independent and do not offer auto mode.
-  The gateway rejects raw browser approval, reviewer, sandbox, writable-root,
-  and network parameters.
+  turn must be armed again. Thread creation, resume, and fork remain fixed to
+  `on-request`; queue consumption explicitly uses manual and steering carries no
+  policy. Only the separate first `turn/start` after creation may use the draft's
+  choice. `externalSandbox` remains independent and does not offer auto mode; the
+  UI exposes no RO, RW, or Full access selector. The gateway rejects raw browser
+  approval, reviewer, sandbox, writable-root, and network parameters.
 - React desktop and mobile layouts for listing, searching, creating, resuming,
   and refreshing native Codex threads, with a 44-pixel conversation header and
   an always-editable responsive multiline composer where Enter inserts a
@@ -190,8 +192,9 @@ The implementation currently provides:
   through a pinned canonical root-directory fd and rechecks root `dev`/`ino`,
   target `realpath`, the opened file fd, regular-file type, the 25-MiB limit,
   the two-download concurrency bound, and a two-minute active-transfer deadline.
-- Browser handling for command and file-change approvals and structured
-  `request_user_input` requests. Approval buttons and gateway responses are
+- Browser handling for command, file-change, granular permission, and MCP
+  elicitation approvals plus structured `request_user_input` requests. Command
+  and file approval buttons and gateway responses are
   narrowed to string decisions allowed by the protocol and actually offered in
   app-server `availableDecisions`; malformed, unknown, or exclusively
   client-unsupported structured decisions fail closed. Captured command
@@ -200,10 +203,14 @@ The implementation currently provides:
   card title while long commands and request details scroll in a bounded body.
   Multiple cards run horizontally on desktop and vertically on mobile, keeping
   common decisions at the same position after the preceding request is resolved.
+  Granular permissions can be accepted exactly as requested or declined; an
+  accepted grant is forced to the current turn. Standard MCP typed forms and
+  HTTP(S) URL elicitations can be accepted or declined, while `openai/form`,
+  which cannot be safely validated, is shown but can only be declined.
   Structured `request_user_input` keeps its full form and Submit flow.
-- New-thread working-directory and sandbox settings, explicit idle-thread
-  sandbox overrides, next-turn model and reasoning controls beside the
-  composer, and active-turn interruption. With a current selection, new-thread
+- New-thread working-directory settings, next-turn model and reasoning controls
+  beside the composer, and active-turn interruption. With a current selection,
+  new-thread
   cwd comes from the exact current thread or matching Active or Archived
   summary; without one it comes from the bootstrap default. The new-thread
   sandbox always resets to `workspace-write`. Initial model and effort
@@ -235,9 +242,9 @@ The implementation currently provides:
 - WebSocket upgrades accept only a raw request-target exactly equal to `/ws`,
   rejecting queries, fragments, normalized paths, and authority or absolute
   forms before authentication. Ordinary `thread/resume` sends no sandbox
-  override and therefore preserves `externalSandbox`; an explicit override
-  first probes the authoritative sandbox with fixed parameters and fails closed
-  on an untrusted result or concurrent settings notification. Resume, turn
+  override and therefore preserves `externalSandbox`; complete sandbox values
+  from app-server responses and settings notifications are strictly validated
+  and bounded only inside the gateway. Resume, turn
   start, and text steering operations for one thread are serialized;
   indeterminate results cancel already queued successors, and thread ownership
   is committed synchronously only after a structurally valid upstream success.
@@ -262,13 +269,13 @@ The implementation currently provides:
 - Bounded browser, gateway, and app-server messages; linear JSONL accumulation;
   backpressure eviction; approval rerouting; and snapshot-based recovery when
   an oversized notification cannot be forwarded.
-- Enforced `on-request` user approval for thread creation, resume, fork, and
-  queue consumption. Ordinary direct turns use a default
-  `untrusted + readOnly` manual environment; only the explicitly selected next
-  direct turn on an existing idle thread or configured new-thread draft may use
-  an `on-request + workspaceWrite` automatic environment. Standard boundary
-  requests still go to the user, and the browser cannot submit final policy.
-  Fail-closed unsupported permissions, loopback defaults, token and Origin
+- Enforced `on-request` user approval for thread creation, resume, and fork;
+  queue consumption explicitly uses manual. Ordinary direct turns use a default
+  `on-request + workspaceWrite` manual environment; only the explicitly selected
+  next direct turn on an existing idle thread or configured new-thread draft may
+  use an `on-request + dangerFullAccess` automatic environment. Requests that
+  still require an explicit decision go to the user, and the browser cannot
+  submit final policy. Fail-closed unsupported requests, loopback defaults, token and Origin
   checks, connection and request limits, and exact trusted-public-origin support
   remain.
 - An English and Chinese Cloudflare Tunnel deployment guide for loopback-hosted
@@ -398,11 +405,13 @@ commitment.
   the user. When a new-thread draft receives a real ID, the choice may transfer
   only to the first turn in the same submission. The UI must not persist the
   control or carry it to another thread, and later ordinary direct turns must
-  explicitly rebuild `untrusted + readOnly`. App-server may retain a turn
+  explicitly rebuild `on-request + workspaceWrite`. App-server may retain a turn
   override as a later setting, but Ask Codex cannot rely on it; every direct turn
   resubmits its mode and the gateway rebuilds final policy. A mode change must
-  not mutate sandbox or ownership through an automatic `thread/resume`.
-  Standard sandbox-boundary requests remain interactive.
+  not mutate sandbox or ownership through an automatic `thread/resume`. Auto
+  uses `dangerFullAccess` to remove common sandbox boundaries, but rule, granular
+  permission, MCP, and other requests that still require confirmation must remain
+  interactive.
 - `turn/steer` must remain bound to the `expectedTurnId` captured at submission,
   accept only field-rebuilt text input, and fail closed when the response
   `turnId` differs. Recovery must not replay steering automatically, and a
@@ -419,12 +428,6 @@ commitment.
   background. The presence of `clientUserMessageId` alone is not a proven
   idempotency guarantee. Queue files contain user plaintext and must retain
   their single-process, permission, and capacity bounds.
-- The sandbox probe and actual override are separate app-server RPCs. The
-  current protocol has no CAS or revision-conditioned write, so another Codex
-  process can still change the sandbox between them. The gateway serializes its
-  own requests, observes settings notifications during the probe, and validates
-  the final response to narrow this window and fail closed on inconsistency, but
-  cannot provide a cross-process atomic guarantee.
 - Account usage and rate-limit methods must retain empty-parameter rebuilding,
   field-level result and notification projections, bounded collections, and
   fixed upstream error messages. Rolling rate-limit notifications are sparse
@@ -455,17 +458,19 @@ Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
   for this round of automated checks.
 - `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
   passed.
-- The 8 tests in `src/components/ApprovalPanel.test.tsx` and 71 tests in
-  `src/App.test.tsx` passed, covering icon-decision order, protocol-offered
-  approval results, per-turn launch policy, cross-session viewing, and the race
-  where completion precedes the start response, plus clearing an unstarted auto
-  choice after an external sandbox change. A complete `NODE_ENV=test npm test`
-  run passed 41 files and 701 tests in an approved environment that permits
+- The 243 tests across `server/rpc-policy.test.ts`,
+  `server/server-request-policy.test.ts`, `src/components/ApprovalPanel.test.tsx`,
+  and `src/App.test.tsx` passed. They cover final per-turn policy rebuilding,
+  icon-decision order, protocol-offered approval results, narrowed granular
+  permission and MCP responses, cross-session viewing, and the race where
+  completion precedes the start response. A complete `NODE_ENV=test npm test`
+  run passed 41 files and 695 tests in an approved environment that permits
   loopback binding.
 - `npm run check:visual` passed its desktop and mobile production fixtures. They
-  cover long approval content, stable decision and repeated-click positions,
-  and non-overlapping long titles and Ready status at 320/390 pixels. Mobile
-  approval button coordinates remained at `deltaX=0`, `deltaY=0` across
-  consecutive decisions, with no browser console or page errors.
-- Markdown AST parsing covered all 62 Markdown files in the repository, and all
-  136 checked relative-link and image targets exist.
+  cover long commands, granular permission requests, and MCP forms; stable
+  decision and repeated-click positions; and non-overlapping long titles and
+  Ready status at 320/390 pixels. Mobile approval button coordinates remained at
+  `deltaX=0`, `deltaY=0` across consecutive decisions, with no browser console
+  or page errors.
+- Markdown AST parsing covered all 64 Markdown files in the repository, and all
+  144 checked relative-link and image targets exist.

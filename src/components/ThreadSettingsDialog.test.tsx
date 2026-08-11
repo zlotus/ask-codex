@@ -10,14 +10,13 @@ const settings = {
 };
 
 describe("ThreadSettingsDialog", () => {
-  it("requires a workspace for a new thread and returns the selected sandbox", () => {
+  it("requires a workspace for a new thread and uses the writable default", () => {
     const onConfirm = vi.fn();
     render(
       <ThreadSettingsDialog
         open
         mode="new"
         settings={{ ...settings, cwd: "" }}
-        running={false}
         onConfirm={onConfirm}
         onClose={vi.fn()}
       />,
@@ -26,29 +25,27 @@ describe("ThreadSettingsDialog", () => {
     const submit = screen.getByRole("button", { name: "Create thread" });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Working directory"), { target: { value: "/new/project" } });
-    fireEvent.change(screen.getByLabelText("Sandbox"), { target: { value: "danger-full-access" } });
-    expect(screen.getByRole("alert")).toHaveTextContent("removes workspace sandbox restrictions");
+    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
     fireEvent.click(submit);
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/new/project",
-      sandbox: "danger-full-access",
+      sandbox: "workspace-write",
     }));
   });
 
-  it("keeps an existing cwd fixed and locks sandbox during an active turn", () => {
+  it("shows an existing workspace without exposing sandbox controls", () => {
     render(
       <ThreadSettingsDialog
         open
         mode="existing"
         settings={settings}
-        running
         onConfirm={vi.fn()}
         onClose={vi.fn()}
       />,
     );
 
     expect(screen.getByLabelText("Working directory")).toHaveAttribute("readonly");
-    expect(screen.getByLabelText("Sandbox")).toBeDisabled();
-    expect(screen.getByText(/after the active turn finishes/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(2);
   });
 });

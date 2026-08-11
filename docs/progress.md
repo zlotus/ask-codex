@@ -13,10 +13,11 @@ P2 跨设备持久消息队列已完成：一个设备可把已有线程的纯�
 网关单调 revision 裁决覆盖关系。此前完成的多类型文件输入、受限原生 fork、文本 steering、
 长历史整体 DOM 预算、cwd 连续性、Agent 输出文件交接和网关安全硬化继续保持。下一候选是
 P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 turn 独立固定：普通直接 turn 默认
-使用 `untrusted + readOnly`，逐轮显式开启的自动 turn 使用 `on-request + workspaceWrite`；自动模式
-允许工作区内普通操作，越界请求仍人工审批，结束或启动失败后恢复手动默认。模式不再先通过
-`thread/resume` 改 sandbox。线程创建、恢复、fork 和队列继续固定 `on-request`，steering 不携带
-策略，也不使用实验性 API。
+使用 `on-request + workspaceWrite`，逐轮显式开启的自动 turn 使用
+`on-request + dangerFullAccess`。自动模式移除文件系统和网络 sandbox，让普通操作尽量静默执行，
+但仍需明确确认的稳定请求继续交给用户；结束或启动失败后恢复手动默认。模式不再先通过
+`thread/resume` 改 sandbox。线程创建、恢复和 fork 固定 `on-request`，队列明确物化 manual，
+steering 不携带策略，也不使用实验性 API。
 
 ## 当前基线
 
@@ -24,14 +25,14 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
 
 - 输入区提供一次性自动运行开关，只在当前选中的已有空闲线程，或新线程草稿完成配置后可修改。
   浏览器直接 `turn/start` 只提交 `executionMode`；网关为默认 `manual` 重建
-  `untrusted + readOnly`，为显式 `auto` 重建 `on-request + workspaceWrite`，并始终固定用户
+  `on-request + workspaceWrite`，为显式 `auto` 重建 `on-request + dangerFullAccess`，并始终固定用户
   reviewer。完整 workspace roots、network 和 tmp 策略只来自严格校验后的 app-server 权威状态，
   对浏览器只投影 sandbox type。Working 时开关保持显示但禁用，并显示该活跃 turn 启动时捕获的
   模式；切换到其他会话再返回不会丢失或改写这份逐 turn 状态。轮次结束、取消、失败或启动结果
-  无效时关闭，下一轮必须重新开启。新线程创建、恢复、fork 和队列继续固定 `on-request`，
-  steering 不携带策略；只有创建成功后独立发起的首个 `turn/start` 可使用草稿上的当次选择。
-  明确配置的 Full access 与 external sandbox 保持独立且不开放自动开关。网关拒绝浏览器提交
-  原始 approval、reviewer、sandbox、writable roots 或 network 参数。
+  无效时关闭，下一轮必须重新开启。新线程创建、恢复和 fork 固定 `on-request`，队列明确使用
+  manual，steering 不携带策略；只有创建成功后独立发起的首个 `turn/start` 可使用草稿上的当次
+  选择。`externalSandbox` 保持独立且不开放自动模式；UI 不提供 RO、RW 或 Full access 选择。
+  网关拒绝浏览器提交原始 approval、reviewer、sandbox、writable roots 或 network 参数。
 - 用于列出、搜索、创建、恢复和刷新 Codex 原生线程的 React 桌面端与移动端布局，
   包括 44 像素高的对话标题栏，以及始终可编辑、回车换行并可通过按钮或 `Ctrl+Enter`
   发送的响应式多行输入框；macOS 同时支持 `Cmd+Enter`。轮次运行时，同一输入框可向提交时
@@ -118,14 +119,17 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
   `ASK_CODEX_DOWNLOAD_ROOTS`。消费时以固定的 canonical 根目录 fd 解析目标，并复核根
   `dev`/`ino`、目标 `realpath`、已打开文件 fd、普通文件类型、25 MiB 大小、2 个并发下载
   和 2 分钟活动传输时限。
-- 在浏览器中处理命令和文件变更审批，以及结构化的 `request_user_input` 请求。审批按钮和
+- 在浏览器中处理命令、文件变更、细粒度权限和 MCP elicitation 审批，以及结构化的
+  `request_user_input` 请求。命令与文件审批按钮和
   网关响应都收窄到协议允许且 app-server 在 `availableDecisions` 中实际提供的字符串决策；
   畸形、未知或只有客户端不支持的结构化决策会失败关闭。捕获到的命令审批理由会在当前
   浏览器会话中继续绑定到对应的确切命令条目。命令和文件审批把图标决策固定在卡片标题右侧，
   长命令与请求详情在有界内容区内滚动；多张卡片在桌面端横向排列、移动端纵向排列，处理前一项
-  后常用决策保持相同位置。结构化 `request_user_input` 仍保留完整表单和 Submit 流程。
-- 新线程的工作目录和沙箱设置、空闲线程的显式沙箱覆盖、输入框旁的下一轮模型与推理
-  控件，以及中断活跃轮次。有当前选择时，新线程 cwd 依次取精确匹配的当前线程、Active
+  后常用决策保持相同位置。细粒度权限只能完整接受上游原请求或拒绝，接受时强制 scope 为当前
+  turn；标准 MCP typed form 和 HTTP(S) URL elicitation 可接受或拒绝，无法安全校验的
+  `openai/form` 明确显示但只能拒绝。结构化 `request_user_input` 仍保留完整表单和 Submit 流程。
+- 新线程的工作目录、输入框旁的下一轮模型与推理控件，以及中断活跃轮次。有当前选择时，
+  新线程 cwd 依次取精确匹配的当前线程、Active
   或 Archived 摘要；没有选择时取 bootstrap 默认 cwd。新线程沙箱始终重置为
   `workspace-write`。初始模型和推理强度取自经过严格过滤的 Codex 有效配置；备选项来自
   `model/list`。已有线程的 cwd 只读，常规恢复不再重新发送扁平化的沙箱状态。
@@ -145,8 +149,8 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
   新线程而不改变来源 owner，失败、断线、畸形结果和 ID 冲突均不认领，也不会自动重放。
 - WebSocket 升级只接受原始 request-target 精确等于 `/ws`，在认证前拒绝 query、fragment、
   归一化路径和 authority/absolute-form 混入。普通 `thread/resume` 不发送 sandbox 覆盖，
-  因而保留 `externalSandbox`；显式覆盖先用固定参数探测权威 sandbox，并对不可信响应或并发
-  settings 通知失败关闭。同线程的 resume、turn start 和 text steering 串行，未知结果会
+  因而保留 `externalSandbox`；app-server 返回和 settings 通知中的完整 sandbox 只在网关内严格
+  校验并有界缓存。同线程的 resume、turn start 和 text steering 串行，未知结果会
   取消已排队后继；thread owner 只在上游返回结构有效的成功结果时同步提交。Steering 响应还
   必须返回与已清洗 `expectedTurnId` 相同的 `turnId`；失败、断线或畸形结果不会抢占旧 owner。
 - 输入框的 `+` 菜单支持选择图片或普通文件；剪贴板将 PNG、JPEG、WebP 归入图片预览，
@@ -160,10 +164,10 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
   数据、浏览器回收存储，或换用其他设备、浏览器、配置文件或 Origin 后均回退为安全占位符。
 - 有界的浏览器、网关和 app-server 消息；线性 JSONL 累积；背压驱逐；审批重路由；
   以及超大通知无法转发时基于快照的恢复。
-- 线程创建、恢复、fork 和队列固定 `on-request` 用户审批；普通直接 turn 默认使用
-  `untrusted + readOnly` 手动环境，只有已有空闲线程或已配置新线程草稿上用户显式选择的下一次
-  直接 turn 可使用 `on-request + workspaceWrite` 自动环境。标准越界请求仍交给用户，浏览器不能
-  直接提交最终策略。同时保留不支持权限失败时关闭、默认只绑定
+- 线程创建、恢复和 fork 固定 `on-request` 用户审批，队列明确使用 manual；普通直接 turn 默认
+  使用 `on-request + workspaceWrite` 手动环境，只有已有空闲线程或已配置新线程草稿上用户显式
+  选择的下一次直接 turn 可使用 `on-request + dangerFullAccess` 自动环境。仍需明确确认的请求继续
+  交给用户，浏览器不能直接提交最终策略。同时保留不支持请求失败时关闭、默认只绑定
   回环地址、token 和 Origin 检查、连接与请求限制，以及对精确受信任公共 Origin 的支持。
 - 中英文 Cloudflare Tunnel 部署指南，用于仅绑定回环地址的 Cloudflare Access，
   并保留独立的 Ask Codex token 关卡。
@@ -251,9 +255,10 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
   重定向出去。普通重连和 Codex 重启只能自动重试有界只读请求，不得重放未确认写操作。
 - 一次性自动运行只能影响用户显式发起的下一次直接 turn；新线程草稿获得真实 ID 时只允许把
   选择转移给同一次提交的首轮。UI 不得持久化或跨其他线程携带开关，后续普通直接 turn 必须
-  显式重建 `untrusted + readOnly`。app-server 会把 turn override 作为后续设置，但 Ask Codex
+  显式重建 `on-request + workspaceWrite`。app-server 会把 turn override 作为后续设置，但 Ask Codex
   不能依赖该状态；每次直接 turn 都要重新提交模式并由网关重建完整策略。模式切换不得通过自动
-  `thread/resume` 改 sandbox 或 owner。标准 sandbox 越界请求仍由用户审批。
+  `thread/resume` 改 sandbox 或 owner。自动 turn 使用 `dangerFullAccess` 移除常见 sandbox 边界，
+  但规则、细粒度权限、MCP 等仍需确认的请求必须继续路由给用户。
 - `turn/steer` 必须继续绑定提交时捕获的 `expectedTurnId`，只允许文本并逐字段重建输入；
   响应 `turnId` 不匹配时失败关闭。断线恢复不得自动重放 steering，失败重试也不得退化为
   `turn/start`。
@@ -264,10 +269,6 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
 - 持久消息队列必须继续显式消费、按 item revision 并发控制，并在写结果未知时保持
   `indeterminate`。不得因重连、启动或 Codex ready 自动发送，也不得把 `clientUserMessageId`
   字段存在本身当作已证明的幂等保证。队列文件含用户明文，必须保持单进程、权限和容量边界。
-- sandbox probe 与实际 override 是两个独立的 app-server RPC；当前协议没有 CAS 或 revision
-  条件写接口，其他 Codex 进程仍可能在两次调用之间改变 sandbox。网关会串行本进程请求、
-  监测 probe 期间的 settings 通知并复核最终响应，以缩小窗口并对不一致失败关闭，但不能
-  提供跨进程原子保证。
 - 账户用量与限额方法必须继续使用空参数重建、结果和通知逐字段投影、有界集合及固定上游
   错误消息；滚动限额通知是稀疏更新，不能用缺失或空字段清除最近的完整快照。
 - 浏览器终端会绕过 Codex 审批，因此需要独立的威胁模型、隔离边界和显式启用机制。
@@ -288,12 +289,13 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
   因此实现未提交前者，也未调用后者。普通文件输入此前完成的真实协议验证仍有效；没有仅为
   本轮自动化检查创建真实 turn 或持久测试 fork。
 - `npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
-- `src/components/ApprovalPanel.test.tsx` 的 8 项测试和 `src/App.test.tsx` 的 71 项测试通过，
-  覆盖图标决策顺序、协议允许的审批结果、逐 turn 启动策略、跨会话查看和完成先于启动响应的
-  竞态，以及外部 sandbox 变化时清除尚未启动的自动选择。完整 `NODE_ENV=test npm test` 在允许
-  绑定回环套接字的已批准环境中通过：41 个文件、701 项测试。
-- `npm run check:visual` 的桌面端与移动端生产夹具通过。它覆盖长审批内容、固定决策位置、连续
-  处理坐标，以及 320/390 像素长标题与 Ready 状态互不遮挡；移动端连续处理审批前后按钮坐标
-  `deltaX=0`、`deltaY=0`，且没有浏览器 console 或 page error。
-- 使用 Markdown AST 解析了仓库中的 62 个 Markdown 文件，检查的 136 个相对链接和图片目标
+- `server/rpc-policy.test.ts`、`server/server-request-policy.test.ts`、
+  `src/components/ApprovalPanel.test.tsx` 和 `src/App.test.tsx` 的 243 项测试通过，覆盖逐 turn 最终
+  策略重建、图标决策顺序、协议允许的审批结果、细粒度权限与 MCP 响应收窄、跨会话查看和
+  完成先于启动响应的竞态。完整 `NODE_ENV=test npm test` 在允许绑定回环套接字的已批准环境中
+  通过：41 个文件、695 项测试。
+- `npm run check:visual` 的桌面端与移动端生产夹具通过。它覆盖长命令、长细粒度权限与 MCP 表单、
+  固定决策位置、连续处理坐标，以及 320/390 像素长标题与 Ready 状态互不遮挡；移动端连续处理
+  审批前后按钮坐标 `deltaX=0`、`deltaY=0`，且没有浏览器 console 或 page error。
+- 使用 Markdown AST 解析了仓库中的 64 个 Markdown 文件，检查的 144 个相对链接和图片目标
   均存在。

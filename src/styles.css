@@ -3011,6 +3011,32 @@ details[open] > summary .details-chevron {
   line-height: 15px;
 }
 
+.approval-field-description {
+  margin: -3px 0 7px;
+  color: #747a74;
+  font-size: 10px;
+  line-height: 14px;
+  overflow-wrap: anywhere;
+}
+
+.approval-external-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 9px;
+  color: #2f704f;
+  font-size: 11px;
+  font-weight: 700;
+  background: #edf4ef;
+  border: 1px solid #c6d9cc;
+  border-radius: 4px;
+}
+
+.approval-external-link:hover {
+  background: #e2eee6;
+}
+
 .button {
   display: inline-flex;
   align-items: center;

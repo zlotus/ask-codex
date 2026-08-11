@@ -1071,6 +1071,176 @@ function approvalLayoutInvalid(layout) {
     !layout.dismissed;
 }
 
+let fallbackApprovalLayoutSequence = 0;
+
+async function inspectFallbackApprovalLayout(page, fixture, screenshotPath) {
+  const sequence = ++fallbackApprovalLayoutSequence;
+  fixture.request(
+    `visual-permission-layout-${sequence}`,
+    "item/permissions/requestApproval",
+    {
+      threadId: fixtureThread.id,
+      turnId: "turn-newest",
+      itemId: `visual-permission-${sequence}`,
+      environmentId: null,
+      startedAtMs: Date.now(),
+      cwd: fixtureThread.cwd,
+      reason: "Confirm a bounded permission grant while keeping both decisions fixed in the header",
+      permissions: {
+        network: { enabled: true },
+        fileSystem: {
+          read: null,
+          write: Array.from({ length: 24 }, (_, index) => (
+            `/workspace/ask-codex/generated/output-${index + 1}`
+          )),
+        },
+      },
+    },
+  );
+  fixture.request(
+    `visual-mcp-layout-${sequence}`,
+    "mcpServer/elicitation/request",
+    {
+      threadId: fixtureThread.id,
+      turnId: "turn-newest",
+      serverName: "visual-deployment-server",
+      mode: "form",
+      _meta: null,
+      message: "Review a long typed form without moving the accept and decline controls",
+      requestedSchema: {
+        type: "object",
+        properties: Object.fromEntries(Array.from({ length: 14 }, (_, index) => [
+          `field-${index + 1}`,
+          {
+            type: "string",
+            title: `Deployment field ${index + 1}`,
+            description: `Bounded form detail ${index + 1} remains inside the card body.`,
+          },
+        ])),
+      },
+    },
+  );
+
+  const panel = page.locator(".approval-panel");
+  await panel.waitFor();
+  await page.waitForFunction(() => (
+    document.querySelectorAll(
+      '.approval-card[aria-label="Permission approval"], .approval-card[aria-label="MCP elicitation form"]',
+    ).length === 2
+  ));
+  const layout = await page.evaluate(() => {
+    const panel = document.querySelector(".approval-panel");
+    const composer = document.querySelector(".composer-wrap");
+    const cards = [
+      document.querySelector('.approval-card[aria-label="Permission approval"]'),
+      document.querySelector('.approval-card[aria-label="MCP elicitation form"]'),
+    ];
+    if (!panel || !composer || cards.some((card) => !card)) {
+      return { complete: false, cards: [] };
+    }
+    const panelBox = panel.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    const minimumTarget = window.innerWidth <= 600 ? 40 : 36;
+    const cardLayouts = cards.map((card) => {
+      const cardBox = card.getBoundingClientRect();
+      const header = card.querySelector(".approval-card-header")?.getBoundingClientRect();
+      const body = card.querySelector(".approval-body");
+      const bodyBox = body?.getBoundingClientRect();
+      const buttons = [...card.querySelectorAll(".approval-action-button")];
+      const buttonBoxes = buttons.map((button) => button.getBoundingClientRect());
+      const primary = card.querySelector(".button--primary")?.getBoundingClientRect();
+      const decline = card.querySelector('[aria-label="Decline"]')?.getBoundingClientRect();
+      return {
+        width: cardBox.width,
+        top: cardBox.top,
+        right: cardBox.right,
+        bottom: cardBox.bottom,
+        labels: buttons.map((button) => button.getAttribute("aria-label")),
+        titlesMatch: buttons.every((button) => button.title === button.getAttribute("aria-label")),
+        iconOnly: buttons.every((button) => button.textContent?.trim() === ""),
+        usableTargets: buttonBoxes.every((box) => box.width >= minimumTarget && box.height >= minimumTarget),
+        buttonsContained: buttonBoxes.every((box) => (
+          box.left >= cardBox.left && box.right <= cardBox.right &&
+          box.top >= cardBox.top && box.bottom <= cardBox.bottom
+        )),
+        actionsBeforeBody: Boolean(header && bodyBox && header.bottom <= bodyBox.top),
+        bodyScrollable: Boolean(body && body.scrollHeight > body.clientHeight),
+        bodyOverflow: body ? window.getComputedStyle(body).overflowY : null,
+        bodyBounded: Boolean(bodyBox && bodyBox.height <= (window.innerWidth <= 600 ? 180 : 210) + 0.5),
+        primaryRightOffset: primary ? cardBox.right - primary.right : null,
+        primaryTopOffset: primary ? primary.top - cardBox.top : null,
+        declineRightOffset: decline ? cardBox.right - decline.right : null,
+        declineTopOffset: decline ? decline.top - cardBox.top : null,
+      };
+    });
+    const [first, second] = cardLayouts;
+    const close = (left, right) => left !== null && right !== null && Math.abs(left - right) <= 0.5;
+    const vertical = window.innerWidth <= 600;
+    return {
+      complete: true,
+      cards: cardLayouts,
+      flowCorrect: vertical
+        ? second.top > first.bottom
+        : Math.abs(first.top - second.top) <= 0.5 && second.right > first.right,
+      commonTargetsAligned: close(first.primaryRightOffset, second.primaryRightOffset) &&
+        close(first.primaryTopOffset, second.primaryTopOffset) &&
+        close(first.declineRightOffset, second.declineRightOffset) &&
+        close(first.declineTopOffset, second.declineTopOffset),
+      firstActionsVisible: first.top >= panelBox.top && first.top + minimumTarget <= panelBox.bottom,
+      equalCardWidths: Math.abs(first.width - second.width) <= 0.5,
+      panelContained: panelBox.left >= 0 && panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
+      noComposerOverlap: panelBox.bottom <= composerBox.top + 1,
+      horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  const before = await page.getByRole("button", { name: "Accept", exact: true }).boundingBox();
+  await page.getByRole("button", { name: "Accept", exact: true }).click();
+  await page.waitForFunction(() => (
+    document.querySelector('.approval-card[aria-label="Permission approval"]') === null
+  ));
+  const after = await page.getByRole("button", { name: "Submit and accept" }).boundingBox();
+  const stableAfterResolve = Boolean(
+    before && after && Math.abs(before.x - after.x) <= 0.5 && Math.abs(before.y - after.y) <= 0.5
+  );
+  const resolvedTargetPositions = {
+    before,
+    after,
+    deltaX: before && after ? after.x - before.x : null,
+    deltaY: before && after ? after.y - before.y : null,
+  };
+  await page.getByRole("button", { name: "Decline", exact: true }).click();
+  await panel.waitFor({ state: "hidden" });
+  return { ...layout, stableAfterResolve, resolvedTargetPositions, dismissed: true };
+}
+
+function fallbackApprovalLayoutInvalid(layout) {
+  return !layout.complete ||
+    layout.cards.length !== 2 ||
+    layout.cards.some((card) => (
+      !card.titlesMatch ||
+      !card.iconOnly ||
+      !card.usableTargets ||
+      !card.buttonsContained ||
+      !card.actionsBeforeBody ||
+      !card.bodyScrollable ||
+      card.bodyOverflow !== "auto" ||
+      !card.bodyBounded
+    )) ||
+    layout.cards[0].labels.join(",") !== "Accept,Decline" ||
+    layout.cards[1].labels.join(",") !== "Submit and accept,Decline" ||
+    !layout.flowCorrect ||
+    !layout.commonTargetsAligned ||
+    !layout.firstActionsVisible ||
+    !layout.equalCardWidths ||
+    !layout.panelContained ||
+    !layout.noComposerOverlap ||
+    layout.horizontalOverflow ||
+    !layout.stableAfterResolve ||
+    !layout.dismissed;
+}
+
 async function inspectMessageQueueDock(page, screenshotPath) {
   const dock = page.getByRole("region", { name: "Message queue" });
   await dock.waitFor();
@@ -1135,8 +1305,7 @@ async function inspectThreadDialog(page) {
     return {
       fitsViewport: box.left >= 0 && box.top >= 0 && box.right <= window.innerWidth && box.bottom <= window.innerHeight,
       cwdEditable: cwd?.tagName === "INPUT" && !cwd.readOnly,
-      sandboxEnabled: sandbox?.tagName === "SELECT" && !sandbox.disabled,
-      sandbox: sandbox?.tagName === "SELECT" ? sandbox.value : null,
+      sandboxControlAbsent: sandbox === null,
     };
   });
 }
@@ -1160,11 +1329,11 @@ async function approvalControlSnapshot(page) {
 
 async function inspectOneTurnAutoRun(page, screenshotPaths) {
   const control = page.locator(".composer-approval-toggle");
-  const input = page.getByLabel("Auto-run sandboxed actions for next turn");
+  const input = page.getByLabel("Automatic mode for next turn");
   const existing = await approvalControlSnapshot(page);
   await control.click();
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === true
+    document.querySelector('[aria-label="Automatic mode for next turn"]')?.checked === true
   ));
   const existingArmed = await approvalControlSnapshot(page);
   await control.click();
@@ -1180,14 +1349,14 @@ async function inspectOneTurnAutoRun(page, screenshotPaths) {
   const configuredDraft = await approvalControlSnapshot(page);
   await control.click();
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === true
+    document.querySelector('[aria-label="Automatic mode for next turn"]')?.checked === true
   ));
   const configuredDraftArmed = await approvalControlSnapshot(page);
   await page.screenshot({ path: screenshotPaths.armedDraft, fullPage: true });
 
   await selectFixture(page);
   await page.waitForFunction(() => (
-    document.querySelector('[aria-label="Auto-run sandboxed actions for next turn"]')?.checked === false
+    document.querySelector('[aria-label="Automatic mode for next turn"]')?.checked === false
   ));
   const clearedAfterThreadSelection = !(await input.isChecked());
   return {
@@ -1585,10 +1754,10 @@ try {
       modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
       effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
       autoRunDisabled: document.querySelector(
-        '[aria-label="Auto-run sandboxed actions for next turn"]',
+        '[aria-label="Automatic mode for next turn"]',
       )?.disabled === true,
       autoRunChecked: document.querySelector(
-        '[aria-label="Auto-run sandboxed actions for next turn"]',
+        '[aria-label="Automatic mode for next turn"]',
       )?.checked === true,
       defaultLabels: [...document.querySelectorAll(".composer-setting option")]
         .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
@@ -1689,6 +1858,11 @@ try {
     fixture,
     `${outputDirectory}/desktop-approvals.png`,
   );
+  const desktopFallbackApprovalLayout = await inspectFallbackApprovalLayout(
+    page,
+    fixture,
+    `${outputDirectory}/desktop-fallback-approvals.png`,
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
@@ -1705,10 +1879,10 @@ try {
     modelSelection: document.querySelector('[aria-label="Model for next turn"]')?.value ?? null,
     effortSelection: document.querySelector('[aria-label="Reasoning effort for next turn"]')?.value ?? null,
     autoRunDisabled: document.querySelector(
-      '[aria-label="Auto-run sandboxed actions for next turn"]',
+      '[aria-label="Automatic mode for next turn"]',
     )?.disabled === true,
     autoRunChecked: document.querySelector(
-      '[aria-label="Auto-run sandboxed actions for next turn"]',
+      '[aria-label="Automatic mode for next turn"]',
     )?.checked === true,
     defaultLabels: [...document.querySelectorAll(".composer-setting option")]
       .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
@@ -1825,6 +1999,11 @@ try {
     fixture,
     `${outputDirectory}/mobile-approvals.png`,
   );
+  const mobileFallbackApprovalLayout = await inspectFallbackApprovalLayout(
+    page,
+    fixture,
+    `${outputDirectory}/mobile-fallback-approvals.png`,
+  );
   const mobileOneTurnAutoRun = await inspectOneTurnAutoRun(page, {
     dialog: `${outputDirectory}/mobile-first-turn-dialog.png`,
     armedDraft: `${outputDirectory}/mobile-first-turn-auto.png`,
@@ -1853,6 +2032,7 @@ try {
       failedSubmission: desktopFailedSubmission,
       activePlan: desktopActivePlan,
       approvalLayout: desktopApprovalLayout,
+      fallbackApprovalLayout: desktopFallbackApprovalLayout,
       oneTurnAutoRun: desktopOneTurnAutoRun,
     },
     mobile: {
@@ -1878,6 +2058,7 @@ try {
       failedSubmission: mobileFailedSubmission,
       activePlan: mobileActivePlan,
       approvalLayout: mobileApprovalLayout,
+      fallbackApprovalLayout: mobileFallbackApprovalLayout,
       oneTurnAutoRun: mobileOneTurnAutoRun,
       splitActionHidden,
     },
@@ -1926,8 +2107,7 @@ try {
     desktop.connection === "error" ||
     !desktopDialog.fitsViewport ||
     !desktopDialog.cwdEditable ||
-    !desktopDialog.sandboxEnabled ||
-    desktopDialog.sandbox !== "workspace-write" ||
+    !desktopDialog.sandboxControlAbsent ||
     desktopProjectNavigation.groups < 2 ||
     !desktopProjectNavigation.groupsOpen ||
     desktopProjectNavigation.rows < 3 ||
@@ -2059,8 +2239,7 @@ try {
     mobileReloadedImage.horizontalOverflow ||
     !mobileDialog.fitsViewport ||
     !mobileDialog.cwdEditable ||
-    !mobileDialog.sandboxEnabled ||
-    mobileDialog.sandbox !== "workspace-write" ||
+    !mobileDialog.sandboxControlAbsent ||
     mobileProjectNavigation.groups < 2 ||
     !mobileProjectNavigation.groupsOpen ||
     mobileProjectNavigation.rows < 3 ||
@@ -2209,6 +2388,7 @@ try {
     desktopActivePlan.terminal.horizontalOverflow ||
     !desktopActivePlan.dismissed ||
     approvalLayoutInvalid(desktopApprovalLayout) ||
+    fallbackApprovalLayoutInvalid(desktopFallbackApprovalLayout) ||
     mobileRich.horizontalOverflow ||
     mobileRich.clipped.length > 0 ||
     mobileRich.reasoningBlocks !== 1 ||
@@ -2272,6 +2452,7 @@ try {
     mobileActivePlan.terminal.horizontalOverflow ||
     !mobileActivePlan.dismissed ||
     approvalLayoutInvalid(mobileApprovalLayout) ||
+    fallbackApprovalLayoutInvalid(mobileFallbackApprovalLayout) ||
     !splitActionHidden ||
     consoleErrors.length > 0 ||
     pageErrors.length > 0

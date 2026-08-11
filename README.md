@@ -37,17 +37,20 @@ Ask Codex 是一个本地优先的 Codex 浏览器客户端。它通过官方
 - 在浏览器中审核命令与文件变更请求，并在本次浏览器会话中把审批理由保留在对应命令上。
   决策图标固定在卡片标题右侧，长命令和请求详情在卡片内滚动；多张卡片在桌面端横向排列、
   移动端纵向排列，处理前一项后常用决策仍位于相同位置。
-- 每个直接轮次都有独立执行环境。默认手动模式由网关固定为 `untrusted + readOnly`：已知安全的
-  读取可以继续，命令、修改、联网和其他越界行为需要用户审批；逐轮显式开启的自动模式固定为
-  `on-request + workspaceWrite`，工作区内读写和命令自动执行，工作区外写入、受限网络等越界请求
-  仍显示人工审批。浏览器只提交 `manual` 或 `auto`，完整 sandbox、writable roots、network 和
-  reviewer 均由网关根据 app-server 权威状态重建。模式不会先通过 `thread/resume` 改沙箱。
-  Working 时开关禁用，轮次结束或启动失败后恢复手动默认；已启动 turn 保留其启动模式，跨会话
-  查看也不会丢失或覆盖。明确配置的 Full access 和 external sandbox 保持独立且不开放自动开关。
-  新线程创建、恢复、fork 和跨设备队列继续固定 `on-request`，steering 不携带策略，也不依赖
-  实验性设置 API。
+- 每个直接轮次都有独立执行环境。默认手动模式对齐 Codex 常规行为，由网关固定为
+  `on-request + workspaceWrite`：工作区内读写与普通命令自动执行，sandbox 尚未开放的网络访问、
+  工作区外写入、受保护的 Git 元数据等关键操作请求用户审批，批准后继续执行。逐轮显式开启的
+  自动模式固定为 `on-request + dangerFullAccess`，移除当前 turn 的文件系统与网络 sandbox 边界，
+  让普通命令、文件和网络操作尽量静默执行；规则、权限工具或 MCP 等仍需明确确认的请求继续
+  交给用户，不会因 `never` 被静默拒绝。
+  浏览器只提交 `manual` 或 `auto`，不提供 RO、RW 或 Full access 选择，完整执行策略由网关重建。
+  模式不会先通过 `thread/resume` 改 sandbox。Working 时开关禁用，轮次结束或启动失败后恢复手动
+  默认；已启动 turn 保留其启动模式，跨会话查看也不会丢失或覆盖。`externalSandbox` 不开放自动
+  模式。新线程创建、恢复和 fork 固定 `on-request`，跨设备队列明确使用 manual，steering 不携带
+  策略，也不依赖实验性设置 API。细粒度权限只能按上游原请求授予且限定在当前 turn；标准 MCP
+  typed form 和 HTTP(S) URL elicitation 可人工接受，无法安全校验的形式会明确显示并失败关闭。
 - 回答 `request_user_input` 发出的结构化问题。
-- 新建会话时选择绝对工作目录和沙箱，并在输入框旁选择下一轮使用的模型与推理强度。
+- 新建会话时选择绝对工作目录，并在输入框旁选择下一轮使用的模型与推理强度。
   工作目录默认继承当前选中会话的 `cwd`；没有选中会话时使用 `ASK_CODEX_WORKSPACE`。
   新会话的初始沙箱始终是 `workspace-write`。初始模型和推理强度来自 Codex 的有效配置，
   其他选项来自 `model/list`。
@@ -143,7 +146,8 @@ ASK_CODEX_WORKSPACE=/absolute/path/to/project npm start
 
 请把 `ASK_CODEX_TOKEN` 当作运行 Ask Codex 的操作系统账户密码。
 `ASK_CODEX_WORKSPACE` 只负责选择初始目录，并不是访问边界。通过认证的浏览器可以
-在新建会话时选择其他绝对目录，也可以在经过 Codex 审批后选择完全访问沙箱模式。
+在新建会话时选择其他绝对目录，也可以为一次明确的自动 turn 临时移除文件系统和网络 sandbox；
+仍需明确确认的请求会继续交给用户。
 `thread.cwd=/` 会为受限文件下载形成非常宽的候选范围。通过 Origin、Host 和 token
 认证后，单个下载仅依赖服务端签发的短期、一次性 opaque capability；应将 capability
 作为临时凭据保护，不要把它当作持久权限。
@@ -154,7 +158,7 @@ ASK_CODEX_WORKSPACE=/absolute/path/to/project npm start
 2. 使用 `ASK_CODEX_HOST` 监听私有网络接口。
 3. 将服务置于 TLS 和带认证的反向代理、VPN 或 SSH 隧道之后。
 4. 确保代理与应用日志不会记录 Authorization 请求头或 WebSocket 消息体。
-5. 保持 Codex 沙箱开启，并检查每次提权请求中的工作目录和会话级权限详情。
+5. 保持默认手动模式，检查每次提权请求；只对完全信任的单次任务显式开启自动模式。
 
 未设置令牌时，服务会拒绝监听非回环地址。本工具面向单用户；令牌只是访问门禁，
 不提供多用户隔离或基于角色的权限控制。

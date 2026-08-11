@@ -216,23 +216,6 @@ function turnIdFromNotification(params: unknown): string | undefined {
     : undefined;
 }
 
-const OVERRIDABLE_SANDBOX_POLICY_TYPES = new Set([
-  "dangerFullAccess",
-  "readOnly",
-  "workspaceWrite",
-]);
-const SANDBOX_POLICY_TYPE_BY_MODE: Readonly<Record<string, string>> = {
-  "danger-full-access": "dangerFullAccess",
-  "read-only": "readOnly",
-  "workspace-write": "workspaceWrite",
-};
-
-function resumeSandboxOverride(params: unknown): string | undefined {
-  return isRecord(params) && typeof params.sandbox === "string"
-    ? params.sandbox
-    : undefined;
-}
-
 function resultSandboxPolicy(
   result: unknown,
   threadId: string,
@@ -257,17 +240,6 @@ function resumeResultSandboxPolicy(result: unknown, threadId: string): GatewaySa
     threadId,
     "thread/resume could not verify the existing sandbox",
   );
-}
-
-function assertResumeSandboxOverrideSafe(sandboxType: string): void {
-  if (sandboxType === "externalSandbox") {
-    throw new ClientInputError(
-      "thread/resume cannot override an externally managed sandbox",
-    );
-  }
-  if (!OVERRIDABLE_SANDBOX_POLICY_TYPES.has(sandboxType)) {
-    throw new ClientInputError("thread/resume could not verify the existing sandbox");
-  }
 }
 
 function attachmentTurnKey(threadId: string, turnId: string): string {
@@ -562,8 +534,6 @@ export class AskCodexServer {
   private readonly pendingServerRequests = new Map<string, PendingServerRequest>();
   private readonly inFlightRpc = new Map<WebSocket, number>();
   private readonly threadOwnershipRpcTails = new Map<string, Promise<boolean>>();
-  private readonly activeSandboxResumeProbes = new Set<string>();
-  private readonly blockedSandboxResumeProbes = new Set<string>();
   private readonly threadSandboxAuthorities = new Map<string, TurnSandboxAuthority>();
   private totalInFlightRpc = 0;
   private inFlightAttachmentUploads = 0;
@@ -1066,7 +1036,6 @@ export class AskCodexServer {
     this.codex.on("status", (status) => this.handleCodexStatus(status));
     this.codex.on("notification", (method, params, emittedAtMs) => {
       const gatewayReceivedAtMs = Date.now();
-      this.observeSandboxResumeProbe(method, params);
       this.observeThreadSandboxAuthority(method, params);
       this.fileDownloads.observeNotification(method, params);
       if (method === "serverRequest/resolved" && isRecord(params) && isRpcId(params.requestId)) {
@@ -1426,11 +1395,14 @@ export class AskCodexServer {
           approvalsReviewer: "user",
           excludeTurns: true,
         };
+        let turnAuthority: TurnSandboxAuthority | undefined;
         try {
           setFailureOutcomeKnown(false);
           const resumeResult = await this.codex.request("thread/resume", resumeParams);
           setFailureOutcomeKnown(true);
-          resumeResultSandboxPolicy(resumeResult, item.threadId);
+          const sandboxPolicy = resumeResultSandboxPolicy(resumeResult, item.threadId);
+          this.rememberThreadSandboxAuthority(item.threadId, sandboxPolicy);
+          turnAuthority = this.threadSandboxAuthorities.get(item.threadId);
           this.assertThreadOwnershipRpcCanStart(
             client,
             requestCodexErrorRevision,
@@ -1446,15 +1418,17 @@ export class AskCodexServer {
           this.broadcastMessageQueueChanged(review.threadId);
           throw new MessageQueueError("Queued message thread could not be prepared");
         }
+        if (!turnAuthority) {
+          throw new MessageQueueError("Queued message thread could not be prepared");
+        }
 
         const dispatching = this.messageQueue.markDispatching(item.id, claimId);
         this.broadcastMessageQueueChanged(dispatching.threadId);
-        const turnParams = {
+        const turnParams = materializeTurnExecutionPolicy({
           threadId: item.threadId,
           input: [{ type: "text", text: item.text, text_elements: [] }],
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-        };
+          executionMode: "manual",
+        }, turnAuthority);
         let resultObserved = false;
         let confirmedItem: MessageQueueItem | undefined;
         let projectedResult: unknown;
@@ -1590,46 +1564,11 @@ export class AskCodexServer {
         }
         codexParams = materializeTurnExecutionPolicy(params, authority);
       }
-      const sandboxOverride = method === "thread/resume"
-        ? resumeSandboxOverride(params)
-        : undefined;
-      if (sandboxOverride !== undefined) {
-        this.activeSandboxResumeProbes.add(threadId);
-        this.blockedSandboxResumeProbes.delete(threadId);
-        try {
-          setFailureOutcomeKnown(false);
-          const probeResult = await this.codex.request("thread/resume", {
-            threadId,
-            approvalPolicy: "on-request",
-            approvalsReviewer: "user",
-            excludeTurns: true,
-          });
-          const probeSandboxType = resumeResultSandboxPolicy(probeResult, threadId).type;
-          setFailureOutcomeKnown(true);
-          assertResumeSandboxOverrideSafe(probeSandboxType);
-          if (this.blockedSandboxResumeProbes.has(threadId)) {
-            throw new ClientInputError(
-              "thread/resume could not verify the existing sandbox",
-            );
-          }
-        } finally {
-          this.activeSandboxResumeProbes.delete(threadId);
-          this.blockedSandboxResumeProbes.delete(threadId);
-        }
-        this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
-      }
       setFailureOutcomeKnown(false);
       const result = await this.codex.requestWithResultObserver(method, codexParams, (result) => {
         this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
         if (method === "thread/resume") {
           const sandboxPolicy = resumeResultSandboxPolicy(result, threadId);
-          const sandboxType = sandboxPolicy.type;
-          if (
-            sandboxOverride !== undefined &&
-            SANDBOX_POLICY_TYPE_BY_MODE[sandboxOverride] !== sandboxType
-          ) {
-            throw new ClientInputError("thread/resume did not apply the requested sandbox");
-          }
           this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
         } else if (method === "turn/start") {
           if (!turnIdFromStartResult(result)) {
@@ -1711,31 +1650,6 @@ export class AskCodexServer {
       this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
     } else {
       this.threadSandboxAuthorities.delete(threadId);
-    }
-  }
-
-  private observeSandboxResumeProbe(method: string, params: unknown): void {
-    if (method !== "thread/settings/updated") return;
-    const threadId = threadIdFromParams(params);
-    if (!threadId) {
-      for (const activeThreadId of this.activeSandboxResumeProbes) {
-        this.blockedSandboxResumeProbes.add(activeThreadId);
-      }
-      return;
-    }
-    if (!this.activeSandboxResumeProbes.has(threadId)) return;
-
-    const threadSettings = isRecord(params) && isRecord(params.threadSettings)
-      ? params.threadSettings
-      : undefined;
-    const sandboxPolicy = threadSettings && isRecord(threadSettings.sandboxPolicy)
-      ? threadSettings.sandboxPolicy
-      : undefined;
-    if (
-      typeof sandboxPolicy?.type !== "string" ||
-      !OVERRIDABLE_SANDBOX_POLICY_TYPES.has(sandboxPolicy.type)
-    ) {
-      this.blockedSandboxResumeProbes.add(threadId);
     }
   }
 

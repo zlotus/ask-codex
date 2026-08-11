@@ -886,6 +886,7 @@ describe("browser RPC policy", () => {
     })).toEqual({
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
+      sandbox: "workspace-write",
       cwd: "/workspace/project",
     });
     for (const historyMode of ["legacy", "paginated"]) {
@@ -897,17 +898,23 @@ describe("browser RPC policy", () => {
   });
 
   it.each([
-    ["thread/start", { approvalPolicy: "never" }, "approvalPolicy must be on-request"],
-    ["thread/start", { approvalsReviewer: "model" }, "approvalsReviewer must be user"],
+    ["thread/start", { approvalPolicy: "never" }, "does not allow param: approvalPolicy"],
+    ["thread/start", { approvalsReviewer: "model" }, "does not allow param: approvalsReviewer"],
+    ["thread/start", { sandbox: "read-only" }, "does not allow param: sandbox"],
     [
       "thread/resume",
       { threadId: "thread-1", approvalPolicy: "never" },
-      "approvalPolicy must be on-request",
+      "does not allow param: approvalPolicy",
     ],
     [
       "thread/resume",
       { threadId: "thread-1", approvalsReviewer: "model" },
-      "approvalsReviewer must be user",
+      "does not allow param: approvalsReviewer",
+    ],
+    [
+      "thread/resume",
+      { threadId: "thread-1", sandbox: "danger-full-access" },
+      "does not allow param: sandbox",
     ],
   ])("rejects unsafe thread policy override for %s", (method, params, message) => {
     expect(() => sanitizeBrowserRpcParams(method, params)).toThrow(message);
@@ -1027,9 +1034,9 @@ describe("browser RPC policy", () => {
     expect(materializeTurnExecutionPolicy(params, authority)).toEqual({
       threadId: "thread-1",
       input: params.input,
-      approvalPolicy: "untrusted",
+      approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      sandboxPolicy: workspaceWrite,
     });
     expect(materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, authority))
       .toEqual({
@@ -1037,9 +1044,9 @@ describe("browser RPC policy", () => {
         input: params.input,
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
-        sandboxPolicy: workspaceWrite,
+        sandboxPolicy: { type: "dangerFullAccess" },
       });
-    expect(materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
+    expect(materializeTurnExecutionPolicy(params, {
       current: { type: "readOnly", networkAccess: false },
     })).toEqual({
       threadId: "thread-1",
@@ -1056,7 +1063,7 @@ describe("browser RPC policy", () => {
     });
   });
 
-  it("keeps full access and external sandboxes independent from execution mode", () => {
+  it("restores manual mode after full access and preserves an external sandbox", () => {
     const params = {
       threadId: "thread-1",
       input: [{ type: "text", text: "Continue", text_elements: [] }],
@@ -1065,7 +1072,20 @@ describe("browser RPC policy", () => {
     expect(materializeTurnExecutionPolicy(params, {
       current: { type: "dangerFullAccess" },
     })).toEqual(expect.objectContaining({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    }));
+    expect(materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
+      current: { type: "dangerFullAccess" },
+    })).toEqual(expect.objectContaining({
+      approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandboxPolicy: { type: "dangerFullAccess" },
     }));
@@ -1073,13 +1093,10 @@ describe("browser RPC policy", () => {
       current: { type: "externalSandbox", networkAccess: "restricted" },
     });
     expect(external).toEqual(expect.objectContaining({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "on-request",
       approvalsReviewer: "user",
     }));
     expect(external).not.toHaveProperty("sandboxPolicy");
-    expect(() => materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
-      current: { type: "dangerFullAccess" },
-    })).toThrow("auto mode is unavailable for dangerFullAccess");
     expect(() => materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
       current: { type: "externalSandbox", networkAccess: "restricted" },
     })).toThrow("auto mode is unavailable for externalSandbox");

@@ -321,7 +321,6 @@ export default function App() {
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
   const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
-  const [sandboxOverride, setSandboxOverride] = useState<ThreadSettings["sandbox"] | null>(null);
   const [imagePreviews, setImagePreviews] = useState<SessionImagePreviewSnapshot>({});
   const [fileAttachments, setFileAttachments] = useState<SessionFileAttachmentSnapshot>({});
   const toastIdRef = useRef(0);
@@ -686,7 +685,6 @@ export default function App() {
     setLoadingThread(false);
     setThreadLoadError(null);
     setResyncError(null);
-    setSandboxOverride(null);
     setThreadDialog(null);
   }, []);
 
@@ -843,7 +841,7 @@ export default function App() {
         if (threadId) {
           if (
             threadId === selectedThreadIdRef.current &&
-            (sandbox === "danger-full-access" || sandbox === "external")
+            sandbox === "external"
           ) {
             setAutoRunNextTurn(false);
           }
@@ -1493,7 +1491,6 @@ export default function App() {
     nextTurnSettingsInitializedRef.current = true;
     selectedThreadIdRef.current = threadId;
     setDraftThreadConfigured(false);
-    setSandboxOverride(null);
     setThreadDialog(null);
     dispatch({ type: "selectThread", threadId });
     setSidebarOpen(false);
@@ -1850,16 +1847,11 @@ export default function App() {
   const openThreadSettings = useCallback(() => {
     setThreadDialog({
       mode: state.currentThread || draftThreadConfigured ? "existing" : "new",
-      settings: composerSettings.sandbox === "external" && !state.currentThread && !draftThreadConfigured
-        ? { ...composerSettings, sandbox: "workspace-write" }
-        : composerSettings,
+      settings: composerSettings,
     });
   }, [composerSettings, draftThreadConfigured, state.currentThread]);
 
   const confirmThreadSettings = useCallback((settings: ThreadSettings) => {
-    if (settings.sandbox === "danger-full-access" || settings.sandbox === "external") {
-      setAutoRunNextTurn(false);
-    }
     if (threadDialog?.mode === "new") {
       selectionGenerationRef.current += 1;
       selectedThreadIdRef.current = null;
@@ -1867,22 +1859,14 @@ export default function App() {
       setThreadLoadError(null);
       setResyncError(null);
       setDraftThreadConfigured(true);
-      setSandboxOverride(null);
       nextTurnSettingsInitializedRef.current = true;
       setNextTurnSettings({ model: settings.model, effort: settings.effort });
       dispatch({ type: "selectThread", threadId: null });
       dispatch({ type: "settings", settings });
       setSidebarOpen(false);
-    } else if (
-      threadDialog?.mode === "existing" &&
-      state.settings.sandbox !== "external" &&
-      settings.sandbox !== state.settings.sandbox
-    ) {
-      dispatch({ type: "settings", settings: { sandbox: settings.sandbox } });
-      setSandboxOverride(state.currentThread ? settings.sandbox : null);
     }
     setThreadDialog(null);
-  }, [state.currentThread, state.settings.sandbox, threadDialog?.mode]);
+  }, [threadDialog?.mode]);
 
   const sendMessage = useCallback(async (
     text: string,
@@ -1932,13 +1916,8 @@ export default function App() {
       if (!thread) {
         const threadStartAuthorityRevision = captureThreadCwdAuthorityRevision();
         threadCreateAttempted = true;
-        const configuredSandbox = state.settings.sandbox === "external"
-          ? "workspace-write"
-          : state.settings.sandbox;
         const result = await rpc("thread/start", {
           cwd,
-          approvalPolicy: "on-request",
-          sandbox: configuredSandbox,
           ...(nextTurnSettings.model.trim() ? { model: nextTurnSettings.model.trim() } : {}),
         });
         assertSelectionUnchanged();
@@ -1972,14 +1951,9 @@ export default function App() {
         const resumeAuthorityRevision = captureThreadCwdAuthorityRevision();
         const resumed = await rpc(
           "thread/resume",
-          existingThreadResumeParams(
-            thread.id,
-            sandboxOverride,
-            state.settings.sandbox,
-          ),
+          existingThreadResumeParams(thread.id),
         );
         assertSelectionUnchanged();
-        if (sandboxOverride) setSandboxOverride(null);
         const updatedThread = extractThread(resumed);
         const resumedCandidateCwd = updatedThread?.cwd ?? readString(paramsRecord(resumed).cwd);
         const resumedAuthority = resumedCandidateCwd
@@ -2059,7 +2033,6 @@ export default function App() {
     rememberFileAttachments,
     rememberImagePreviews,
     rpc,
-    sandboxOverride,
     state.currentThread,
     state.activeTurnId,
     state.settings,
@@ -2282,7 +2255,6 @@ export default function App() {
       selectedThreadIdRef.current = forkedThread.id;
       nextTurnSettingsInitializedRef.current = true;
       setDraftThreadConfigured(false);
-      setSandboxOverride(null);
       setThreadDialog(null);
       setSidebarOpen(false);
       setThreadLoadError(null);
@@ -2559,11 +2531,10 @@ export default function App() {
       </section>
       {threadDialog && (
         <ThreadSettingsDialog
-          key={`${threadDialog.mode}:${threadDialog.settings.cwd}:${threadDialog.settings.sandbox}`}
+          key={`${threadDialog.mode}:${threadDialog.settings.cwd}`}
           open
           mode={threadDialog.mode}
           settings={threadDialog.settings}
-          running={Boolean(state.activeTurnId)}
           onConfirm={confirmThreadSettings}
           onClose={() => setThreadDialog(null)}
         />

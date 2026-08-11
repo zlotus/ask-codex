@@ -69,7 +69,7 @@ describe("ApprovalPanel", () => {
     expect(cards[0].querySelector(".approval-body")).toHaveTextContent("/workspace/project");
   });
 
-  it("does not mistake granular permission requests for command approvals", () => {
+  it("offers a turn-scoped decision for granular permission requests", () => {
     const onResolve = vi.fn();
     const onReject = vi.fn();
     render(
@@ -77,7 +77,10 @@ describe("ApprovalPanel", () => {
         requests={[{
           id: "permissions-1",
           method: "item/permissions/requestApproval",
-          params: { reason: "Needs a broader profile" },
+          params: {
+            reason: "Needs a broader profile",
+            permissions: { network: { enabled: true }, fileSystem: null },
+          },
           receivedAt: 1,
         }]}
         onResolve={onResolve}
@@ -85,23 +88,45 @@ describe("ApprovalPanel", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    expect(screen.getByText("Needs a broader profile")).toBeInTheDocument();
+    expect(screen.getByText(/enabled/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(onResolve).toHaveBeenCalledWith("permissions-1", { decision: "accept" });
+    onResolve.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
-    expect(onResolve).toHaveBeenCalledWith("permissions-1", {
-      permissions: {},
-      scope: "turn",
-    });
+    expect(onResolve).toHaveBeenCalledWith("permissions-1", { decision: "decline" });
     expect(onReject).not.toHaveBeenCalled();
   });
 
-  it("declines unsupported MCP elicitations with the schema response", () => {
+  it("collects and accepts a typed MCP elicitation form", () => {
     const onResolve = vi.fn();
     render(
       <ApprovalPanel
         requests={[{
           id: "mcp-1",
           method: "mcpServer/elicitation/request",
-          params: { mode: "form", message: "Provide credentials" },
+          params: {
+            mode: "form",
+            serverName: "deployments",
+            message: "Choose deployment settings",
+            requestedSchema: {
+              type: "object",
+              properties: {
+                environment: {
+                  type: "string",
+                  title: "Environment",
+                  enum: ["staging", "production"],
+                },
+                replicas: {
+                  type: "integer",
+                  title: "Replicas",
+                  minimum: 1,
+                  maximum: 4,
+                },
+              },
+              required: ["environment", "replicas"],
+            },
+          },
           receivedAt: 1,
         }]}
         onResolve={onResolve}
@@ -109,8 +134,81 @@ describe("ApprovalPanel", () => {
       />,
     );
 
+    const submit = screen.getByRole("button", { name: "Submit and accept" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Environment"), { target: { value: "staging" } });
+    fireEvent.change(screen.getByLabelText("Replicas"), { target: { value: "2" } });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+    expect(onResolve).toHaveBeenCalledWith("mcp-1", {
+      action: "accept",
+      content: { environment: "staging", replicas: 2 },
+      _meta: null,
+    });
+    onResolve.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
     expect(onResolve).toHaveBeenCalledWith("mcp-1", {
+      action: "decline",
+      content: null,
+      _meta: null,
+    });
+  });
+
+  it("lets the user open and accept an MCP URL elicitation", () => {
+    const onResolve = vi.fn();
+    render(
+      <ApprovalPanel
+        requests={[{
+          id: "mcp-url",
+          method: "mcpServer/elicitation/request",
+          params: {
+            mode: "url",
+            serverName: "accounts",
+            message: "Authorize the account",
+            url: "https://example.com/authorize",
+          },
+          receivedAt: 1,
+        }]}
+        onResolve={onResolve}
+        onReject={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Open request" })).toHaveAttribute(
+      "href",
+      "https://example.com/authorize",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(onResolve).toHaveBeenCalledWith("mcp-url", {
+      action: "accept",
+      content: null,
+      _meta: null,
+    });
+  });
+
+  it("shows unsupported MCP forms and offers only a decline action", () => {
+    const onResolve = vi.fn();
+    render(
+      <ApprovalPanel
+        requests={[{
+          id: "mcp-openai-form",
+          method: "mcpServer/elicitation/request",
+          params: {
+            mode: "openai/form",
+            message: "Provide account details",
+            requestedSchema: { type: "future-form" },
+          },
+          receivedAt: 1,
+        }]}
+        onResolve={onResolve}
+        onReject={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("MCP request needs an unsupported form")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(onResolve).toHaveBeenCalledWith("mcp-openai-form", {
       action: "decline",
       content: null,
       _meta: null,

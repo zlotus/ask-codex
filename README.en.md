@@ -58,24 +58,31 @@ accepts arbitrary paths.
   details scroll inside the card. Multiple cards run horizontally on desktop
   and vertically on mobile, keeping common decisions at a stable position after
   the preceding request is resolved.
-- Every direct turn has an independent execution environment. The gateway fixes
-  default manual mode to `untrusted + readOnly`: known-safe reads may proceed,
-  while commands, edits, network access, and other boundary crossings require
-  user approval. Explicit one-turn auto mode uses
-  `on-request + workspaceWrite`, so workspace reads, edits, and commands run
-  automatically while writes outside the workspace, restricted network access,
-  and other boundary crossings still surface for human approval. The browser
-  submits only `manual` or `auto`; the gateway rebuilds the full sandbox,
-  writable roots, network policy, and reviewer from authoritative app-server
-  state. Changing modes never first mutates the sandbox through `thread/resume`.
-  The control is disabled while Working and restores manual mode after
-  completion or a failed start. A started turn retains its launch mode across
-  session switches. Explicit Full access and external sandboxes remain
-  independent and do not offer auto mode. Thread creation, resume, fork, and
-  cross-device queued sends remain fixed to `on-request`; steering carries no
-  policy, and the design uses no experimental settings API.
+- Every direct turn has an independent execution environment. Default manual
+  mode matches normal Codex behavior and is fixed to
+  `on-request + workspaceWrite`: workspace reads, writes, and routine commands
+  proceed automatically, while network access not already enabled by the
+  sandbox, outside-workspace writes, protected Git metadata, and other
+  consequential operations ask the user and continue after approval. Explicit
+  one-turn auto mode uses
+  `on-request + dangerFullAccess`, removing filesystem and network sandbox
+  boundaries so ordinary command, file, and network operations run silently
+  when possible. Rules, permission tools, MCP, and other requests that still
+  require an explicit decision surface to the user instead of being silently
+  rejected by `never`. The browser submits only
+  `manual` or `auto` and exposes no RO, RW, or Full access selector; the gateway
+  rebuilds final execution policy. Changing modes never first mutates the
+  sandbox through `thread/resume`. The control is disabled while Working and
+  restores manual mode after completion or a failed start. A started turn keeps
+  its launch mode across session switches. Auto is unavailable for
+  `externalSandbox`. Thread creation, resume, and fork remain fixed to
+  `on-request`; cross-device queue sends explicitly use manual, steering carries
+  no policy, and the design uses no experimental settings API. Granular grants
+  are rebuilt from the original request and forced to the current turn.
+  Standard MCP typed forms and HTTP(S) URL elicitations can be accepted; forms
+  the client cannot safely validate are shown and fail closed.
 - Answer structured questions from `request_user_input`.
-- Choose the absolute working directory and sandbox when starting a thread,
+- Choose the absolute working directory when starting a thread,
   then select the next-turn model and reasoning effort beside the composer.
   The working directory defaults to the currently selected thread's `cwd`, or
   to `ASK_CODEX_WORKSPACE` when no thread is selected. A new thread's initial
@@ -194,8 +201,9 @@ delete threads and possible descendant sessions without a Codex approval.
 Treat `ASK_CODEX_TOKEN` like a password for the operating-system account that
 runs Ask Codex. `ASK_CODEX_WORKSPACE` selects the initial directory; it is not
 an access boundary. An authenticated browser can select another absolute
-directory when starting a thread and can choose full-access sandbox mode,
-subject to Codex approvals.
+directory when starting a thread and can temporarily remove filesystem and
+network sandboxing for one explicitly automatic turn while still receiving
+requests that require an explicit decision.
 Setting `thread.cwd=/` creates a very broad candidate scope for restricted file
 downloads. After Origin, Host, and token authentication, an individual download
 depends only on a short-lived, single-use opaque capability issued by the server.
@@ -210,8 +218,8 @@ For access from another device:
    tunnel.
 4. Ensure proxy and application logs do not record authorization headers or
    WebSocket message bodies.
-5. Keep Codex sandboxing enabled and review every escalation request, including
-   the working directory and any session-level permission details.
+5. Keep the default manual mode and review every escalation request. Arm auto
+   only for one fully trusted task at a time.
 
 The server refuses a non-loopback bind when no token is configured. This is a
 single-user tool; the token is an access gate, not multi-user isolation or

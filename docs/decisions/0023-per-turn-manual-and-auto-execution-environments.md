@@ -1,6 +1,6 @@
 # ADR 0023：为每个 turn 固定独立的手动或自动执行环境
 
-- 状态：已接受
+- 状态：由 [ADR 0024](0024-codex-aligned-manual-and-one-turn-auto.md) 取代
 - 决策日期：2026-08-11
 - 取代：[ADR 0022](0022-sandbox-aware-one-turn-auto-run.md)
 - 修订：[ADR 0002](0002-security-gateway-and-manual-approval.zh-CN.md)
