@@ -183,7 +183,7 @@ type NextTurnSettings = Pick<ThreadSettings, "model" | "effort">;
 
 interface ActiveTurnLaunchContext {
   turnId: string;
-  approvalPolicy: "untrusted" | "on-request";
+  executionMode: "manual" | "auto";
 }
 
 function turnIdentity(threadId: string, turnId: string): string {
@@ -615,7 +615,7 @@ export default function App() {
       const existing = current.get(threadId);
       if (
         existing?.turnId === context.turnId &&
-        existing.approvalPolicy === context.approvalPolicy
+        existing.executionMode === context.executionMode
       ) {
         return current;
       }
@@ -841,6 +841,12 @@ export default function App() {
         const updatedCwd = readString(rawSettings.cwd);
         const sandbox = sandboxMode(rawSettings.sandboxPolicy ?? rawSettings.sandbox);
         if (threadId) {
+          if (
+            threadId === selectedThreadIdRef.current &&
+            (sandbox === "danger-full-access" || sandbox === "external")
+          ) {
+            setAutoRunNextTurn(false);
+          }
           const authoritativeCwd = updatedCwd
             ? rememberAuthoritativeThreadCwd(
                 threadId,
@@ -1851,6 +1857,9 @@ export default function App() {
   }, [composerSettings, draftThreadConfigured, state.currentThread]);
 
   const confirmThreadSettings = useCallback((settings: ThreadSettings) => {
+    if (settings.sandbox === "danger-full-access" || settings.sandbox === "external") {
+      setAutoRunNextTurn(false);
+    }
     if (threadDialog?.mode === "new") {
       selectionGenerationRef.current += 1;
       selectedThreadIdRef.current = null;
@@ -1885,7 +1894,7 @@ export default function App() {
     }
     const selectionGeneration = selectionGenerationRef.current;
     const autoRunSelected = autoRunNextTurn;
-    const approvalPolicy = autoRunSelected ? "on-request" : "untrusted";
+    const executionMode = autoRunSelected ? "auto" : "manual";
     let thread = state.currentThread;
     const existingThread = Boolean(thread);
     let guardedThreadId = thread?.id;
@@ -1923,10 +1932,13 @@ export default function App() {
       if (!thread) {
         const threadStartAuthorityRevision = captureThreadCwdAuthorityRevision();
         threadCreateAttempted = true;
+        const configuredSandbox = state.settings.sandbox === "external"
+          ? "workspace-write"
+          : state.settings.sandbox;
         const result = await rpc("thread/start", {
           cwd,
           approvalPolicy: "on-request",
-          sandbox: state.settings.sandbox === "external" ? "workspace-write" : state.settings.sandbox,
+          sandbox: configuredSandbox,
           ...(nextTurnSettings.model.trim() ? { model: nextTurnSettings.model.trim() } : {}),
         });
         assertSelectionUnchanged();
@@ -1960,7 +1972,11 @@ export default function App() {
         const resumeAuthorityRevision = captureThreadCwdAuthorityRevision();
         const resumed = await rpc(
           "thread/resume",
-          existingThreadResumeParams(thread.id, sandboxOverride, state.settings.sandbox),
+          existingThreadResumeParams(
+            thread.id,
+            sandboxOverride,
+            state.settings.sandbox,
+          ),
         );
         assertSelectionUnchanged();
         if (sandboxOverride) setSandboxOverride(null);
@@ -1998,7 +2014,7 @@ export default function App() {
           })),
         ],
         cwd,
-        approvalPolicy,
+        executionMode,
         ...nextTurnOverrides(nextTurnSettings),
       });
       turnAccepted = true;
@@ -2009,7 +2025,7 @@ export default function App() {
       if (turn?.status === "inProgress" && !completedBeforeStartResult) {
         rememberActiveTurnLaunchContext(thread.id, {
           turnId: turn.id,
-          approvalPolicy,
+          executionMode,
         });
       }
       if (autoRunSelected) {
@@ -2416,7 +2432,7 @@ export default function App() {
     : undefined;
   const composerAutoRunEnabled = state.activeTurnId
     ? activeTurnLaunchContext?.turnId === state.activeTurnId &&
-      activeTurnLaunchContext.approvalPolicy === "on-request"
+      activeTurnLaunchContext.executionMode === "auto"
     : autoRunNextTurn;
   const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
   const syncing = resyncing;

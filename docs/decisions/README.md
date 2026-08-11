@@ -5,7 +5,7 @@
 | ADR | 状态 | 决策 |
 | --- | --- | --- |
 | [0001](0001-codex-app-server-stdio.zh-CN.md) | 已接受 | 通过 JSONL stdio 使用有文档支持的 Codex app-server 协议。 |
-| [0002](0002-security-gateway-and-manual-approval.zh-CN.md) | 已接受；由 0020 修订，相关策略由 0022 再修订 | 将网关维持为严格的策略边界，并强制执行人工审批。 |
+| [0002](0002-security-gateway-and-manual-approval.zh-CN.md) | 已接受；由 0020 修订，相关策略最终由 0023 再修订 | 将网关维持为严格的策略边界，并强制执行人工审批。 |
 | [0003](0003-cloudflare-access-dual-gate.zh-CN.md) | 已接受 | 将 Cloudflare Access 与 Ask Codex 令牌作为彼此独立的远程访问关卡。 |
 | [0004](0004-versioned-project-context.zh-CN.md) | 已接受 | 在纳入版本控制的文档中维护简明的跨设备开发上下文。 |
 | [0005](0005-thread-and-turn-settings.zh-CN.md) | 已接受；由 0006 修订 | 将线程身份和沙箱设置与下一轮的模型控制分开。 |
@@ -25,7 +25,8 @@
 | [0019](0019-monotonic-plan-revisions-during-resync.md) | 已接受 | 用网关单调 revision 防止较旧重同步快照吞掉同步期间到达的新 Plan。 |
 | [0020](0020-one-turn-prompt-free-approval.md) | 由 0022 取代 | 默认手动审批，并允许已有空闲线程显式启用一次免审批提示轮次。 |
 | [0021](0021-first-turn-one-shot-prompt-free-approval.md) | 由 0022 取代 | 每个 turn 默认手动，并把逐轮显式的一次性选择扩展到已配置的新线程首轮。 |
-| [0022](0022-sandbox-aware-one-turn-auto-run.md) | 已接受 | 默认直接 turn 使用 `untrusted`，一次性自动 turn 使用 `on-request` 并保留沙箱越界人工审批。 |
+| [0022](0022-sandbox-aware-one-turn-auto-run.md) | 由 0023 取代 | 默认直接 turn 使用 `untrusted`，一次性自动 turn 使用 `on-request` 并保留沙箱越界人工审批。 |
+| [0023](0023-per-turn-manual-and-auto-execution-environments.md) | 已接受 | 每个直接 turn 由网关独立固定手动或自动审批与 sandbox 组合。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

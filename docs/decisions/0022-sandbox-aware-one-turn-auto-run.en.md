@@ -1,6 +1,6 @@
 # ADR 0022: Replace prompt-free turns with sandbox-aware auto-run
 
-- Status: Accepted
+- Status: Superseded by [ADR 0023](0023-per-turn-manual-and-auto-execution-environments.en.md)
 - Decision date: 2026-08-09
 - Supersedes: [ADR 0020](0020-one-turn-prompt-free-approval.en.md), [ADR 0021](0021-first-turn-one-shot-prompt-free-approval.en.md)
 - Amends: [ADR 0002](0002-security-gateway-and-manual-approval.md)

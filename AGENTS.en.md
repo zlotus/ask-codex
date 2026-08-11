@@ -53,19 +53,23 @@ accepted decision. Record only verification that was actually run.
 - Never expose arbitrary app-server RPC methods or pass browser params through
   without rebuilding them from an allowlist.
 - Fix `approvalPolicy: "on-request"` at the gateway for thread creation,
-  resume, fork, and queue consumption. Direct `turn/start` may accept only a
-  field-rebuilt `untrusted` or `on-request`, and the gateway must always inject
-  `approvalsReviewer: "user"`. Ordinary direct turns default to and explicitly
-  use `untrusted`. The product UI may arm one `on-request` sandbox-aware
-  auto-run only for the next direct turn on an existing idle thread or a
-  configured but not-yet-created new-thread draft. Actions allowed by the
-  current sandbox may run automatically, while sandbox escalation, restricted
-  network access, and writes outside the workspace must still go to the user.
-  Every turn restores the strict default, and the user must arm each auto-run
-  turn separately. The control is disabled while Working and clears after
-  completion or a failed start. Thread creation, steering, queued sends, and
-  later Ask Codex turns must not inherit the choice. Reject browser-supplied
-  `never`, `granular`, or reviewer values, and do not depend on experimental
+  resume, fork, and queue consumption. Direct `turn/start` browser params may
+  contain only a field-rebuilt `executionMode: "manual" | "auto"`. For the
+  default `manual` mode, the gateway injects `approvalPolicy: "untrusted"` and
+  a `readOnly` sandbox. For an explicit `auto` mode, it injects
+  `approvalPolicy: "on-request"` and a `workspaceWrite` sandbox recovered from
+  authoritative app-server state. It always injects
+  `approvalsReviewer: "user"`. The browser must not submit approval, reviewer,
+  full sandbox, writable-root, network, or temporary-directory policy. Keep an
+  explicitly configured `dangerFullAccess` or `externalSandbox` independent
+  and do not offer auto mode for either. Every direct turn must carry its final
+  policy; auto mode must not first mutate the sandbox through `thread/resume`.
+  Lock a started turn to its launch mode, including while viewing other threads.
+  The user may arm auto mode only for the next turn on an existing idle thread
+  or configured new-thread draft. Disable the control while Working and clear
+  it after completion or a failed start. Thread creation, steering, queued
+  sends, and later turns must not inherit it. Reject browser-supplied `never`,
+  `granular`, or any raw policy field, and do not depend on experimental
   settings APIs.
 - Never put `ASK_CODEX_TOKEN` in a URL or pass it to Codex, MCP servers, hooks,
   or commands. WebSocket authentication happens in the first message frame.

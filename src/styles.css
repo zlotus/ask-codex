@@ -4262,6 +4262,7 @@ details[open] > summary .details-chevron {
 
   .approval-panel {
     display: block;
+    height: min(42vh, 440px);
     padding: 8px 10px;
   }
 

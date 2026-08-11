@@ -1,13 +1,16 @@
 /// <reference types="node" />
 
 import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
-import { Blob as NodeBlob } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
   BrowserFileAttachmentStore,
   DEFAULT_FILE_ATTACHMENT_TTL_MS,
 } from "./browserFileAttachmentStore";
 import { sessionFileAttachmentKey, type LocalFileAttachment } from "./sessionFileAttachments";
+
+const { Blob: NodeBlob } = process.getBuiltinModule("buffer") as {
+  Blob: typeof Blob;
+};
 
 function file(name: string, size: number, mediaType = "application/octet-stream"): LocalFileAttachment {
   return {

@@ -5,7 +5,9 @@ import {
   ALLOWED_BROWSER_RPC_METHODS,
   MESSAGE_QUEUE_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
+  materializeTurnExecutionPolicy,
   materializeTurnStartAttachments,
+  normalizeGatewaySandboxPolicy,
   sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
@@ -964,12 +966,11 @@ describe("browser RPC policy", () => {
       threadId: "thread-1",
       input: [{ type: "text", text: "Continue", text_elements: [] }],
       cwd: "/workspace/project",
-      approvalPolicy: "untrusted",
-      approvalsReviewer: "user",
+      executionMode: "manual",
     });
   });
 
-  it("defaults direct turns to untrusted and allows one explicit on-request policy", () => {
+  it("defaults direct turns to manual mode and allows one explicit auto mode", () => {
     const input = [{ type: "text", text: "Continue", text_elements: [] }];
 
     expect(sanitizeBrowserRpcParams("turn/start", {
@@ -978,31 +979,159 @@ describe("browser RPC policy", () => {
     })).toEqual({
       threadId: "thread-1",
       input,
-      approvalPolicy: "untrusted",
-      approvalsReviewer: "user",
+      executionMode: "manual",
     });
     expect(sanitizeBrowserRpcParams("turn/start", {
       threadId: "thread-1",
       input,
-      approvalPolicy: "on-request",
+      executionMode: "auto",
     })).toEqual({
       threadId: "thread-1",
       input,
-      approvalPolicy: "on-request",
-      approvalsReviewer: "user",
+      executionMode: "auto",
     });
   });
 
   it.each([
-    [{ approvalPolicy: "never" }, "approvalPolicy must be untrusted or on-request"],
-    [{ approvalPolicy: { granular: {} } }, "approvalPolicy must be untrusted or on-request"],
+    [{ executionMode: "automatic" }, "executionMode must be manual or auto"],
+    [{ executionMode: { mode: "auto" } }, "executionMode must be manual or auto"],
+    [{ approvalPolicy: "on-request" }, "does not allow param: approvalPolicy"],
     [{ approvalsReviewer: "user" }, "does not allow param: approvalsReviewer"],
-  ])("rejects an unsupported turn approval override %#", (override, message) => {
+    [{ sandboxPolicy: { type: "readOnly", networkAccess: false } }, "does not allow param: sandboxPolicy"],
+    [{ sandbox: "workspace-write" }, "does not allow param: sandbox"],
+    [{ writableRoots: ["/workspace/private"] }, "does not allow param: writableRoots"],
+    [{ networkAccess: true }, "does not allow param: networkAccess"],
+  ])("rejects an unsupported turn execution-policy override %#", (override, message) => {
     expect(() => sanitizeBrowserRpcParams("turn/start", {
       threadId: "thread-1",
       input: [{ type: "text", text: "Continue", text_elements: [] }],
       ...override,
     })).toThrow(message);
+  });
+
+  it("materializes manual and auto execution policies from authoritative sandbox state", () => {
+    const params = {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      executionMode: "manual",
+    };
+    const workspaceWrite = {
+      type: "workspaceWrite" as const,
+      writableRoots: ["/workspace/shared"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: false,
+    };
+    const authority = { current: workspaceWrite, workspaceWrite };
+
+    expect(materializeTurnExecutionPolicy(params, authority)).toEqual({
+      threadId: "thread-1",
+      input: params.input,
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+    });
+    expect(materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, authority))
+      .toEqual({
+        threadId: "thread-1",
+        input: params.input,
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: workspaceWrite,
+      });
+    expect(materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
+      current: { type: "readOnly", networkAccess: false },
+    })).toEqual({
+      threadId: "thread-1",
+      input: params.input,
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    });
+  });
+
+  it("keeps full access and external sandboxes independent from execution mode", () => {
+    const params = {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "Continue", text_elements: [] }],
+      executionMode: "manual",
+    };
+    expect(materializeTurnExecutionPolicy(params, {
+      current: { type: "dangerFullAccess" },
+    })).toEqual(expect.objectContaining({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    }));
+    const external = materializeTurnExecutionPolicy(params, {
+      current: { type: "externalSandbox", networkAccess: "restricted" },
+    });
+    expect(external).toEqual(expect.objectContaining({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+    }));
+    expect(external).not.toHaveProperty("sandboxPolicy");
+    expect(() => materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
+      current: { type: "dangerFullAccess" },
+    })).toThrow("auto mode is unavailable for dangerFullAccess");
+    expect(() => materializeTurnExecutionPolicy({ ...params, executionMode: "auto" }, {
+      current: { type: "externalSandbox", networkAccess: "restricted" },
+    })).toThrow("auto mode is unavailable for externalSandbox");
+  });
+
+  it("strictly normalizes app-server sandbox policies", () => {
+    expect(normalizeGatewaySandboxPolicy({
+      type: "workspaceWrite",
+      writableRoots: ["/workspace/shared"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: true,
+      futureField: "ignored",
+    })).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/workspace/shared"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: true,
+    });
+    expect(normalizeGatewaySandboxPolicy({ type: "workspaceWrite" })).toBeNull();
+    expect(normalizeGatewaySandboxPolicy({
+      type: "externalSandbox",
+      networkAccess: false,
+    })).toBeNull();
+  });
+
+  it("projects only the sandbox type to the browser", () => {
+    const sandbox = {
+      type: "workspaceWrite",
+      writableRoots: ["/workspace/private-root"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    };
+    expect(sanitizeBrowserRpcResult("thread/resume", {
+      thread: { id: "thread-1" },
+      sandbox,
+    })).toEqual({
+      thread: { id: "thread-1" },
+      sandbox: { type: "workspaceWrite" },
+    });
+    expect(sanitizeBrowserNotificationParams("thread/settings/updated", {
+      threadId: "thread-1",
+      threadSettings: { sandboxPolicy: sandbox, model: "gpt-5" },
+    })).toEqual({
+      threadId: "thread-1",
+      threadSettings: {
+        sandboxPolicy: { type: "workspaceWrite" },
+        model: "gpt-5",
+      },
+    });
   });
 
   it("rebuilds ordered text and uploaded-image input without accepting browser paths", () => {
@@ -1034,8 +1163,7 @@ describe("browser RPC policy", () => {
     ]))
       .toEqual({
         threadId: "thread-1",
-        approvalPolicy: "untrusted",
-        approvalsReviewer: "user",
+        executionMode: "manual",
         input: [
           { type: "localImage", path: "/private/first.png", detail: "high" },
           { type: "text", text: "Compare these images", text_elements: [] },

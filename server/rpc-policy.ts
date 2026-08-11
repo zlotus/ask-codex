@@ -54,6 +54,7 @@ const MAX_RATE_LIMIT_BUCKETS = 32;
 const MAX_RATE_LIMIT_ID_CHARACTERS = 128;
 const MAX_RATE_LIMIT_NAME_CHARACTERS = 256;
 const MAX_DECIMAL_CHARACTERS = 64;
+const MAX_SANDBOX_WRITABLE_ROOTS = 64;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const MESSAGE_QUEUE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
@@ -68,6 +69,7 @@ const SANDBOX_POLICY_TYPES = new Set([
   "externalSandbox",
   "workspaceWrite",
 ]);
+const TURN_EXECUTION_MODES = new Set(["manual", "auto"]);
 const SORT_KEYS = new Set(["created_at", "updated_at", "recency_at"]);
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
 const TURN_ITEMS_VIEWS = new Set(["notLoaded", "summary", "full"]);
@@ -602,11 +604,11 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
     "cwd",
     "model",
     "effort",
-    "approvalPolicy",
+    "executionMode",
   ]);
-  const approvalPolicy = input.approvalPolicy ?? "untrusted";
-  if (approvalPolicy !== "untrusted" && approvalPolicy !== "on-request") {
-    throw new ClientInputError(`${method} approvalPolicy must be untrusted or on-request`);
+  const executionMode = input.executionMode ?? "manual";
+  if (typeof executionMode !== "string" || !TURN_EXECUTION_MODES.has(executionMode)) {
+    throw new ClientInputError(`${method} executionMode must be manual or auto`);
   }
   if (!Array.isArray(input.input) || input.input.length === 0) {
     throw new ClientInputError(`${method} input must be a non-empty array`);
@@ -668,13 +670,117 @@ function sanitizeTurnStart(params: unknown): Record<string, unknown> {
   const output: Record<string, unknown> = {
     threadId: requiredString(method, input, "threadId"),
     input: sanitizedInput,
-    approvalPolicy,
-    approvalsReviewer: "user",
+    executionMode,
   };
   assignDefined(output, "cwd", optionalString(method, input, "cwd"));
   assignDefined(output, "model", optionalString(method, input, "model"));
   assignDefined(output, "effort", optionalString(method, input, "effort"));
   return output;
+}
+
+export type GatewaySandboxPolicy =
+  | { type: "dangerFullAccess" }
+  | { type: "readOnly"; networkAccess: boolean }
+  | { type: "externalSandbox"; networkAccess: "restricted" | "enabled" }
+  | {
+      type: "workspaceWrite";
+      writableRoots: string[];
+      networkAccess: boolean;
+      excludeTmpdirEnvVar: boolean;
+      excludeSlashTmp: boolean;
+    };
+
+type WorkspaceWriteSandboxPolicy = Extract<GatewaySandboxPolicy, { type: "workspaceWrite" }>;
+
+export interface TurnSandboxAuthority {
+  current: GatewaySandboxPolicy;
+  workspaceWrite?: WorkspaceWriteSandboxPolicy;
+}
+
+const DEFAULT_WORKSPACE_WRITE_SANDBOX: WorkspaceWriteSandboxPolicy = {
+  type: "workspaceWrite",
+  writableRoots: [],
+  networkAccess: false,
+  excludeTmpdirEnvVar: false,
+  excludeSlashTmp: false,
+};
+
+export function normalizeGatewaySandboxPolicy(value: unknown): GatewaySandboxPolicy | null {
+  if (!isRecord(value) || typeof value.type !== "string") return null;
+  if (value.type === "dangerFullAccess") return { type: "dangerFullAccess" };
+  if (value.type === "readOnly") {
+    return typeof value.networkAccess === "boolean"
+      ? { type: "readOnly", networkAccess: value.networkAccess }
+      : null;
+  }
+  if (value.type === "externalSandbox") {
+    return value.networkAccess === "restricted" || value.networkAccess === "enabled"
+      ? { type: "externalSandbox", networkAccess: value.networkAccess }
+      : null;
+  }
+  if (
+    value.type !== "workspaceWrite" ||
+    !Array.isArray(value.writableRoots) ||
+    value.writableRoots.length > MAX_SANDBOX_WRITABLE_ROOTS ||
+    !value.writableRoots.every((root) => (
+      typeof root === "string" &&
+      root.length > 0 &&
+      root.length <= MAX_SKILLS_CWD_CHARACTERS &&
+      isAbsolute(root)
+    )) ||
+    typeof value.networkAccess !== "boolean" ||
+    typeof value.excludeTmpdirEnvVar !== "boolean" ||
+    typeof value.excludeSlashTmp !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    type: "workspaceWrite",
+    writableRoots: [...value.writableRoots],
+    networkAccess: value.networkAccess,
+    excludeTmpdirEnvVar: value.excludeTmpdirEnvVar,
+    excludeSlashTmp: value.excludeSlashTmp,
+  };
+}
+
+export function materializeTurnExecutionPolicy(
+  params: unknown,
+  authority: TurnSandboxAuthority,
+): Record<string, unknown> {
+  const method = "turn/start";
+  const input = paramsObject(method, params);
+  const executionMode = input.executionMode;
+  if (executionMode !== "manual" && executionMode !== "auto") {
+    throw new ClientInputError(`${method} executionMode must be manual or auto`);
+  }
+  if (
+    executionMode === "auto" &&
+    (authority.current.type === "dangerFullAccess" || authority.current.type === "externalSandbox")
+  ) {
+    throw new ClientInputError(
+      `${method} auto mode is unavailable for ${authority.current.type}`,
+    );
+  }
+  const output = { ...input };
+  delete output.executionMode;
+  let sandboxPolicy: GatewaySandboxPolicy | undefined;
+  if (authority.current.type === "dangerFullAccess") {
+    sandboxPolicy = { type: "dangerFullAccess" };
+  } else if (authority.current.type !== "externalSandbox") {
+    sandboxPolicy = executionMode === "manual"
+      ? { type: "readOnly", networkAccess: false }
+      : authority.workspaceWrite ?? DEFAULT_WORKSPACE_WRITE_SANDBOX;
+  }
+  return {
+    ...output,
+    approvalPolicy: executionMode === "manual" ? "untrusted" : "on-request",
+    approvalsReviewer: "user",
+    ...(sandboxPolicy === undefined ? {} : {
+      sandboxPolicy: sandboxPolicy.type === "workspaceWrite"
+        ? { ...sandboxPolicy, writableRoots: [...sandboxPolicy.writableRoots] }
+        : { ...sandboxPolicy },
+    }),
+  };
 }
 
 function sanitizeTurnSteer(params: unknown): Record<string, unknown> {
@@ -1440,10 +1546,40 @@ function projectAccountRateLimitsUpdatedNotification(params: unknown): Record<st
   return rateLimits && Object.keys(rateLimits).length > 0 ? { rateLimits } : {};
 }
 
+function projectThreadSettingsUpdatedNotification(params: unknown): unknown {
+  const projected = sanitizeBrowserVisibleValue(params);
+  if (!isRecord(projected) || !isRecord(projected.threadSettings)) return projected;
+  const source = isRecord(params) && isRecord(params.threadSettings)
+    ? params.threadSettings
+    : undefined;
+  if (!source || !Object.hasOwn(source, "sandboxPolicy")) return projected;
+  const sandboxPolicy = normalizeGatewaySandboxPolicy(source.sandboxPolicy);
+  return {
+    ...projected,
+    threadSettings: {
+      ...projected.threadSettings,
+      sandboxPolicy: sandboxPolicy ? { type: sandboxPolicy.type } : null,
+    },
+  };
+}
+
 export function sanitizeBrowserNotificationParams(method: string, params: unknown): unknown {
-  return method === "account/rateLimits/updated"
-    ? projectAccountRateLimitsUpdatedNotification(params)
-    : sanitizeBrowserVisibleValue(params);
+  if (method === "account/rateLimits/updated") {
+    return projectAccountRateLimitsUpdatedNotification(params);
+  }
+  if (method === "thread/settings/updated") {
+    return projectThreadSettingsUpdatedNotification(params);
+  }
+  return sanitizeBrowserVisibleValue(params);
+}
+
+function projectThreadLifecycleResult(result: unknown): unknown {
+  const projected = sanitizeBrowserVisibleValue(result);
+  if (!isRecord(projected) || !isRecord(result)) return projected;
+  const sandboxPolicy = normalizeGatewaySandboxPolicy(result.sandbox);
+  return sandboxPolicy
+    ? { ...projected, sandbox: { type: sandboxPolicy.type } }
+    : projected;
 }
 
 export function sanitizeBrowserRpcResult(
@@ -1452,6 +1588,9 @@ export function sanitizeBrowserRpcResult(
   params?: unknown,
 ): unknown {
   switch (method) {
+    case "thread/start":
+    case "thread/resume":
+      return projectThreadLifecycleResult(result);
     case "config/read": {
       const config = isRecord(result) && isRecord(result.config) ? result.config : {};
       return {

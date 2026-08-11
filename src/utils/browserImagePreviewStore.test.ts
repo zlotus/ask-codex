@@ -1,7 +1,6 @@
 /// <reference types="node" />
 
 import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
-import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
   MAX_IMAGE_BYTES,
@@ -12,6 +11,11 @@ import {
   DEFAULT_IMAGE_PREVIEW_TTL_MS,
 } from "./browserImagePreviewStore";
 import { sessionImagePreviewKey } from "./sessionImagePreviews";
+
+const { Blob: NodeBlob, File: NodeFile } = process.getBuiltinModule("buffer") as {
+  Blob: typeof Blob;
+  File: typeof File;
+};
 
 function image(size: number, type = "image/png"): Blob {
   return new NodeBlob([new Uint8Array(size)], { type }) as unknown as Blob;

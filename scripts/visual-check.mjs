@@ -1035,9 +1035,15 @@ async function inspectApprovalLayout(page, fixture, screenshotPath) {
   const stableAfterResolve = Boolean(
     before && after && Math.abs(before.x - after.x) <= 0.5 && Math.abs(before.y - after.y) <= 0.5
   );
+  const resolvedTargetPositions = {
+    before,
+    after,
+    deltaX: before && after ? after.x - before.x : null,
+    deltaY: before && after ? after.y - before.y : null,
+  };
   await page.getByRole("button", { name: "Decline", exact: true }).click();
   await panel.waitFor({ state: "hidden" });
-  return { ...layout, stableAfterResolve, dismissed: true };
+  return { ...layout, stableAfterResolve, resolvedTargetPositions, dismissed: true };
 }
 
 function approvalLayoutInvalid(layout) {

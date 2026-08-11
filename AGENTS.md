@@ -44,15 +44,18 @@ ADR。只有在产品规划期间才阅读 `docs/ideas.md`。
 ## 安全不变量
 
 - 绝不暴露任意 app-server RPC 方法，也不要直接透传浏览器参数；必须根据允许列表重新构建参数。
-- 线程创建、恢复、fork 和队列消费必须在网关固定 `approvalPolicy: "on-request"`；直接
-  `turn/start` 只允许逐字段重建后的 `untrusted` 或 `on-request`，并始终由网关注入
-  `approvalsReviewer: "user"`。普通直接 turn 默认且显式使用 `untrusted`。产品 UI 只能在已有
-  空闲线程，或已完成配置但尚未创建的新线程草稿上，为下一次直接 turn 显式启用一次
-  `on-request` 沙箱内自动运行；当前 sandbox 已允许的操作可自动执行，sandbox 升级、受限网络和
-  工作区外写入仍必须交给用户审批。每个 turn 均恢复严格默认，用户必须逐轮开启；Working 时
-  禁止切换，轮次结束或启动失败后恢复关闭。新线程的 `thread/start`、steering、队列和后续
-  Ask Codex 轮次不得继承该选择。浏览器提交 `never`、`granular` 或 reviewer 必须被拒绝，且
-  不得依赖实验性设置 API。
+- 线程创建、恢复、fork 和队列消费必须在网关固定 `approvalPolicy: "on-request"`。直接
+  `turn/start` 的浏览器参数只允许逐字段重建后的 `executionMode: "manual" | "auto"`；网关为
+  默认 `manual` 注入 `approvalPolicy: "untrusted"` 与 `readOnly` sandbox，为显式 `auto` 注入
+  `approvalPolicy: "on-request"` 与从 app-server 权威状态恢复的 `workspaceWrite` sandbox，并始终
+  注入 `approvalsReviewer: "user"`。浏览器不得提交 approval、reviewer、完整 sandbox、writable
+  roots、network 或 tmp 策略。已显式配置的 `dangerFullAccess` 和 `externalSandbox` 必须保持独立，
+  UI 不得为其开放自动开关。每个直接 turn 都必须携带自己的最终策略，自动模式不得先用
+  `thread/resume` 改 sandbox；当前 turn 启动后锁定其模式，跨线程查看不得丢失或覆盖。自动开关
+  只允许在已有空闲线程，或已完成配置但尚未创建的新线程草稿上逐轮开启；Working 时禁止切换，
+  轮次结束或启动失败后恢复关闭。新线程的 `thread/start`、steering、队列和后续 Ask Codex 轮次
+  不得继承该选择。浏览器提交 `never`、`granular` 或任何原始策略字段必须被拒绝，且不得依赖
+  实验性设置 API。
 - 绝不将 `ASK_CODEX_TOKEN` 放进 URL，也不要把它传给 Codex、MCP 服务器、hook
   或命令。WebSocket 认证在第一条消息帧中完成。
 - 保持默认仅监听回环地址、严格的 Origin/Host 检查、连接和请求限制，以及非回环地址必须

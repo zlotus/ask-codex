@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
-import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -9,6 +8,11 @@ import { BrowserFileAttachmentStore } from "./utils/browserFileAttachmentStore";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
 import { sessionFileAttachmentKey } from "./utils/sessionFileAttachments";
 import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
+
+const { Blob: NodeBlob, File: NodeFile } = process.getBuiltinModule("buffer") as {
+  Blob: typeof Blob;
+  File: typeof File;
+};
 
 const socket = vi.hoisted(() => ({
   connection: "connected",
@@ -382,7 +386,7 @@ describe("App thread settings lifecycle", () => {
     await sendMessage();
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       threadId: existingThread.id,
-      approvalPolicy: "on-request",
+      executionMode: "auto",
     }));
     expect(autoToggle).toBeChecked();
     expect(autoToggle).toBeDisabled();
@@ -435,7 +439,43 @@ describe("App thread settings lifecycle", () => {
     const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start");
     expect(turnStarts.at(-1)?.[1]).toEqual(expect.objectContaining({
       threadId: existingThread.id,
-      approvalPolicy: "untrusted",
+      executionMode: "manual",
+    }));
+  });
+
+  it("auto-runs a thread left read-only without changing its sandbox through resume", async () => {
+    const baseRpc = socket.rpc.getMockImplementation()!;
+    socket.rpc.mockImplementation(async (method: string, params?: unknown) => {
+      const request = params as { initialTurnsPage?: unknown } | undefined;
+      if (method === "thread/resume" && request?.initialTurnsPage) {
+        return {
+          thread: existingThread,
+          cwd: existingThread.cwd,
+          model: existingThread.model,
+          sandbox: { type: "readOnly" },
+          initialTurnsPage: { data: [], nextCursor: null, backwardsCursor: null },
+        };
+      }
+      return await baseRpc(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByText("Existing thread"));
+    await screen.findByTitle("Existing thread");
+
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    fireEvent.click(autoToggle);
+    await sendMessage();
+
+    const resumes = socket.rpc.mock.calls.filter(([method]) => method === "thread/resume");
+    expect(resumes.at(-1)?.[1]).toEqual(expect.objectContaining({
+      threadId: existingThread.id,
+    }));
+    expect(resumes.at(-1)?.[1]).not.toHaveProperty("sandbox");
+    expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      threadId: existingThread.id,
+      executionMode: "auto",
     }));
   });
 
@@ -530,6 +570,31 @@ describe("App thread settings lifecycle", () => {
     });
   });
 
+  it("clears an armed auto turn when the selected thread becomes externally sandboxed", async () => {
+    installBootstrapFixture();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Existing thread" }));
+    await screen.findByTitle("Existing thread");
+    const autoToggle = screen.getByLabelText("Auto-run sandboxed actions for next turn");
+    fireEvent.click(autoToggle);
+    expect(autoToggle).toBeChecked();
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { sandboxPolicy: { type: "externalSandbox" } },
+      },
+    }));
+
+    await waitFor(() => {
+      expect(autoToggle).not.toBeChecked();
+      expect(autoToggle).toBeDisabled();
+    });
+  });
+
   it("does not revive auto-run when completion precedes the turn start result", async () => {
     let resolveTurnStart!: (result: unknown) => void;
     let markTurnStartRequested!: () => void;
@@ -603,7 +668,7 @@ describe("App thread settings lifecycle", () => {
     }));
     expect(socket.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       threadId: newThread.id,
-      approvalPolicy: "on-request",
+      executionMode: "auto",
     }));
     expect(autoToggle).toBeChecked();
     expect(autoToggle).toBeDisabled();

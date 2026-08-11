@@ -130,7 +130,9 @@ export function Composer({
       (images.length === 0 || imageInputSupported));
   const canEnqueue = !controlsDisabled && Boolean(onEnqueue) && Boolean(value.trim()) &&
     images.length === 0 && files.length === 0;
-  const autoRunDisabled = running || sending || !autoRunAvailable;
+  const autoRunSandboxAvailable = settings.sandbox !== "danger-full-access" &&
+    settings.sandbox !== "external";
+  const autoRunDisabled = running || sending || !autoRunAvailable || !autoRunSandboxAvailable;
 
   useEffect(() => {
     imagesRef.current = images;
@@ -508,9 +510,13 @@ export function Composer({
           </button>
           <label
             className={`composer-approval-toggle${autoRunNextTurn ? " composer-approval-toggle--active" : ""}`}
-            title={autoRunAvailable
-              ? "Auto-run actions allowed by the sandbox; ask before escalation"
-              : "Choose an idle thread or finish configuring a new one before enabling one-turn auto mode"}
+            title={!autoRunAvailable
+              ? "Choose an idle thread or finish configuring a new one before enabling one-turn auto mode"
+              : settings.sandbox === "danger-full-access"
+                ? "Full access is configured separately and already removes sandbox restrictions"
+                : settings.sandbox === "external"
+                  ? "This thread uses an externally managed sandbox"
+                  : "Use workspace-write for this turn; ask before sandbox escalation"}
           >
             <ShieldCheck size={13} aria-hidden="true" />
             <input

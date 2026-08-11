@@ -58,20 +58,22 @@ accepts arbitrary paths.
   details scroll inside the card. Multiple cards run horizontally on desktop
   and vertically on mobile, keeping common decisions at a stable position after
   the preceding request is resolved.
-- Every ordinary direct turn defaults to strict `untrusted` approval. An
-  existing idle thread or configured new-thread draft can temporarily arm the
-  next direct turn for `on-request` sandbox-aware auto-run. Actions already
-  allowed by the active sandbox run automatically, while sandbox escalation,
-  restricted network access, and writes outside the workspace still surface
-  for human approval. The control is disabled while Working, restores the
-  strict default after completion or a failed start, and must be armed again
-  for each later turn. A started turn retains the policy captured at launch;
-  switching to another session and back still shows that turn's locked state
-  without inheriting or replacing another session's next-turn choice. Thread
-  creation, resume, fork, and cross-device queued sends remain fixed to
-  `on-request`, while steering carries no policy. The browser cannot submit
-  `never`, `granular`, or reviewer values, and the design uses no experimental
-  settings API.
+- Every direct turn has an independent execution environment. The gateway fixes
+  default manual mode to `untrusted + readOnly`: known-safe reads may proceed,
+  while commands, edits, network access, and other boundary crossings require
+  user approval. Explicit one-turn auto mode uses
+  `on-request + workspaceWrite`, so workspace reads, edits, and commands run
+  automatically while writes outside the workspace, restricted network access,
+  and other boundary crossings still surface for human approval. The browser
+  submits only `manual` or `auto`; the gateway rebuilds the full sandbox,
+  writable roots, network policy, and reviewer from authoritative app-server
+  state. Changing modes never first mutates the sandbox through `thread/resume`.
+  The control is disabled while Working and restores manual mode after
+  completion or a failed start. A started turn retains its launch mode across
+  session switches. Explicit Full access and external sandboxes remain
+  independent and do not offer auto mode. Thread creation, resume, fork, and
+  cross-device queued sends remain fixed to `on-request`; steering carries no
+  policy, and the design uses no experimental settings API.
 - Answer structured questions from `request_user_input`.
 - Choose the absolute working directory and sandbox when starting a thread,
   then select the next-turn model and reasoning effort beside the composer.

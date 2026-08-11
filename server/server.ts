@@ -54,11 +54,15 @@ import {
   ALLOWED_BROWSER_RPC_METHODS,
   MESSAGE_QUEUE_BROWSER_RPC_METHODS,
   attachmentIdsFromTurnStart,
+  materializeTurnExecutionPolicy,
   materializeTurnStartAttachments,
+  normalizeGatewaySandboxPolicy,
   sanitizeBrowserNotificationParams,
   sanitizeBrowserRpcParams,
   sanitizeBrowserRpcResult,
   sanitizeMessageQueueRpcParams,
+  type GatewaySandboxPolicy,
+  type TurnSandboxAuthority,
 } from "./rpc-policy.js";
 import {
   assertServerRequestRoutable,
@@ -93,6 +97,7 @@ const MAX_WS_BUFFERED_BYTES = 2 * 1024 * 1024;
 const WS_AUTH_TIMEOUT_MS = 5_000;
 const MAX_RESYNC_METHOD_CHARACTERS = 128;
 const MAX_RESYNC_ID_CHARACTERS = 256;
+const MAX_THREAD_SANDBOX_AUTHORITIES = 4_096;
 export { ALLOWED_BROWSER_RPC_METHODS } from "./rpc-policy.js";
 
 export interface AskCodexConfig {
@@ -216,10 +221,6 @@ const OVERRIDABLE_SANDBOX_POLICY_TYPES = new Set([
   "readOnly",
   "workspaceWrite",
 ]);
-const SANDBOX_POLICY_TYPES = new Set([
-  ...OVERRIDABLE_SANDBOX_POLICY_TYPES,
-  "externalSandbox",
-]);
 const SANDBOX_POLICY_TYPE_BY_MODE: Readonly<Record<string, string>> = {
   "danger-full-access": "dangerFullAccess",
   "read-only": "readOnly",
@@ -232,18 +233,30 @@ function resumeSandboxOverride(params: unknown): string | undefined {
     : undefined;
 }
 
-function resumeResultSandboxType(result: unknown, threadId: string): string {
+function resultSandboxPolicy(
+  result: unknown,
+  threadId: string,
+  errorMessage: string,
+): GatewaySandboxPolicy {
   const response = isRecord(result) ? result : undefined;
   const thread = response && isRecord(response.thread) ? response.thread : undefined;
   if (thread?.id !== threadId) {
-    throw new ClientInputError("thread/resume could not verify the existing sandbox");
+    throw new ClientInputError(errorMessage);
   }
 
-  const sandbox = response && isRecord(response.sandbox) ? response.sandbox : undefined;
-  if (typeof sandbox?.type !== "string" || !SANDBOX_POLICY_TYPES.has(sandbox.type)) {
-    throw new ClientInputError("thread/resume could not verify the existing sandbox");
+  const sandbox = normalizeGatewaySandboxPolicy(response?.sandbox);
+  if (!sandbox) {
+    throw new ClientInputError(errorMessage);
   }
-  return sandbox.type;
+  return sandbox;
+}
+
+function resumeResultSandboxPolicy(result: unknown, threadId: string): GatewaySandboxPolicy {
+  return resultSandboxPolicy(
+    result,
+    threadId,
+    "thread/resume could not verify the existing sandbox",
+  );
 }
 
 function assertResumeSandboxOverrideSafe(sandboxType: string): void {
@@ -551,6 +564,7 @@ export class AskCodexServer {
   private readonly threadOwnershipRpcTails = new Map<string, Promise<boolean>>();
   private readonly activeSandboxResumeProbes = new Set<string>();
   private readonly blockedSandboxResumeProbes = new Set<string>();
+  private readonly threadSandboxAuthorities = new Map<string, TurnSandboxAuthority>();
   private totalInFlightRpc = 0;
   private inFlightAttachmentUploads = 0;
   private codexErrorRevision = 0;
@@ -1053,6 +1067,7 @@ export class AskCodexServer {
     this.codex.on("notification", (method, params, emittedAtMs) => {
       const gatewayReceivedAtMs = Date.now();
       this.observeSandboxResumeProbe(method, params);
+      this.observeThreadSandboxAuthority(method, params);
       this.fileDownloads.observeNotification(method, params);
       if (method === "serverRequest/resolved" && isRecord(params) && isRpcId(params.requestId)) {
         this.pendingServerRequests.delete(rpcIdKey(params.requestId));
@@ -1415,7 +1430,7 @@ export class AskCodexServer {
           setFailureOutcomeKnown(false);
           const resumeResult = await this.codex.request("thread/resume", resumeParams);
           setFailureOutcomeKnown(true);
-          resumeResultSandboxType(resumeResult, item.threadId);
+          resumeResultSandboxPolicy(resumeResult, item.threadId);
           this.assertThreadOwnershipRpcCanStart(
             client,
             requestCodexErrorRevision,
@@ -1528,6 +1543,12 @@ export class AskCodexServer {
         if (method === "thread/fork" && this.ownership.get(threadId)) {
           throw new Error("Codex app-server returned an invalid thread/fork result");
         }
+        const sandboxPolicy = resultSandboxPolicy(
+          result,
+          threadId,
+          `Codex app-server returned an invalid ${method} sandbox`,
+        );
+        this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
         this.claimThreadOwnership(threadId, client);
       });
       this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
@@ -1548,6 +1569,27 @@ export class AskCodexServer {
     return this.serializeThreadOwnershipRpc(threadId, method, async (setFailureOutcomeKnown) => {
       setFailureOutcomeKnown(true);
       this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
+      let codexParams = params;
+      if (method === "turn/start") {
+        let authority = this.threadSandboxAuthorities.get(threadId);
+        if (!authority) {
+          setFailureOutcomeKnown(false);
+          const probeResult = await this.codex.request("thread/resume", {
+            threadId,
+            approvalPolicy: "on-request",
+            approvalsReviewer: "user",
+            excludeTurns: true,
+          });
+          const sandboxPolicy = resumeResultSandboxPolicy(probeResult, threadId);
+          this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
+          authority = this.threadSandboxAuthorities.get(threadId);
+          setFailureOutcomeKnown(true);
+        }
+        if (!authority) {
+          throw new ClientInputError("turn/start could not verify the existing sandbox");
+        }
+        codexParams = materializeTurnExecutionPolicy(params, authority);
+      }
       const sandboxOverride = method === "thread/resume"
         ? resumeSandboxOverride(params)
         : undefined;
@@ -1562,7 +1604,7 @@ export class AskCodexServer {
             approvalsReviewer: "user",
             excludeTurns: true,
           });
-          const probeSandboxType = resumeResultSandboxType(probeResult, threadId);
+          const probeSandboxType = resumeResultSandboxPolicy(probeResult, threadId).type;
           setFailureOutcomeKnown(true);
           assertResumeSandboxOverrideSafe(probeSandboxType);
           if (this.blockedSandboxResumeProbes.has(threadId)) {
@@ -1577,16 +1619,18 @@ export class AskCodexServer {
         this.assertThreadOwnershipRpcCanStart(client, requestCodexErrorRevision, method);
       }
       setFailureOutcomeKnown(false);
-      const result = await this.codex.requestWithResultObserver(method, params, (result) => {
+      const result = await this.codex.requestWithResultObserver(method, codexParams, (result) => {
         this.assertCodexErrorRevisionCurrent(requestCodexErrorRevision, method);
         if (method === "thread/resume") {
-          const sandboxType = resumeResultSandboxType(result, threadId);
+          const sandboxPolicy = resumeResultSandboxPolicy(result, threadId);
+          const sandboxType = sandboxPolicy.type;
           if (
             sandboxOverride !== undefined &&
             SANDBOX_POLICY_TYPE_BY_MODE[sandboxOverride] !== sandboxType
           ) {
             throw new ClientInputError("thread/resume did not apply the requested sandbox");
           }
+          this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
         } else if (method === "turn/start") {
           if (!turnIdFromStartResult(result)) {
             throw new Error("Codex app-server returned an invalid turn/start result");
@@ -1625,6 +1669,48 @@ export class AskCodexServer {
   private claimThreadOwnership(threadId: string, client: WebSocket): void {
     if (this.clients.has(client) && client.readyState === WebSocket.OPEN) {
       this.ownership.set(threadId, client);
+    }
+  }
+
+  private rememberThreadSandboxAuthority(
+    threadId: string,
+    current: GatewaySandboxPolicy,
+  ): void {
+    const previous = this.threadSandboxAuthorities.get(threadId);
+    const authority: TurnSandboxAuthority = {
+      current,
+      ...(current.type === "workspaceWrite"
+        ? { workspaceWrite: current }
+        : previous?.workspaceWrite
+          ? { workspaceWrite: previous.workspaceWrite }
+          : {}),
+    };
+    this.threadSandboxAuthorities.delete(threadId);
+    this.threadSandboxAuthorities.set(threadId, authority);
+    while (this.threadSandboxAuthorities.size > MAX_THREAD_SANDBOX_AUTHORITIES) {
+      const oldestThreadId = this.threadSandboxAuthorities.keys().next().value as string | undefined;
+      if (oldestThreadId === undefined) break;
+      this.threadSandboxAuthorities.delete(oldestThreadId);
+    }
+  }
+
+  private observeThreadSandboxAuthority(method: string, params: unknown): void {
+    const threadId = threadIdFromParams(params);
+    if (!threadId) return;
+    if (method === "thread/deleted") {
+      this.threadSandboxAuthorities.delete(threadId);
+      return;
+    }
+    if (method !== "thread/settings/updated") return;
+    const threadSettings = isRecord(params) && isRecord(params.threadSettings)
+      ? params.threadSettings
+      : undefined;
+    if (!threadSettings || !Object.hasOwn(threadSettings, "sandboxPolicy")) return;
+    const sandboxPolicy = normalizeGatewaySandboxPolicy(threadSettings.sandboxPolicy);
+    if (sandboxPolicy) {
+      this.rememberThreadSandboxAuthority(threadId, sandboxPolicy);
+    } else {
+      this.threadSandboxAuthorities.delete(threadId);
     }
   }
 
@@ -1826,6 +1912,7 @@ export class AskCodexServer {
   private handleCodexStatus(status: CodexStatusEvent): void {
     if (status.status === "error") {
       this.codexErrorRevision += 1;
+      this.threadSandboxAuthorities.clear();
       this.fileDownloads.clearAuthority();
       this.pendingServerRequests.clear();
       const leases = [...this.activeAttachmentLeases.values()].flat();

@@ -1,6 +1,6 @@
 # ADR 0022：以沙箱感知自动运行取代免审批提示模式
 
-- 状态：已接受
+- 状态：由 [ADR 0023](0023-per-turn-manual-and-auto-execution-environments.md) 取代
 - 决策日期：2026-08-09
 - 取代：[ADR 0020](0020-one-turn-prompt-free-approval.md)、[ADR 0021](0021-first-turn-one-shot-prompt-free-approval.md)
 - 修订：[ADR 0002](0002-security-gateway-and-manual-approval.zh-CN.md)

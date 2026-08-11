@@ -22,6 +22,36 @@ interface FakeGatewayEvents {
   request: [id: RpcId, method: string, params: unknown];
 }
 
+interface WorkspaceSandboxFixture {
+  type: "workspaceWrite";
+  writableRoots: string[];
+  networkAccess: boolean;
+  excludeTmpdirEnvVar: boolean;
+  excludeSlashTmp: boolean;
+}
+
+function workspaceSandbox(writableRoots: string[] = []): WorkspaceSandboxFixture {
+  return {
+    type: "workspaceWrite",
+    writableRoots,
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+function primeWorkspaceSandboxAuthority(
+  service: AskCodexServer,
+  threadId: string,
+  writableRoots: string[] = [],
+): void {
+  const sandbox = workspaceSandbox(writableRoots);
+  const authorities = (service as unknown as {
+    threadSandboxAuthorities: Map<string, { current: WorkspaceSandboxFixture; workspaceWrite: WorkspaceSandboxFixture }>;
+  }).threadSandboxAuthorities;
+  authorities.set(threadId, { current: sandbox, workspaceWrite: sandbox });
+}
+
 class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGateway {
   status: CodexStatus = "ready";
   version: string | undefined = "codex-cli/test";
@@ -29,7 +59,7 @@ class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGatewa
   readonly request = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
     void params;
     if (method === "thread/start") {
-      return { thread: { id: "thread-owned" } };
+      return { thread: { id: "thread-owned" }, sandbox: workspaceSandbox() };
     }
     if (method === "turn/start") {
       return { turn: { id: "turn-with-attachments", status: "inProgress", items: [] } };
@@ -46,7 +76,7 @@ class FakeGateway extends EventEmitter<FakeGatewayEvents> implements CodexGatewa
           "threadId" in params && typeof params.threadId === "string"
         ? params.threadId
         : "thread-resumed";
-      return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+      return { thread: { id: threadId }, sandbox: workspaceSandbox() };
     }
     return { ok: true };
   });
@@ -218,7 +248,7 @@ describe("AskCodexServer", () => {
         };
       }
       if (method === "thread/resume") {
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       if (method === "turn/start") {
         return { turn: { id: "turn-from-queue", status: "inProgress", items: [] } };
@@ -352,7 +382,7 @@ describe("AskCodexServer", () => {
         };
       }
       if (method === "thread/resume") {
-        return { thread: { id: threadId }, sandbox: { type: "externalSandbox" } };
+        return { thread: { id: threadId }, sandbox: { type: "externalSandbox", networkAccess: "restricted" } };
       }
       if (method === "turn/start") {
         return { turn: { id: "turn-after-review", status: "inProgress", items: [] } };
@@ -498,7 +528,7 @@ describe("AskCodexServer", () => {
         };
       }
       if (method === "thread/resume") {
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       return { ok: true };
     });
@@ -727,6 +757,7 @@ describe("AskCodexServer", () => {
     });
     gateway.request.mockImplementationOnce(() => turnStartResult);
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-owned");
     services.push(service);
     const { url } = await service.start();
     const upload = await uploadAttachment(url, "test-token");
@@ -779,6 +810,7 @@ describe("AskCodexServer", () => {
     });
     gateway.request.mockImplementationOnce(() => turnStartResult);
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-disconnected-turn");
     services.push(service);
     const { url } = await service.start();
     const upload = await uploadAttachment(url, "test-token");
@@ -2482,7 +2514,7 @@ describe("AskCodexServer", () => {
         { decision: "accept" },
       ));
       resolveSuccessfulClaim?.(method === "thread/resume"
-        ? { thread: { id: "thread-owned" }, sandbox: { type: "workspaceWrite" } }
+        ? { thread: { id: "thread-owned" }, sandbox: workspaceSandbox() }
         : method === "turn/steer"
           ? { turnId: "turn-owned" }
           : { turn: { id: "turn-owned", status: "inProgress", items: [] } });
@@ -2541,7 +2573,7 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
       reasoningEffort: "high",
     });
     forkOwner.socket.send(JSON.stringify({
@@ -2623,7 +2655,7 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
     challenger.socket.send(JSON.stringify({
       type: "rpc",
@@ -2688,7 +2720,7 @@ describe("AskCodexServer", () => {
       cwd: process.cwd(),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
     await vi.waitFor(() => expect(
       (service as unknown as { totalInFlightRpc: number }).totalInFlightRpc
@@ -2954,7 +2986,7 @@ describe("AskCodexServer", () => {
             ? { turnId: "turn-synchronous-owner" }
             : {
               thread: { id: "thread-owned" },
-              sandbox: { type: "workspaceWrite" },
+              sandbox: workspaceSandbox(),
             };
         onResult(result);
         gateway.emit(
@@ -2999,10 +3031,169 @@ describe("AskCodexServer", () => {
     },
   );
 
+  it("probes sandbox authority before a direct manual turn and rebuilds its policy", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (entry) => entry.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "manual-turn-policy",
+      method: "turn/start",
+      params: {
+        threadId: "thread-manual-policy",
+        input: [{ type: "text", text: "inspect", text_elements: [] }],
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "manual-turn-policy",
+    );
+
+    expect(gateway.request.mock.calls.slice(-2)).toEqual([
+      [
+        "thread/resume",
+        {
+          threadId: "thread-manual-policy",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          excludeTurns: true,
+        },
+      ],
+      [
+        "turn/start",
+        {
+          threadId: "thread-manual-policy",
+          input: [{ type: "text", text: "inspect", text_elements: [] }],
+          approvalPolicy: "untrusted",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        },
+      ],
+    ]);
+  });
+
+  it("reuses authoritative workspace roots for an auto turn", async () => {
+    const gateway = new FakeGateway();
+    const authoritativeSandbox = workspaceSandbox(["/workspace/shared"]);
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = (params as { threadId?: string } | undefined)?.threadId ?? "thread-auto-policy";
+      if (method === "thread/resume") {
+        return { thread: { id: threadId }, sandbox: authoritativeSandbox };
+      }
+      if (method === "turn/start") {
+        return { turn: { id: "turn-auto-policy", status: "inProgress", items: [] } };
+      }
+      return { ok: true };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (entry) => entry.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "auto-policy-resume",
+      method: "thread/resume",
+      params: { threadId: "thread-auto-policy" },
+    }));
+    const resumed = await waitForMessage(
+      client.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "auto-policy-resume",
+    );
+    expect(resumed).toEqual(expect.objectContaining({
+      result: expect.objectContaining({ sandbox: { type: "workspaceWrite" } }),
+    }));
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "auto-turn-policy",
+      method: "turn/start",
+      params: {
+        threadId: "thread-auto-policy",
+        input: [{ type: "text", text: "edit", text_elements: [] }],
+        executionMode: "auto",
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "auto-turn-policy",
+    );
+
+    expect(gateway.request.mock.calls.find(([method]) => method === "turn/start")?.[1])
+      .toEqual({
+        threadId: "thread-auto-policy",
+        input: [{ type: "text", text: "edit", text_elements: [] }],
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: authoritativeSandbox,
+      });
+  });
+
+  it("preserves an external sandbox instead of sending a turn override", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementation(async (method, params) => {
+      const threadId = (params as { threadId?: string } | undefined)?.threadId ?? "thread-external";
+      if (method === "thread/resume") {
+        return {
+          thread: { id: threadId },
+          sandbox: { type: "externalSandbox", networkAccess: "restricted" },
+        };
+      }
+      if (method === "turn/start") {
+        return { turn: { id: "turn-external", status: "inProgress", items: [] } };
+      }
+      return { ok: true };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (entry) => entry.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "external-resume",
+      method: "thread/resume",
+      params: { threadId: "thread-external" },
+    }));
+    await waitForMessage(
+      client.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "external-resume",
+    );
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "external-turn",
+      method: "turn/start",
+      params: {
+        threadId: "thread-external",
+        input: [{ type: "text", text: "continue", text_elements: [] }],
+      },
+    }));
+    await waitForMessage(
+      client.messages,
+      (entry) => entry.type === "rpcResult" && entry.id === "external-turn",
+    );
+
+    const turnParams = gateway.request.mock.calls.find(([method]) => method === "turn/start")?.[1];
+    expect(turnParams).toEqual(expect.objectContaining({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+    }));
+    expect(turnParams).not.toHaveProperty("sandboxPolicy");
+  });
+
   it.each([
     [
       "external sandbox",
-      { thread: { id: "thread-probed" }, sandbox: { type: "externalSandbox" } },
+      { thread: { id: "thread-probed" }, sandbox: { type: "externalSandbox", networkAccess: "restricted" } },
       "thread/resume cannot override an externally managed sandbox",
     ],
     [
@@ -3017,7 +3208,7 @@ describe("AskCodexServer", () => {
     ],
     [
       "mismatched thread",
-      { thread: { id: "thread-other" }, sandbox: { type: "workspaceWrite" } },
+      { thread: { id: "thread-other" }, sandbox: workspaceSandbox() },
       "thread/resume could not verify the existing sandbox",
     ],
   ])("fails closed before a sandbox override for %s", async (_label, probeResult, message) => {
@@ -3097,7 +3288,7 @@ describe("AskCodexServer", () => {
 
     resolveProbe?.({
       thread: { id: "thread-changing" },
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
     gateway.emit("notification", "thread/settings/updated", {
       threadId: "thread-changing",
@@ -3121,11 +3312,11 @@ describe("AskCodexServer", () => {
     gateway.request
       .mockResolvedValueOnce({
         thread: { id: "thread-changing" },
-        sandbox: { type: "workspaceWrite" },
+        sandbox: workspaceSandbox(),
       })
       .mockResolvedValueOnce({
         thread: { id: "thread-changing" },
-        sandbox: { type: "readOnly" },
+        sandbox: { type: "readOnly", networkAccess: false },
       });
     client.socket.send(JSON.stringify({
       type: "rpc",
@@ -3170,7 +3361,7 @@ describe("AskCodexServer", () => {
       .mockImplementationOnce(async () => pendingProbe)
       .mockResolvedValueOnce({
         thread: { id: "thread-still-safe" },
-        sandbox: { type: "readOnly" },
+        sandbox: { type: "readOnly", networkAccess: false },
       });
     const service = new AskCodexServer(config("test-token"), gateway);
     services.push(service);
@@ -3200,7 +3391,7 @@ describe("AskCodexServer", () => {
     });
     resolveProbe?.({
       thread: { id: "thread-still-safe" },
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
 
     await waitForMessage(
@@ -3240,7 +3431,7 @@ describe("AskCodexServer", () => {
     gateway.request
       .mockResolvedValueOnce({
         thread: { id: "thread-owned" },
-        sandbox: { type: "workspaceWrite" },
+        sandbox: workspaceSandbox(),
       })
       .mockImplementationOnce(async () => pendingOverride);
     challenger.socket.send(JSON.stringify({
@@ -3300,7 +3491,7 @@ describe("AskCodexServer", () => {
 
     resolveOverride?.({
       thread: { id: "thread-owned" },
-      sandbox: { type: "readOnly" },
+      sandbox: { type: "readOnly", networkAccess: false },
     });
     await waitForMessage(
       challenger.messages,
@@ -3348,7 +3539,7 @@ describe("AskCodexServer", () => {
     gateway.request
       .mockResolvedValueOnce({
         thread: { id: "thread-owned" },
-        sandbox: { type: "workspaceWrite" },
+        sandbox: workspaceSandbox(),
       })
       .mockRejectedValueOnce(new CodexRpcError({
         code: -32_001,
@@ -3420,7 +3611,7 @@ describe("AskCodexServer", () => {
   it.each([
     [
       "a mismatched thread",
-      { thread: { id: "thread-other" }, sandbox: { type: "workspaceWrite" } },
+      { thread: { id: "thread-other" }, sandbox: workspaceSandbox() },
     ],
     ["a missing sandbox", { thread: { id: "thread-owned" } }],
     [
@@ -3520,7 +3711,7 @@ describe("AskCodexServer", () => {
     gateway.request
       .mockResolvedValueOnce({
         thread: { id: "thread-owned" },
-        sandbox: { type: "workspaceWrite" },
+        sandbox: workspaceSandbox(),
       })
       .mockResolvedValueOnce({
         thread: { id: "thread-owned" },
@@ -3603,21 +3794,21 @@ describe("AskCodexServer", () => {
     await vi.waitFor(() => expect(resumeResolvers).toHaveLength(1));
     resumeResolvers[0]?.({
       thread: { id: "thread-serialized" },
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
     await vi.waitFor(() => expect(resumeResolvers).toHaveLength(2));
     expect(gateway.request.mock.calls[1]?.[1]).toMatchObject({ sandbox: "read-only" });
 
     resumeResolvers[1]?.({
       thread: { id: "thread-serialized" },
-      sandbox: { type: "readOnly" },
+      sandbox: { type: "readOnly", networkAccess: false },
     });
     await vi.waitFor(() => expect(resumeResolvers).toHaveLength(3));
     expect(gateway.request.mock.calls[2]?.[1]).not.toHaveProperty("sandbox");
 
     resumeResolvers[2]?.({
       thread: { id: "thread-serialized" },
-      sandbox: { type: "readOnly" },
+      sandbox: { type: "readOnly", networkAccess: false },
     });
     await vi.waitFor(() => expect(resumeResolvers).toHaveLength(4));
     expect(gateway.request.mock.calls[3]?.[1]).toMatchObject({
@@ -3650,6 +3841,7 @@ describe("AskCodexServer", () => {
       });
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-steer-serialized");
     services.push(service);
     const { url } = await service.start();
     const starter = connect(url, "test-token");
@@ -3715,6 +3907,7 @@ describe("AskCodexServer", () => {
       });
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-serialized-owner");
     services.push(service);
     const { url } = await service.start();
     const turnStarter = connect(url, "test-token");
@@ -3776,7 +3969,7 @@ describe("AskCodexServer", () => {
 
     requestResolvers[1]?.({
       thread: { id: "thread-serialized-owner" },
-      sandbox: { type: "workspaceWrite" },
+      sandbox: workspaceSandbox(),
     });
     await waitForMessage(
       resumer.messages,
@@ -3811,11 +4004,12 @@ describe("AskCodexServer", () => {
             "threadId" in params && typeof params.threadId === "string"
           ? params.threadId
           : "thread-queued-disconnect";
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-queued-disconnect");
     services.push(service);
     const { url } = await service.start();
     const first = connect(url, "test-token");
@@ -3876,11 +4070,12 @@ describe("AskCodexServer", () => {
             "threadId" in params && typeof params.threadId === "string"
           ? params.threadId
           : "thread-queued-error";
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-queued-error");
     services.push(service);
     const { url } = await service.start();
     const first = connect(url, "test-token");
@@ -3943,6 +4138,7 @@ describe("AskCodexServer", () => {
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-probe-queue");
     services.push(service);
     const { url } = await service.start();
     const client = connect(url, "test-token");
@@ -4000,11 +4196,12 @@ describe("AskCodexServer", () => {
             "threadId" in params && typeof params.threadId === "string"
           ? params.threadId
           : "thread-indeterminate-queue";
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-indeterminate-queue");
     services.push(service);
     const { url } = await service.start();
     const first = connect(url, "test-token");
@@ -4085,11 +4282,12 @@ describe("AskCodexServer", () => {
             "threadId" in params && typeof params.threadId === "string"
           ? params.threadId
           : "thread-queued-rejection";
-        return { thread: { id: threadId }, sandbox: { type: "workspaceWrite" } };
+        return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       return { ok: true };
     });
     const service = new AskCodexServer(config("test-token"), gateway);
+    primeWorkspaceSandboxAuthority(service, "thread-queued-rejection");
     services.push(service);
     const { url } = await service.start();
     const first = connect(url, "test-token");

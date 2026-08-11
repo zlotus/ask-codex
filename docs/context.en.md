@@ -2,7 +2,7 @@
 
 [简体中文](context.md) | **English**
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -13,11 +13,12 @@ while the Codex process, credentials, and workspace remain on the host.
 The primary use case includes continuing development from another device and
 reaching a trusted host through Cloudflare Zero Trust. Remote convenience must
 not weaken strict approval by default or turn the browser gateway into a
-general-purpose remote execution API. Ordinary direct turns use `untrusted`.
-The user may explicitly arm one `on-request` sandbox-aware auto-run on an
-existing idle thread or the first turn of a configured new-thread draft. The
-auto-run still routes sandbox-boundary requests to the user, must be chosen for
-each turn, cannot widen sandbox permissions, and does not persist.
+general-purpose remote execution API. The gateway gives every direct turn an
+independent execution environment: default manual mode uses
+`untrusted + readOnly`, while explicitly armed one-turn auto mode uses
+`on-request + workspaceWrite`. Auto turns still route sandbox-boundary requests
+to the user. The browser cannot provide full permission parameters, and the
+choice does not persist across turns.
 
 ## Product Goals
 
@@ -26,8 +27,8 @@ each turn, cannot widen sandbox permissions, and does not persist.
   requests.
 - Preserve Codex-native thread history so CLI, editor, and browser workflows can
   continue the same conversations.
-- Keep consequential actions visible under a strict approval default. Every
-  one-turn sandbox-aware auto-run must be explicitly armed while idle,
+- Keep consequential actions visible under a manual execution default. Every
+  one-turn auto-run must be explicitly armed while idle,
   including a new thread's first turn, retain human review at the sandbox
   boundary, and restore the default when it ends.
 - Remain practical on a small always-on Linux host, including ARM64, and usable
@@ -68,8 +69,8 @@ the execution gate. The service remains bound to loopback behind the tunnel.
 - Follow the documented `codex app-server` interface and generate bindings from
   the installed CLI when protocol details change.
 - Treat the security invariants in `AGENTS.md` as normative. Product evolution
-  must preserve the gateway policy boundary, strict approval by default, the
-  one-turn sandbox-aware choice, human review at the sandbox boundary,
-  fail-closed behavior, and independent remote-access gates.
+  must preserve the gateway policy boundary, independent per-turn manual and
+  automatic environments, the one-turn auto choice, human review at the
+  sandbox boundary, fail-closed behavior, and independent remote-access gates.
 - Prefer focused, auditable features over embedding a broad browser IDE. A full
   PTY, if ever added, must be treated as a separate high-risk host capability.
