@@ -24,7 +24,7 @@ const fixtureQueuedMessages = [{
 }, {
   id: "r".repeat(32),
   threadId: "019-visual-thread",
-  text: "Reconcile the updated context before sending this queued follow-up.",
+  text: "Reconcile the updated context before sending this saved follow-up.",
   expectedLastTurnId: "turn-older",
   status: "needsReview",
   revision: 3,
@@ -1242,9 +1242,9 @@ function fallbackApprovalLayoutInvalid(layout) {
 }
 
 async function inspectMessageQueueDock(page, screenshotPath) {
-  const dock = page.getByRole("region", { name: "Message queue" });
+  const dock = page.getByRole("region", { name: "Outbox" });
   await dock.waitFor();
-  const initialToggle = dock.getByRole("button", { name: /Expand message queue/ });
+  const initialToggle = dock.getByRole("button", { name: /Expand Outbox/ });
   await initialToggle.waitFor();
   await page.locator(".message-queue-dock__body").waitFor({ state: "hidden" });
   const collapsed = await dock.evaluate((element) => {
@@ -1287,10 +1287,10 @@ async function inspectMessageQueueDock(page, screenshotPath) {
   });
   await page.screenshot({ path: screenshotPath, fullPage: true });
 
-  const toggle = dock.getByRole("button", { name: /Collapse message queue/ });
+  const toggle = dock.getByRole("button", { name: /Collapse Outbox/ });
   await toggle.click();
   await page.locator(".message-queue-dock__body").waitFor({ state: "hidden" });
-  await dock.getByRole("button", { name: /Expand message queue/ }).click();
+  await dock.getByRole("button", { name: /Expand Outbox/ }).click();
   await page.locator(".message-queue-dock__body").waitFor({ state: "visible" });
   return { expanded, collapsed };
 }
@@ -2151,7 +2151,7 @@ try {
     !desktopMessageQueue.expanded.bodyScrollableWhenNeeded ||
     desktopMessageQueue.expanded.rows !== 2 ||
     !desktopMessageQueue.expanded.actionsUsable ||
-    desktopMessageQueue.expanded.statusText.join(",") !== "Queued,Context changed" ||
+    desktopMessageQueue.expanded.statusText.join(",") !== "Saved,Context changed" ||
     !desktopMessageQueue.expanded.textContained ||
     desktopMessageQueue.expanded.horizontalOverflow ||
     !desktopMessageQueue.collapsed.bodyHidden ||
@@ -2277,7 +2277,7 @@ try {
     !mobileMessageQueue.expanded.bodyScrollableWhenNeeded ||
     mobileMessageQueue.expanded.rows !== 2 ||
     !mobileMessageQueue.expanded.actionsUsable ||
-    mobileMessageQueue.expanded.statusText.join(",") !== "Queued,Context changed" ||
+    mobileMessageQueue.expanded.statusText.join(",") !== "Saved,Context changed" ||
     !mobileMessageQueue.expanded.textContained ||
     mobileMessageQueue.expanded.horizontalOverflow ||
     !mobileMessageQueue.collapsed.bodyHidden ||

@@ -269,7 +269,7 @@ export function Composer({
     setInFlightSubmission(submission);
     try {
       if (submission.mode === "queue") {
-        if (!onEnqueue) throw new Error("Choose an existing thread before queueing a message");
+        if (!onEnqueue) throw new Error("Choose an existing thread before saving a message for later");
         await onEnqueue(submission.text);
       } else if (submission.mode === "steer") {
         if (!submission.expectedTurnId || !onSteer) {
@@ -402,7 +402,7 @@ export function Composer({
               ? inFlightSubmission?.mode === "steer"
                 ? "Steering active turn"
                 : inFlightSubmission?.mode === "queue"
-                  ? "Queueing message"
+                  ? "Saving message for later"
                   : inFlightSubmission && inFlightSubmission.images.length + inFlightSubmission.files.length > 0
                     ? "Uploading attachments"
                     : "Sending message"
@@ -497,9 +497,9 @@ export function Composer({
             type="button"
             className="composer-image-action composer-queue-action"
             title={images.length + files.length > 0
-              ? "Only plain text can be queued"
-              : "Queue message"}
-            aria-label="Queue message"
+              ? "Remove attachments to save for later"
+              : "Save for later"}
+            aria-label="Save for later"
             disabled={!canEnqueue}
             onClick={() => void enqueue()}
           >
@@ -589,7 +589,7 @@ export function Composer({
             <strong>{failedSubmission.mode === "steer"
               ? "Guidance not confirmed"
               : failedSubmission.mode === "queue"
-                ? "Message not queued"
+                ? "Message not saved"
                 : "Message not confirmed"}</strong>
             {failedSubmission.error && <span className="composer-failed-error">{failedSubmission.error}</span>}
             {failedSubmission.mode === "steer" && (
@@ -617,12 +617,12 @@ export function Composer({
             title={failedSubmission.mode === "steer"
               ? "Retry unconfirmed guidance"
               : failedSubmission.mode === "queue"
-                ? "Retry queueing message"
+                ? "Retry saving message"
                 : "Retry unconfirmed message"}
             aria-label={failedSubmission.mode === "steer"
               ? "Retry unconfirmed guidance"
               : failedSubmission.mode === "queue"
-                ? "Retry queueing message"
+                ? "Retry saving message"
                 : "Retry unconfirmed message"}
             disabled={disabled || sending || (failedSubmission.mode === "start"
               ? running
@@ -641,12 +641,12 @@ export function Composer({
             title={failedSubmission.mode === "steer"
               ? "Discard unconfirmed guidance"
               : failedSubmission.mode === "queue"
-                ? "Discard unqueued message"
+                ? "Discard unsaved message"
                 : "Discard unconfirmed message"}
             aria-label={failedSubmission.mode === "steer"
               ? "Discard unconfirmed guidance"
               : failedSubmission.mode === "queue"
-                ? "Discard unqueued message"
+                ? "Discard unsaved message"
                 : "Discard unconfirmed message"}
             disabled={sending}
             onClick={discardFailedSubmission}

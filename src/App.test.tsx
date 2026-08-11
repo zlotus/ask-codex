@@ -333,18 +333,18 @@ describe("App thread settings lifecycle", () => {
     installBootstrapFixture();
     render(<App />);
     fireEvent.click(await screen.findByText("Existing thread"));
-    await screen.findByRole("region", { name: "Message queue" });
+    await screen.findByRole("region", { name: "Outbox" });
     await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/list", {
       threadId: existingThread.id,
     }));
-    const queueToggle = screen.getByRole("button", { name: /Expand message queue/ });
+    const queueToggle = screen.getByRole("button", { name: /Expand Outbox/ });
     expect(queueToggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(queueToggle);
 
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "Continue this later" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save for later" }));
     await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/enqueue", {
       threadId: existingThread.id,
       text: "Continue this later",
@@ -352,7 +352,7 @@ describe("App thread settings lifecycle", () => {
     }));
     expect(await screen.findByText("Continue this later")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Send queued message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send saved message" }));
     await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/send", {
       id: queuedMessage.id,
       revision: queuedMessage.revision,
@@ -375,7 +375,7 @@ describe("App thread settings lifecycle", () => {
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "queue without consuming auto mode" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save for later" }));
     await waitFor(() => expect(socket.rpc).toHaveBeenCalledWith("messageQueue/enqueue", {
       threadId: existingThread.id,
       text: "queue without consuming auto mode",
@@ -755,8 +755,8 @@ describe("App thread settings lifecycle", () => {
     ));
     render(<App />);
     fireEvent.click(await screen.findByText("Existing thread"));
-    fireEvent.click(await screen.findByRole("button", { name: /Expand message queue/ }));
-    await screen.findByText("No queued messages");
+    fireEvent.click(await screen.findByRole("button", { name: /Expand Outbox/ }));
+    await screen.findByText("No messages saved for later");
     visibleItems = [queuedMessage];
 
     act(() => socket.onNotification?.({

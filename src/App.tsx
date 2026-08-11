@@ -2042,7 +2042,7 @@ export default function App() {
   const enqueueMessage = useCallback(async (text: string) => {
     const thread = state.currentThread;
     if (!thread || thread.id !== state.selectedThreadId) {
-      throw new Error("Choose an existing thread before queueing a message");
+      throw new Error("Choose an existing thread before saving a message for later");
     }
     const lastTurnId = thread.turns?.at(-1)?.id ?? null;
     const result = await rpc("messageQueue/enqueue", {
@@ -2052,7 +2052,7 @@ export default function App() {
     });
     const queued = extractMessageQueueItem(result);
     if (!queued || queued.threadId !== thread.id) {
-      throw new Error("Gateway returned an invalid queued message");
+      throw new Error("Gateway returned an invalid saved message");
     }
     if (selectedThreadIdRef.current === thread.id) {
       setMessageQueueItems((current) => [
@@ -2128,7 +2128,7 @@ export default function App() {
       threadLoadError !== null ||
       state.activeTurnId
     ) {
-      showToast("The thread is not ready to send a queued message");
+      showToast("The thread is not ready to send a saved message");
       return;
     }
     setMessageQueueBusyItemId(item.id);
@@ -2139,7 +2139,7 @@ export default function App() {
         ...(item.status === "needsReview" ? { confirmReview: true } : {}),
       });
       const turn = extractTurn(result);
-      if (!turn) throw new Error("Gateway did not confirm the queued turn");
+      if (!turn) throw new Error("Gateway did not confirm the saved message turn");
       if (selectedThreadIdRef.current === threadId) {
         dispatch({ type: "upsertTurn", turn, threadId });
       }

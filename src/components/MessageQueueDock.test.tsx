@@ -33,21 +33,21 @@ describe("MessageQueueDock", () => {
         onCancel={onCancel}
       />,
     );
-    const toggle = screen.getByRole("button", { name: /Expand message queue/ });
+    const toggle = screen.getByRole("button", { name: /Expand Outbox/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Continue the queued task")).not.toBeInTheDocument();
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Continue the queued task")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Send queued message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel queued message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh message queue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send saved message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from Outbox" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Outbox" }));
     expect(onSend).toHaveBeenCalledWith(queued);
     expect(onCancel).toHaveBeenCalledWith(queued);
     expect(onRefresh).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: /Collapse message queue/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Collapse Outbox/ }));
     expect(screen.queryByText("Continue the queued task")).not.toBeInTheDocument();
   });
 
@@ -64,7 +64,7 @@ describe("MessageQueueDock", () => {
         onCancel={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Expand message queue/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Expand Outbox/ }));
     expect(screen.getByText("Outcome unknown")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Send/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Dismiss after checking thread history" }))

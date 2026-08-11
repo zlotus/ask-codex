@@ -177,7 +177,7 @@ describe("Composer", () => {
     fireEvent.change(screen.getByLabelText("Message Codex"), {
       target: { value: "  send this after the turn  " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save for later" }));
 
     await waitFor(() => expect(onEnqueue).toHaveBeenCalledWith("send this after the turn"));
     expect(onSteer).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("Composer", () => {
     );
     const textarea = screen.getByLabelText("Message Codex");
     fireEvent.change(textarea, { target: { value: "queued snapshot" } });
-    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save for later" }));
     fireEvent.change(textarea, { target: { value: "later draft" } });
     await act(async () => resolveQueue());
 
