@@ -3,7 +3,7 @@ import type { ConnectionState, ThreadSettings } from "../types/protocol";
 import { MobileMenuButton } from "./Sidebar";
 
 interface ToolbarProps {
-  settings: ThreadSettings;
+  sandbox: ThreadSettings["sandbox"];
   title: string;
   connection: ConnectionState;
   connectionDetail: string;
@@ -26,7 +26,7 @@ function sandboxStatus(sandbox: ThreadSettings["sandbox"]): string | null {
 }
 
 export function Toolbar({
-  settings,
+  sandbox,
   title,
   connection,
   connectionDetail,
@@ -40,7 +40,7 @@ export function Toolbar({
   onSettings,
   onMenu,
 }: ToolbarProps) {
-  const sandbox = sandboxStatus(settings.sandbox);
+  const sandboxLabel = sandboxStatus(sandbox);
   const connectedStatus = syncing ? (
     <><span className="toolbar-status-prefix">Connected · </span>Syncing</>
   ) : running ? "Working" : "Ready";
@@ -91,10 +91,10 @@ export function Toolbar({
             <span className="toolbar-status-label toolbar-status-label--short" aria-hidden="true">{retryShortStatus}</span>
           </button>
         )}
-        {sandbox && (
-          <span className={`toolbar-risk toolbar-risk--${settings.sandbox}`} title={`Sandbox: ${sandbox}`}>
+        {sandboxLabel && (
+          <span className={`toolbar-risk toolbar-risk--${sandbox}`} title={`Sandbox: ${sandboxLabel}`}>
             <ShieldAlert size={13} aria-hidden="true" />
-            <span>{sandbox}</span>
+            <span>{sandboxLabel}</span>
           </span>
         )}
         <button

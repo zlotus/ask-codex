@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { URL } from "node:url";
 import { chromium } from "playwright-core";
 
 const url = process.env.ASK_CODEX_VISUAL_URL ?? "http://127.0.0.1:4173";
@@ -11,6 +12,9 @@ const fixtureImage = Buffer.from(
 const fixtureAttachmentId = "visualfixtureattachmentid0000001";
 const fixtureDownloadCapabilityId = "d".repeat(32);
 const fixtureDownloadHref = "/workspace/ask-codex/docs/progress.md:112";
+const fixtureLongCommand = `/usr/bin/zsh -lc '${
+  "npm run typecheck && npm run lint && npm test && npm run build && ".repeat(12)
+}git diff --check'`;
 const fixtureQueuedMessages = [{
   id: "q".repeat(32),
   threadId: "019-visual-thread",
@@ -138,7 +142,7 @@ const fixtureTurns = [
         id: "command",
         type: "commandExecution",
         status: "completed",
-        command: "npm run typecheck && npm test",
+        command: fixtureLongCommand,
         aggregatedOutput: Array.from(
           { length: 720 },
           (_, index) => `Verification step ${String(index + 1).padStart(3, "0")}: passed with bounded output`,
@@ -625,6 +629,10 @@ async function inspectRichLayout(page) {
     });
     const activityTitles = [...document.querySelectorAll(".tool-activity-title > strong")]
       .map((element) => element.textContent?.trim());
+    const commandHeader = document.querySelector(".command-block > summary");
+    const commandIcon = commandHeader?.querySelector(".tool-activity-icon-copy > svg");
+    const commandLabel = commandHeader?.querySelector(".tool-activity-title > strong");
+    const commandSummary = commandHeader?.querySelector(".command-summary");
     return {
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       clipped,
@@ -648,6 +656,13 @@ async function inspectRichLayout(page) {
         const box = element.getBoundingClientRect();
         return window.getComputedStyle(element).display === "none" || box.width === 0 || box.height === 0;
       }).length,
+      commandHeaderLayout: {
+        iconWidth: commandIcon?.getBoundingClientRect().width ?? 0,
+        labelClipped: commandLabel ? commandLabel.scrollWidth > commandLabel.clientWidth : true,
+        summaryTruncated: commandSummary
+          ? commandSummary.scrollWidth > commandSummary.clientWidth
+          : false,
+      },
       reasonBlocks: document.querySelectorAll(".tool-reasons").length,
       scrollingToolOutputs: [...document.querySelectorAll(".tool-activity .code-block-content")]
         .filter((element) => element.scrollHeight > element.clientHeight).length,
@@ -1741,6 +1756,21 @@ try {
     return value === "connected" || value === "error";
   });
 
+  const faviconAssets = Object.fromEntries(await Promise.all([
+    ["ico", "/favicon.ico"],
+    ["svg", "/favicon.svg"],
+  ].map(async ([key, path]) => {
+    const response = await page.request.get(new URL(path, url).href);
+    const body = await response.body();
+    return [key, {
+      status: response.status(),
+      contentType: response.headers()["content-type"]?.split(";")[0] ?? "",
+      validBody: key === "ico"
+        ? body.subarray(0, 4).equals(Buffer.from([0, 0, 1, 0]))
+        : body.toString("utf8").includes("<svg"),
+    }];
+  })));
+
   const desktop = await page.evaluate(() => {
     const toolbar = document.querySelector(".toolbar")?.getBoundingClientRect();
     const composer = document.querySelector(".composer-wrap")?.getBoundingClientRect();
@@ -1761,6 +1791,8 @@ try {
       )?.checked === true,
       defaultLabels: [...document.querySelectorAll(".composer-setting option")]
         .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
+      faviconHrefs: [...document.querySelectorAll('link[rel~="icon"]')]
+        .map((element) => element.getAttribute("href")),
       connection: document.querySelector(".sidebar-footer span:nth-child(2)")?.textContent,
     };
   });
@@ -2064,6 +2096,7 @@ try {
     },
     consoleErrors,
     pageErrors,
+    faviconAssets,
     screenshots: outputDirectory,
   };
 
@@ -2079,6 +2112,13 @@ try {
     !desktop.autoRunDisabled ||
     desktop.autoRunChecked ||
     desktop.defaultLabels > 0 ||
+    desktop.faviconHrefs.join(",") !== "/favicon.ico,/favicon.svg" ||
+    faviconAssets.ico.status !== 200 ||
+    !["image/x-icon", "image/vnd.microsoft.icon"].includes(faviconAssets.ico.contentType) ||
+    !faviconAssets.ico.validBody ||
+    faviconAssets.svg.status !== 200 ||
+    faviconAssets.svg.contentType !== "image/svg+xml" ||
+    !faviconAssets.svg.validBody ||
     oneTurnAutoRunInvalid(desktopOneTurnAutoRun) ||
     desktopComposerImage.count !== 1 ||
     !desktopComposerImage.previewLoaded ||
@@ -2335,6 +2375,9 @@ try {
     desktopRich.activityStackDividerViolations > 0 ||
     desktopRich.formalActivityLabels.join(",") !== "Spawn agent,Agent started,Viewed image" ||
     desktopRich.hiddenActivitySummaries > 0 ||
+    desktopRich.commandHeaderLayout.iconWidth < 14.5 ||
+    desktopRich.commandHeaderLayout.labelClipped ||
+    !desktopRich.commandHeaderLayout.summaryTruncated ||
     desktopRich.reasonBlocks === 0 ||
     desktopRich.scrollingToolOutputs === 0 ||
     desktopRich.toolOutputTruncations === 0 ||
@@ -2400,6 +2443,9 @@ try {
     mobileRich.activityStackDividerViolations > 0 ||
     mobileRich.formalActivityLabels.join(",") !== "Spawn agent,Agent started,Viewed image" ||
     mobileRich.hiddenActivitySummaries > 0 ||
+    mobileRich.commandHeaderLayout.iconWidth < 14.5 ||
+    mobileRich.commandHeaderLayout.labelClipped ||
+    !mobileRich.commandHeaderLayout.summaryTruncated ||
     mobileRich.scrollingToolOutputs === 0 ||
     mobileRich.toolOutputTruncations === 0 ||
     mobileRich.turnFooters < 2 ||

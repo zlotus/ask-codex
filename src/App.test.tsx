@@ -391,6 +391,16 @@ describe("App thread settings lifecycle", () => {
     expect(autoToggle).toBeChecked();
     expect(autoToggle).toBeDisabled();
 
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "thread/settings/updated",
+      params: {
+        threadId: existingThread.id,
+        threadSettings: { sandboxPolicy: { type: "dangerFullAccess" } },
+      },
+    }));
+    expect(await screen.findByText("Full access")).toBeInTheDocument();
+
     act(() => socket.onRequest?.({
       type: "request",
       id: "auto-turn-confirmation",
@@ -434,6 +444,7 @@ describe("App thread settings lifecycle", () => {
     }));
     await waitFor(() => expect(autoToggle).not.toBeChecked());
     expect(autoToggle).toBeEnabled();
+    expect(screen.queryByText("Full access")).not.toBeInTheDocument();
 
     await sendMessage();
     const turnStarts = socket.rpc.mock.calls.filter(([method]) => method === "turn/start");
@@ -441,6 +452,7 @@ describe("App thread settings lifecycle", () => {
       threadId: existingThread.id,
       executionMode: "manual",
     }));
+    expect(screen.queryByText("Full access")).not.toBeInTheDocument();
   });
 
   it("starts automatic mode from a read-only thread without a resume override", async () => {
@@ -606,6 +618,7 @@ describe("App thread settings lifecycle", () => {
       expect(autoToggle).not.toBeChecked();
       expect(autoToggle).toBeDisabled();
     });
+    expect(screen.getByText("External sandbox")).toBeInTheDocument();
   });
 
   it("does not revive auto-run when completion precedes the turn start result", async () => {

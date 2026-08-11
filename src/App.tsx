@@ -186,6 +186,24 @@ interface ActiveTurnLaunchContext {
   executionMode: "manual" | "auto";
 }
 
+// app-server retains the last turn override, even after that turn is no longer active.
+function effectiveToolbarSandbox(
+  authoritativeSandbox: ThreadSettings["sandbox"],
+  activeTurnId: string | null,
+  launchContext: ActiveTurnLaunchContext | undefined,
+): ThreadSettings["sandbox"] {
+  if (authoritativeSandbox === "external") return authoritativeSandbox;
+  if (!activeTurnId) {
+    return authoritativeSandbox === "danger-full-access"
+      ? "workspace-write"
+      : authoritativeSandbox;
+  }
+  if (launchContext?.turnId !== activeTurnId) return authoritativeSandbox;
+  return launchContext.executionMode === "auto"
+    ? "danger-full-access"
+    : "workspace-write";
+}
+
 function turnIdentity(threadId: string, turnId: string): string {
   return JSON.stringify([threadId, turnId]);
 }
@@ -2406,6 +2424,11 @@ export default function App() {
     ? activeTurnLaunchContext?.turnId === state.activeTurnId &&
       activeTurnLaunchContext.executionMode === "auto"
     : autoRunNextTurn;
+  const toolbarSandbox = effectiveToolbarSandbox(
+    state.settings.sandbox,
+    state.activeTurnId,
+    activeTurnLaunchContext,
+  );
   const activePlan = activeTurn?.plan?.plan.length ? activeTurn.plan : undefined;
   const syncing = resyncing;
   const queueSendDisabled = connection !== "connected" || loadingThread || syncing ||
@@ -2448,7 +2471,7 @@ export default function App() {
       />
       <section className="workspace">
         <Toolbar
-          settings={state.settings}
+          sandbox={toolbarSandbox}
           title={title}
           connection={connection}
           connectionDetail={bootstrapError || connectionDetail}

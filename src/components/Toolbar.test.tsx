@@ -7,7 +7,7 @@ describe("Toolbar", () => {
     const onSettings = vi.fn();
     render(
       <Toolbar
-        settings={{ cwd: "/workspace", model: "", effort: "", sandbox: "workspace-write" }}
+        sandbox="workspace-write"
         title="Thread title"
         connection="connected"
         connectionDetail="Ready"
@@ -34,7 +34,7 @@ describe("Toolbar", () => {
   it("surfaces non-default sandbox risk", () => {
     render(
       <Toolbar
-        settings={{ cwd: "/workspace", model: "", effort: "", sandbox: "danger-full-access" }}
+        sandbox="danger-full-access"
         title="Thread"
         connection="connected"
         connectionDetail="Ready"
@@ -58,7 +58,7 @@ describe("Toolbar", () => {
     const onUsage = vi.fn();
     render(
       <Toolbar
-        settings={{ cwd: "/workspace", model: "", effort: "", sandbox: "workspace-write" }}
+        sandbox="workspace-write"
         title="Thread"
         connection="connected"
         connectionDetail="Ready"
@@ -84,7 +84,7 @@ describe("Toolbar", () => {
     const onReconnect = vi.fn();
     render(
       <Toolbar
-        settings={{ cwd: "/workspace", model: "", effort: "", sandbox: "workspace-write" }}
+        sandbox="workspace-write"
         title="Thread"
         connection="disconnected"
         connectionDetail="Disconnected · retrying in 4s"
@@ -110,7 +110,7 @@ describe("Toolbar", () => {
     const onResync = vi.fn();
     render(
       <Toolbar
-        settings={{ cwd: "/workspace", model: "", effort: "", sandbox: "workspace-write" }}
+        sandbox="workspace-write"
         title="Thread"
         connection="connected"
         connectionDetail="Ready"

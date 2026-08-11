@@ -1861,6 +1861,15 @@ details[open] > summary .details-chevron {
   white-space: nowrap;
 }
 
+.command-block .tool-activity-icon-copy > svg,
+.command-block .tool-activity-title > strong {
+  flex: 0 0 auto;
+}
+
+.command-block .command-summary {
+  flex: 1 1 auto;
+}
+
 .tool-reason-preview {
   display: -webkit-box;
   overflow: hidden;
