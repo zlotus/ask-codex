@@ -2,7 +2,7 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-12
 
 ## Current Milestone
 
@@ -470,12 +470,14 @@ Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
   icon-decision order, protocol-offered approval results, narrowed granular
   permission and MCP responses, cross-session viewing, and the race where
   completion precedes the start response. A complete `NODE_ENV=test npm test`
-  run passed 41 files and 695 tests in an approved environment that permits
+  run passed 41 files and 696 tests in an approved environment that permits
   loopback binding.
 - `npm run check:visual` passed its desktop and mobile production fixtures. They
-  cover long commands, granular permission requests, and MCP forms; stable
+  cover long commands, granular permission requests, and MCP forms; compact
+  unframed whole-turn diffs; desktop split-diff overflow and wrapping; stable
   decision and repeated-click positions; and non-overlapping long titles and
-  Ready status at 320/390 pixels. Mobile approval button coordinates remained at
+  Ready status at 320/390 pixels. Mobile approval cards use the available panel
+  height with an 8-pixel bottom gap, and button coordinates remained at
   `deltaX=0`, `deltaY=0` across consecutive decisions, with no browser console
   or page errors.
 - Markdown AST parsing covered all 66 Markdown files in the repository, and all

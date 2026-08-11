@@ -678,6 +678,40 @@ describe("Composer", () => {
     expect(pasteEvent.defaultPrevented).toBe(true);
   });
 
+  it("suppresses Android image clipboard fallback while a turn is running", () => {
+    render(
+      <Composer
+        activeTurnId="turn-active"
+        disabled={false}
+        running
+        settings={{ cwd: "/workspace", model: "model-a", effort: "high", sandbox: "workspace-write" }}
+        models={models}
+        onSettingsChange={vi.fn()}
+        onSend={vi.fn()}
+        onSteer={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const pasted = new File([new Uint8Array([1])], "clipboard.jpg", {
+      type: "application/octet-stream",
+    });
+    const textarea = screen.getByLabelText("Message Codex");
+    const pasteEvent = createEvent.paste(textarea, {
+      clipboardData: {
+        files: [],
+        items: [{ kind: "file", getAsFile: () => pasted }],
+      },
+    });
+
+    fireEvent(textarea, pasteEvent);
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(screen.queryByText("clipboard.jpg")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Attachments cannot be added while a turn is running",
+    );
+  });
+
   it("accepts non-image clipboard files and preserves text-only paste behavior", async () => {
     const onSend = vi.fn();
     render(
@@ -714,7 +748,7 @@ describe("Composer", () => {
     })]));
   });
 
-  it("preserves default paste behavior when the image limit is already full", () => {
+  it("suppresses file clipboard fallback when the attachment limit is already full", () => {
     render(
       <Composer
         disabled={false}
@@ -738,7 +772,7 @@ describe("Composer", () => {
 
     fireEvent(textarea, pasteEvent);
 
-    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(pasteEvent.defaultPrevented).toBe(true);
     expect(screen.queryByText("extra.png")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("at most 4 attachments");
   });

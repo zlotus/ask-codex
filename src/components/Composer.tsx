@@ -386,9 +386,14 @@ export function Composer({
             void submit();
           }}
           onPaste={(event) => {
-            if (addAttachments(clipboardFiles(event.clipboardData), "auto") > 0) {
-              event.preventDefault();
+            const pastedFiles = clipboardFiles(event.clipboardData);
+            if (pastedFiles.length === 0) return;
+            event.preventDefault();
+            if (running) {
+              setAttachmentError("Attachments cannot be added while a turn is running");
+              return;
             }
+            addAttachments(pastedFiles, "auto");
           }}
           placeholder={running
             ? "Guide active turn (Ctrl+Enter to steer)"

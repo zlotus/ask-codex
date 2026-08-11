@@ -1693,13 +1693,14 @@ pre {
 }
 
 .turn-diff {
-  margin: 22px 0 14px;
+  margin: 12px 0 0;
   overflow: hidden;
-  color: #536058;
-  background: #f3f6f2;
-  border: 1px solid #d4ddd5;
-  border-left: 3px solid #779982;
-  border-radius: 6px;
+  color: #555b55;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
 }
 
 .reasoning-block > .reasoning-summary,
@@ -1712,6 +1713,18 @@ pre {
   font-weight: 650;
   list-style: none;
   cursor: pointer;
+}
+
+.turn-diff[open] > summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.turn-diff > summary > svg {
+  flex: 0 0 auto;
+}
+
+.turn-diff > summary .details-chevron {
+  margin-left: auto;
 }
 
 .reasoning-block > summary::-webkit-details-marker,
@@ -2243,15 +2256,15 @@ details[open] > summary .details-chevron {
 }
 
 .diff-table--split {
-  width: 100%;
-  min-width: 760px;
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
 }
 
 .diff-table--split .diff-code-cell {
-  width: calc(50% - 42px);
-  min-width: 0;
-  overflow: hidden;
+  width: auto;
+  min-width: 520px;
+  overflow: visible;
 }
 
 .diff-table--split td:nth-child(3) {
@@ -2267,7 +2280,12 @@ details[open] > summary .details-chevron {
 .diff-viewer--wrap .diff-code-cell {
   min-width: 0;
   white-space: pre-wrap;
+  overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+.diff-viewer--wrap .diff-table--split .diff-code-cell {
+  width: calc(50% - 42px);
 }
 
 .diff-raw-fallback > .code-block {
@@ -2280,9 +2298,20 @@ details[open] > summary .details-chevron {
   border-radius: 0;
 }
 
-.turn-diff > .diff-viewer,
-.turn-diff > .diff-raw-fallback {
-  margin: 0 10px 12px;
+.turn-diff > .diff-viewer {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.turn-diff > .diff-raw-fallback,
+.turn-diff > .diff-raw-fallback > .code-block {
+  margin: 0;
+}
+
+.turn-diff > .diff-raw-fallback > .code-block {
+  border: 0;
+  border-radius: 0;
 }
 
 .terminal-output {
@@ -2585,8 +2614,8 @@ details[open] > summary .details-chevron {
 }
 
 .turn-diff > summary {
-  padding: 0 11px;
-  color: #4d6556;
+  padding: 7px 2px;
+  color: #555b55;
 }
 
 .turn-footer {
@@ -4297,7 +4326,7 @@ details[open] > summary .details-chevron {
 
   .approval-panel {
     display: block;
-    height: min(42vh, 440px);
+    height: min(42dvh, 440px);
     padding: 8px 10px;
   }
 
@@ -4332,8 +4361,20 @@ details[open] > summary .details-chevron {
     margin-bottom: 8px;
   }
 
+  .approval-card:has(> .approval-body) {
+    display: flex;
+    height: 100%;
+    flex-direction: column;
+  }
+
+  .approval-card:last-child {
+    margin-bottom: 0;
+  }
+
   .approval-body {
-    max-height: min(22dvh, 180px);
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
   }
 
   .approval-action-button {

@@ -118,6 +118,18 @@ const filePatch = [
   "   return oldClient(requestLimit);",
 ].join("\n");
 
+const aggregateTurnPatch = [
+  "diff --git a/src/client.ts b/src/client.ts",
+  "--- a/src/client.ts",
+  "+++ b/src/client.ts",
+  "@@ -1,80 +1,80 @@",
+  ...Array.from({ length: 79 }, (_, index) => (
+    ` export const fixtureLine${String(index + 1).padStart(2, "0")} = "bounded turn diff context";`
+  )),
+  "-export const requestLimit = 10;",
+  `+export const requestLimit = 20; // ${"horizontal split scrolling remains available; ".repeat(8)}`,
+].join("\n");
+
 const fixtureTurns = [
   {
     id: "turn-newest",
@@ -195,7 +207,7 @@ const fixtureTurns = [
         }],
       },
     ],
-    diff: `diff --git a/src/client.ts b/src/client.ts\n--- a/src/client.ts\n+++ b/src/client.ts\n${filePatch}`,
+    diff: aggregateTurnPatch,
   },
   {
     id: "turn-older",
@@ -687,6 +699,85 @@ async function inspectRichLayout(page) {
   });
 }
 
+async function inspectTurnDiffLayout(page, screenshotPath) {
+  const turnDiff = page.locator(".turn-diff").first();
+  await turnDiff.scrollIntoViewIfNeeded();
+  const chrome = await turnDiff.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    const summary = element.querySelector(":scope > summary");
+    const summaryBox = summary?.getBoundingClientRect();
+    const body = element.querySelector(":scope > .diff-viewer, :scope > .diff-raw-fallback");
+    const bodyBox = body?.getBoundingClientRect();
+    const bodyStyle = body ? window.getComputedStyle(body) : null;
+    const chevronBox = summary?.querySelector(".details-chevron")?.getBoundingClientRect();
+    return {
+      backgroundTransparent: style.backgroundColor === "rgba(0, 0, 0, 0)",
+      sideBordersRemoved: Number.parseFloat(style.borderLeftWidth) === 0 &&
+        Number.parseFloat(style.borderRightWidth) === 0,
+      topBottomDividers: Number.parseFloat(style.borderTopWidth) === 1 &&
+        Number.parseFloat(style.borderBottomWidth) === 1,
+      squareChrome: Number.parseFloat(style.borderRadius) === 0,
+      compactOuterSpacing: Number.parseFloat(style.marginTop) + Number.parseFloat(style.marginBottom) <= 12,
+      summaryHeight: summaryBox?.height ?? 0,
+      chevronRightGap: chevronBox ? box.right - chevronBox.right : Number.POSITIVE_INFINITY,
+      bodyEdgeAligned: Boolean(bodyBox) && Math.abs((bodyBox?.left ?? 0) - box.left) <= 1 &&
+        Math.abs((bodyBox?.right ?? 0) - box.right) <= 1,
+      bodyUnframed: Boolean(bodyStyle) && Number.parseFloat(bodyStyle?.borderLeftWidth ?? "1") === 0 &&
+        Number.parseFloat(bodyStyle?.borderRightWidth ?? "1") === 0 &&
+        Number.parseFloat(bodyStyle?.borderRadius ?? "1") === 0,
+    };
+  });
+
+  const splitAction = turnDiff.getByRole("button", { name: "Split diff" });
+  const splitVisible = await splitAction.isVisible();
+  let nowrapSplit = null;
+  let wrappedSplit = null;
+  if (splitVisible) {
+    await splitAction.click();
+    await page.waitForTimeout(50);
+    const surface = turnDiff.locator(".diff-render-surface");
+    nowrapSplit = await surface.evaluate((element) => {
+      element.scrollLeft = Math.min(96, Math.max(0, element.scrollWidth - element.clientWidth));
+      const codeCell = element.querySelector(".diff-table--split .diff-code-cell");
+      return {
+        horizontalOverflow: element.scrollWidth > element.clientWidth + 1,
+        verticalOverflow: element.scrollHeight > element.clientHeight + 1,
+        horizontalScrollWorks: element.scrollLeft > 0,
+        codeCellOverflow: codeCell ? window.getComputedStyle(codeCell).overflow : "missing",
+      };
+    });
+    await turnDiff.getByRole("button", { name: "Wrap diff lines" }).click();
+    await page.waitForTimeout(50);
+    wrappedSplit = await surface.evaluate((element) => {
+      const codeCell = element.querySelector(".diff-table--split .diff-code-cell");
+      return {
+        horizontalOverflow: element.scrollWidth > element.clientWidth + 1,
+        codeCellOverflow: codeCell ? window.getComputedStyle(codeCell).overflow : "missing",
+      };
+    });
+    await turnDiff.getByRole("button", { name: "Disable line wrapping" }).click();
+    await surface.evaluate((element) => { element.scrollLeft = 0; });
+  }
+
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  return { chrome, splitVisible, nowrapSplit, wrappedSplit };
+}
+
+function turnDiffChromeInvalid(inspection) {
+  const chrome = inspection.chrome;
+  return !chrome.backgroundTransparent ||
+    !chrome.sideBordersRemoved ||
+    !chrome.topBottomDividers ||
+    !chrome.squareChrome ||
+    !chrome.compactOuterSpacing ||
+    chrome.summaryHeight < 37 ||
+    chrome.summaryHeight > 40 ||
+    chrome.chevronRightGap > 5 ||
+    !chrome.bodyEdgeAligned ||
+    !chrome.bodyUnframed;
+}
+
 async function inspectActiveReasoning(page, fixture, screenshotPath) {
   const turnId = "turn-live-reasoning";
   const item = { id: "reasoning-live", type: "reasoning", summary: [], content: [] };
@@ -862,14 +953,17 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
     const summary = document.querySelector(".active-plan-dock__summary");
     const current = document.querySelector(".active-plan-dock__current > span");
     const approvalPanel = document.querySelector(".approval-panel");
+    const approvalCard = approvalPanel?.querySelector(".approval-card");
     const composer = document.querySelector(".composer-wrap");
-    if (!workspace || !conversation || !planDock || !summary || !current || !approvalPanel || !composer) {
+    if (!workspace || !conversation || !planDock || !summary || !current || !approvalPanel ||
+        !approvalCard || !composer) {
       return { complete: false };
     }
     const children = [...workspace.children];
     const dockBox = planDock.getBoundingClientRect();
     const summaryBox = summary.getBoundingClientRect();
     const approvalBox = approvalPanel.getBoundingClientRect();
+    const approvalCardBox = approvalCard.getBoundingClientRect();
     const composerBox = composer.getBoundingClientRect();
     return {
       complete: true,
@@ -884,6 +978,7 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
       summaryCollapsed: summary.getAttribute("aria-expanded") === "false",
       currentTruncated: current.scrollWidth > current.clientWidth,
       noOverlap: dockBox.bottom <= approvalBox.top + 1 && approvalBox.bottom <= composerBox.top + 1,
+      approvalCardBottomGap: approvalBox.bottom - approvalCardBox.bottom,
     };
   });
   await page.screenshot({ path: `${screenshotPrefix}-collapsed.png`, fullPage: true });
@@ -894,10 +989,12 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
     const dock = document.querySelector(".active-plan-dock");
     const body = document.querySelector(".active-plan-dock__body");
     const approval = document.querySelector(".approval-panel");
+    const approvalCard = approval?.querySelector(".approval-card");
     const composer = document.querySelector(".composer-wrap");
-    if (!dock || !body || !approval || !composer) return { complete: false };
+    if (!dock || !body || !approval || !approvalCard || !composer) return { complete: false };
     const dockBox = dock.getBoundingClientRect();
     const approvalBox = approval.getBoundingClientRect();
+    const approvalCardBox = approvalCard.getBoundingClientRect();
     const composerBox = composer.getBoundingClientRect();
     const bodyStyle = window.getComputedStyle(body);
     return {
@@ -908,6 +1005,7 @@ async function inspectActivePlanDock(page, fixture, screenshotPrefix) {
       fitsViewport: dockBox.left >= 0 && dockBox.right <= window.innerWidth && dockBox.bottom <= window.innerHeight,
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       noOverlap: dockBox.bottom <= approvalBox.top + 1 && approvalBox.bottom <= composerBox.top + 1,
+      approvalCardBottomGap: approvalBox.bottom - approvalCardBox.bottom,
       summaryExpanded: document.querySelector(".active-plan-dock__summary")
         ?.getAttribute("aria-expanded") === "true",
     };
@@ -1012,7 +1110,11 @@ async function inspectApprovalLayout(page, fixture, screenshotPath) {
         actionsBeforeBody: Boolean(header && bodyBox && header.bottom <= bodyBox.top),
         bodyScrollable: Boolean(body && body.scrollHeight > body.clientHeight),
         bodyOverflow: body ? window.getComputedStyle(body).overflowY : null,
-        bodyBounded: Boolean(bodyBox && bodyBox.height <= (window.innerWidth <= 600 ? 180 : 210) + 0.5),
+        bodyBounded: Boolean(bodyBox && bodyBox.height <= (
+          window.innerWidth <= 600 ? panelBox.height : 210
+        ) + 0.5),
+        bodyContained: Boolean(bodyBox && bodyBox.top >= cardBox.top && bodyBox.bottom <= cardBox.bottom),
+        panelBottomGap: panelBox.bottom - cardBox.bottom,
         acceptRightOffset: accept ? cardBox.right - accept.right : null,
         acceptTopOffset: accept ? accept.top - cardBox.top : null,
         declineRightOffset: decline ? cardBox.right - decline.right : null,
@@ -1033,6 +1135,7 @@ async function inspectApprovalLayout(page, fixture, screenshotPath) {
         close(first.declineRightOffset, second.declineRightOffset) &&
         close(first.declineTopOffset, second.declineTopOffset),
       firstActionsVisible: first.top >= panelBox.top && first.top + minimumTarget <= panelBox.bottom,
+      firstCardUsesPanelHeight: !vertical || (first.panelBottomGap >= 0 && first.panelBottomGap <= 10),
       equalCardWidths: Math.abs(first.width - second.width) <= 0.5,
       panelContained: panelBox.left >= 0 && panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -1072,13 +1175,15 @@ function approvalLayoutInvalid(layout) {
       !card.actionsBeforeBody ||
       !card.bodyScrollable ||
       card.bodyOverflow !== "auto" ||
-      !card.bodyBounded
+      !card.bodyBounded ||
+      !card.bodyContained
     )) ||
     layout.cards[0].labels.join(",") !== "Accept for session,Accept,Decline" ||
     layout.cards[1].labels.join(",") !== "Accept,Decline" ||
     !layout.flowCorrect ||
     !layout.commonTargetsAligned ||
     !layout.firstActionsVisible ||
+    !layout.firstCardUsesPanelHeight ||
     !layout.equalCardWidths ||
     !layout.panelContained ||
     layout.horizontalOverflow ||
@@ -1181,7 +1286,11 @@ async function inspectFallbackApprovalLayout(page, fixture, screenshotPath) {
         actionsBeforeBody: Boolean(header && bodyBox && header.bottom <= bodyBox.top),
         bodyScrollable: Boolean(body && body.scrollHeight > body.clientHeight),
         bodyOverflow: body ? window.getComputedStyle(body).overflowY : null,
-        bodyBounded: Boolean(bodyBox && bodyBox.height <= (window.innerWidth <= 600 ? 180 : 210) + 0.5),
+        bodyBounded: Boolean(bodyBox && bodyBox.height <= (
+          window.innerWidth <= 600 ? panelBox.height : 210
+        ) + 0.5),
+        bodyContained: Boolean(bodyBox && bodyBox.top >= cardBox.top && bodyBox.bottom <= cardBox.bottom),
+        panelBottomGap: panelBox.bottom - cardBox.bottom,
         primaryRightOffset: primary ? cardBox.right - primary.right : null,
         primaryTopOffset: primary ? primary.top - cardBox.top : null,
         declineRightOffset: decline ? cardBox.right - decline.right : null,
@@ -1202,6 +1311,7 @@ async function inspectFallbackApprovalLayout(page, fixture, screenshotPath) {
         close(first.declineRightOffset, second.declineRightOffset) &&
         close(first.declineTopOffset, second.declineTopOffset),
       firstActionsVisible: first.top >= panelBox.top && first.top + minimumTarget <= panelBox.bottom,
+      firstCardUsesPanelHeight: !vertical || (first.panelBottomGap >= 0 && first.panelBottomGap <= 10),
       equalCardWidths: Math.abs(first.width - second.width) <= 0.5,
       panelContained: panelBox.left >= 0 && panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
       noComposerOverlap: panelBox.bottom <= composerBox.top + 1,
@@ -1241,13 +1351,15 @@ function fallbackApprovalLayoutInvalid(layout) {
       !card.actionsBeforeBody ||
       !card.bodyScrollable ||
       card.bodyOverflow !== "auto" ||
-      !card.bodyBounded
+      !card.bodyBounded ||
+      !card.bodyContained
     )) ||
     layout.cards[0].labels.join(",") !== "Accept,Decline" ||
     layout.cards[1].labels.join(",") !== "Submit and accept,Decline" ||
     !layout.flowCorrect ||
     !layout.commonTargetsAligned ||
     !layout.firstActionsVisible ||
+    !layout.firstCardUsesPanelHeight ||
     !layout.equalCardWidths ||
     !layout.panelContained ||
     !layout.noComposerOverlap ||
@@ -1870,6 +1982,10 @@ try {
   await page.locator(".file-change-entry").scrollIntoViewIfNeeded();
   const desktopRich = await inspectRichLayout(page);
   await page.screenshot({ path: `${outputDirectory}/desktop-rich.png`, fullPage: true });
+  const desktopTurnDiff = await inspectTurnDiffLayout(
+    page,
+    `${outputDirectory}/desktop-turn-diff.png`,
+  );
   const desktopActiveReasoning = await inspectActiveReasoning(
     page,
     fixture,
@@ -2011,6 +2127,10 @@ try {
     window.getComputedStyle(element).display === "none"
   ));
   await page.screenshot({ path: `${outputDirectory}/mobile-rich.png`, fullPage: true });
+  const mobileTurnDiff = await inspectTurnDiffLayout(
+    page,
+    `${outputDirectory}/mobile-turn-diff.png`,
+  );
   const mobileActiveReasoning = await inspectActiveReasoning(
     page,
     fixture,
@@ -2060,6 +2180,7 @@ try {
       usage: desktopUsage,
       fileDownload: desktopFileDownload,
       rich: desktopRich,
+      turnDiff: desktopTurnDiff,
       activeReasoning: desktopActiveReasoning,
       failedSubmission: desktopFailedSubmission,
       activePlan: desktopActivePlan,
@@ -2086,6 +2207,7 @@ try {
       moreButtonVisible: mobileMoreButtonVisible,
       sidebarVisible: Boolean(sidebarBox && sidebarBox.x >= 0 && sidebarBox.width <= 390),
       rich: mobileRich,
+      turnDiff: mobileTurnDiff,
       activeReasoning: mobileActiveReasoning,
       failedSubmission: mobileFailedSubmission,
       activePlan: mobileActivePlan,
@@ -2387,6 +2509,14 @@ try {
     desktopRich.fileCards !== 1 ||
     !desktopRich.fileCardsContained ||
     desktopRich.unavailableFileCards !== 1 ||
+    turnDiffChromeInvalid(desktopTurnDiff) ||
+    !desktopTurnDiff.splitVisible ||
+    !desktopTurnDiff.nowrapSplit?.horizontalOverflow ||
+    !desktopTurnDiff.nowrapSplit?.verticalOverflow ||
+    !desktopTurnDiff.nowrapSplit?.horizontalScrollWorks ||
+    desktopTurnDiff.nowrapSplit?.codeCellOverflow !== "visible" ||
+    desktopTurnDiff.wrappedSplit?.horizontalOverflow ||
+    desktopTurnDiff.wrappedSplit?.codeCellOverflow !== "hidden" ||
     !desktopActiveReasoning.fitsViewport ||
     !desktopActiveReasoning.nonExpandable ||
     desktopActiveReasoning.spinnerAnimation !== "spin" ||
@@ -2454,6 +2584,10 @@ try {
     mobileRich.fileCards !== 1 ||
     !mobileRich.fileCardsContained ||
     mobileRich.unavailableFileCards !== 1 ||
+    turnDiffChromeInvalid(mobileTurnDiff) ||
+    mobileTurnDiff.splitVisible ||
+    mobileTurnDiff.nowrapSplit !== null ||
+    mobileTurnDiff.wrappedSplit !== null ||
     !mobileActiveReasoning.fitsViewport ||
     !mobileActiveReasoning.nonExpandable ||
     mobileActiveReasoning.spinnerAnimation !== "spin" ||
@@ -2483,6 +2617,8 @@ try {
     !mobileActivePlan.collapsed.summaryCollapsed ||
     !mobileActivePlan.collapsed.currentTruncated ||
     !mobileActivePlan.collapsed.noOverlap ||
+    mobileActivePlan.collapsed.approvalCardBottomGap < 0 ||
+    mobileActivePlan.collapsed.approvalCardBottomGap > 10 ||
     !mobileActivePlan.expanded.complete ||
     !mobileActivePlan.expanded.bodyScrollable ||
     !["auto", "scroll"].includes(mobileActivePlan.expanded.bodyOverflow) ||
@@ -2490,6 +2626,8 @@ try {
     !mobileActivePlan.expanded.fitsViewport ||
     mobileActivePlan.expanded.horizontalOverflow ||
     !mobileActivePlan.expanded.noOverlap ||
+    mobileActivePlan.expanded.approvalCardBottomGap < 0 ||
+    mobileActivePlan.expanded.approvalCardBottomGap > 10 ||
     !mobileActivePlan.expanded.summaryExpanded ||
     !mobileActivePlan.terminal.complete ||
     !mobileActivePlan.terminal.noticeVisible ||
