@@ -5,7 +5,7 @@ import { Composer } from "./components/Composer";
 import { Conversation } from "./components/Conversation";
 import { MessageQueueDock } from "./components/MessageQueueDock";
 import { Sidebar } from "./components/Sidebar";
-import { ThreadSettingsDialog } from "./components/ThreadSettingsDialog";
+import { NewThreadDialog } from "./components/NewThreadDialog";
 import { Toasts } from "./components/Toasts";
 import { TokenDialog } from "./components/TokenDialog";
 import { Toolbar } from "./components/Toolbar";
@@ -148,8 +148,7 @@ function unavailableSkillsCwdIndex(error: unknown, cwdCount: number): number | n
   return Number.isSafeInteger(index) && index >= 0 && index < cwdCount ? index : null;
 }
 
-interface ThreadDialogState {
-  mode: "new" | "existing";
+interface NewThreadDialogState {
   settings: ThreadSettings;
 }
 
@@ -337,7 +336,7 @@ export default function App() {
     () => new Map<string, ActiveTurnLaunchContext>(),
   );
   const [configuredDefaults, setConfiguredDefaults] = useState<NextTurnSettings>({ model: "", effort: "" });
-  const [threadDialog, setThreadDialog] = useState<ThreadDialogState | null>(null);
+  const [newThreadDialog, setNewThreadDialog] = useState<NewThreadDialogState | null>(null);
   const [draftThreadConfigured, setDraftThreadConfigured] = useState(false);
   const [imagePreviews, setImagePreviews] = useState<SessionImagePreviewSnapshot>({});
   const [fileAttachments, setFileAttachments] = useState<SessionFileAttachmentSnapshot>({});
@@ -703,7 +702,7 @@ export default function App() {
     setLoadingThread(false);
     setThreadLoadError(null);
     setResyncError(null);
-    setThreadDialog(null);
+    setNewThreadDialog(null);
   }, []);
 
   const captureThreadCwdAuthorityRevision = useCallback((): number => {
@@ -1509,7 +1508,7 @@ export default function App() {
     nextTurnSettingsInitializedRef.current = true;
     selectedThreadIdRef.current = threadId;
     setDraftThreadConfigured(false);
-    setThreadDialog(null);
+    setNewThreadDialog(null);
     dispatch({ type: "selectThread", threadId });
     setSidebarOpen(false);
     setThreadLoadError(null);
@@ -1847,8 +1846,7 @@ export default function App() {
       || selectedThreadSummary?.cwd
       || bootstrap?.defaultCwd
       || "";
-    setThreadDialog({
-      mode: "new",
+    setNewThreadDialog({
       settings: newThreadSettings(initialCwd, defaults),
     });
     setSidebarOpen(false);
@@ -1862,29 +1860,20 @@ export default function App() {
     state.threads,
   ]);
 
-  const openThreadSettings = useCallback(() => {
-    setThreadDialog({
-      mode: state.currentThread || draftThreadConfigured ? "existing" : "new",
-      settings: composerSettings,
-    });
-  }, [composerSettings, draftThreadConfigured, state.currentThread]);
-
-  const confirmThreadSettings = useCallback((settings: ThreadSettings) => {
-    if (threadDialog?.mode === "new") {
-      selectionGenerationRef.current += 1;
-      selectedThreadIdRef.current = null;
-      setLoadingThread(false);
-      setThreadLoadError(null);
-      setResyncError(null);
-      setDraftThreadConfigured(true);
-      nextTurnSettingsInitializedRef.current = true;
-      setNextTurnSettings({ model: settings.model, effort: settings.effort });
-      dispatch({ type: "selectThread", threadId: null });
-      dispatch({ type: "settings", settings });
-      setSidebarOpen(false);
-    }
-    setThreadDialog(null);
-  }, [threadDialog?.mode]);
+  const confirmNewThreadSettings = useCallback((settings: ThreadSettings) => {
+    selectionGenerationRef.current += 1;
+    selectedThreadIdRef.current = null;
+    setLoadingThread(false);
+    setThreadLoadError(null);
+    setResyncError(null);
+    setDraftThreadConfigured(true);
+    nextTurnSettingsInitializedRef.current = true;
+    setNextTurnSettings({ model: settings.model, effort: settings.effort });
+    dispatch({ type: "selectThread", threadId: null });
+    dispatch({ type: "settings", settings });
+    setSidebarOpen(false);
+    setNewThreadDialog(null);
+  }, []);
 
   const sendMessage = useCallback(async (
     text: string,
@@ -2273,7 +2262,7 @@ export default function App() {
       selectedThreadIdRef.current = forkedThread.id;
       nextTurnSettingsInitializedRef.current = true;
       setDraftThreadConfigured(false);
-      setThreadDialog(null);
+      setNewThreadDialog(null);
       setSidebarOpen(false);
       setThreadLoadError(null);
       setResyncError(null);
@@ -2482,7 +2471,6 @@ export default function App() {
           onUsage={openUsage}
           onReconnect={retryConnection}
           onResync={retryResync}
-          onSettings={openThreadSettings}
           onMenu={() => setSidebarOpen(true)}
         />
         <Conversation
@@ -2552,14 +2540,13 @@ export default function App() {
           onStop={stopTurn}
         />
       </section>
-      {threadDialog && (
-        <ThreadSettingsDialog
-          key={`${threadDialog.mode}:${threadDialog.settings.cwd}`}
+      {newThreadDialog && (
+        <NewThreadDialog
+          key={newThreadDialog.settings.cwd}
           open
-          mode={threadDialog.mode}
-          settings={threadDialog.settings}
-          onConfirm={confirmThreadSettings}
-          onClose={() => setThreadDialog(null)}
+          settings={newThreadDialog.settings}
+          onConfirm={confirmNewThreadSettings}
+          onClose={() => setNewThreadDialog(null)}
         />
       )}
       <TokenDialog

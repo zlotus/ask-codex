@@ -1,4 +1,4 @@
-import { Gauge, RefreshCw, Settings2, ShieldAlert } from "lucide-react";
+import { Gauge, RefreshCw, ShieldAlert } from "lucide-react";
 import type { ConnectionState, ThreadSettings } from "../types/protocol";
 import { MobileMenuButton } from "./Sidebar";
 
@@ -14,7 +14,6 @@ interface ToolbarProps {
   onUsage: () => void;
   onReconnect: () => void;
   onResync: () => void;
-  onSettings: () => void;
   onMenu: () => void;
 }
 
@@ -37,7 +36,6 @@ export function Toolbar({
   onUsage,
   onReconnect,
   onResync,
-  onSettings,
   onMenu,
 }: ToolbarProps) {
   const sandboxLabel = sandboxStatus(sandbox);
@@ -105,15 +103,6 @@ export function Toolbar({
           onClick={onUsage}
         >
           <Gauge size={16} aria-hidden="true" />
-        </button>
-        <button
-          className="icon-button toolbar-settings-button"
-          type="button"
-          title="Thread settings"
-          aria-label="Thread settings"
-          onClick={onSettings}
-        >
-          <Settings2 size={16} aria-hidden="true" />
         </button>
       </div>
     </header>

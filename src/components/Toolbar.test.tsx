@@ -3,8 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Toolbar } from "./Toolbar";
 
 describe("Toolbar", () => {
-  it("keeps the header compact and delegates detailed settings to the dialog", () => {
-    const onSettings = vi.fn();
+  it("keeps the header compact without a redundant thread settings action", () => {
     render(
       <Toolbar
         sandbox="workspace-write"
@@ -18,7 +17,6 @@ describe("Toolbar", () => {
         onUsage={vi.fn()}
         onReconnect={vi.fn()}
         onResync={vi.fn()}
-        onSettings={onSettings}
         onMenu={vi.fn()}
       />,
     );
@@ -27,8 +25,7 @@ describe("Toolbar", () => {
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Thread settings" }));
-    expect(onSettings).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Thread settings" })).not.toBeInTheDocument();
   });
 
   it("surfaces non-default sandbox risk", () => {
@@ -45,7 +42,6 @@ describe("Toolbar", () => {
         onUsage={vi.fn()}
         onReconnect={vi.fn()}
         onResync={vi.fn()}
-        onSettings={vi.fn()}
         onMenu={vi.fn()}
       />,
     );
@@ -69,7 +65,6 @@ describe("Toolbar", () => {
         onUsage={onUsage}
         onReconnect={vi.fn()}
         onResync={vi.fn()}
-        onSettings={vi.fn()}
         onMenu={vi.fn()}
       />,
     );
@@ -95,7 +90,6 @@ describe("Toolbar", () => {
         onUsage={vi.fn()}
         onReconnect={onReconnect}
         onResync={vi.fn()}
-        onSettings={vi.fn()}
         onMenu={vi.fn()}
       />,
     );
@@ -121,7 +115,6 @@ describe("Toolbar", () => {
         onUsage={vi.fn()}
         onReconnect={vi.fn()}
         onResync={onResync}
-        onSettings={vi.fn()}
         onMenu={vi.fn()}
       />,
     );

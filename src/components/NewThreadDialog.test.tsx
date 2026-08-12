@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ThreadSettingsDialog } from "./ThreadSettingsDialog";
+import { NewThreadDialog } from "./NewThreadDialog";
 
 const settings = {
   cwd: "/workspace/project",
@@ -9,13 +9,12 @@ const settings = {
   sandbox: "workspace-write" as const,
 };
 
-describe("ThreadSettingsDialog", () => {
+describe("NewThreadDialog", () => {
   it("requires a workspace for a new thread and uses the writable default", () => {
     const onConfirm = vi.fn();
     render(
-      <ThreadSettingsDialog
+      <NewThreadDialog
         open
-        mode="new"
         settings={{ ...settings, cwd: "" }}
         onConfirm={onConfirm}
         onClose={vi.fn()}
@@ -24,7 +23,7 @@ describe("ThreadSettingsDialog", () => {
 
     const submit = screen.getByRole("button", { name: "Create thread" });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Working directory"), { target: { value: "/new/project" } });
+    fireEvent.change(screen.getByLabelText("Working directory"), { target: { value: " /new/project " } });
     expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
     fireEvent.click(submit);
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({
@@ -33,19 +32,20 @@ describe("ThreadSettingsDialog", () => {
     }));
   });
 
-  it("shows an existing workspace without exposing sandbox controls", () => {
+  it("closes without configuring a draft", () => {
+    const onConfirm = vi.fn();
+    const onClose = vi.fn();
     render(
-      <ThreadSettingsDialog
+      <NewThreadDialog
         open
-        mode="existing"
         settings={settings}
-        onConfirm={vi.fn()}
-        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        onClose={onClose}
       />,
     );
 
-    expect(screen.getByLabelText("Working directory")).toHaveAttribute("readonly");
-    expect(screen.queryByLabelText("Sandbox")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });

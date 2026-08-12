@@ -986,8 +986,7 @@ pre {
   border-color: #e7bbb4;
 }
 
-.toolbar-usage-button,
-.toolbar-settings-button {
+.toolbar-usage-button {
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
@@ -3624,7 +3623,7 @@ details[open] > summary .details-chevron {
 }
 
 .token-dialog,
-.thread-settings-dialog {
+.new-thread-dialog {
   width: min(100%, 390px);
   padding: 17px;
   background: var(--surface-strong);
@@ -3914,7 +3913,7 @@ details[open] > summary .details-chevron {
   white-space: nowrap;
 }
 
-.thread-settings-dialog {
+.new-thread-dialog {
   width: min(100%, 440px);
 }
 
@@ -4016,11 +4015,6 @@ details[open] > summary .details-chevron {
   background: #f8f7f3;
   border: 1px solid #cccdc6;
   border-radius: 5px;
-}
-
-.dialog-field--readonly input {
-  color: #6f756f;
-  background: #efeee9;
 }
 
 .dialog-warning {

@@ -1422,8 +1422,8 @@ async function inspectMessageQueueDock(page, screenshotPath) {
   return { expanded, collapsed };
 }
 
-async function inspectThreadDialog(page) {
-  const dialog = page.locator(".thread-settings-dialog");
+async function inspectNewThreadDialog(page) {
+  const dialog = page.locator(".new-thread-dialog");
   await dialog.waitFor();
   return dialog.evaluate((element) => {
     const box = element.getBoundingClientRect();
@@ -1468,10 +1468,10 @@ async function inspectOneTurnAutoRun(page, screenshotPaths) {
   const newThread = page.getByRole("button", { name: "New thread", exact: true });
   await ensureThreadSidebarOpen(page);
   await newThread.click();
-  const dialog = await inspectThreadDialog(page);
+  const dialog = await inspectNewThreadDialog(page);
   await page.screenshot({ path: screenshotPaths.dialog, fullPage: true });
   await page.getByRole("button", { name: "Create thread", exact: true }).click();
-  await page.locator(".thread-settings-dialog").waitFor({ state: "hidden" });
+  await page.locator(".new-thread-dialog").waitFor({ state: "hidden" });
 
   const configuredDraft = await approvalControlSnapshot(page);
   await control.click();
@@ -1903,6 +1903,7 @@ try {
       )?.checked === true,
       defaultLabels: [...document.querySelectorAll(".composer-setting option")]
         .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
+      threadSettingsAbsent: document.querySelector('[aria-label="Thread settings"]') === null,
       faviconHrefs: [...document.querySelectorAll('link[rel~="icon"]')]
         .map((element) => element.getAttribute("href")),
       connection: document.querySelector(".sidebar-footer span:nth-child(2)")?.textContent,
@@ -2034,6 +2035,7 @@ try {
     )?.checked === true,
     defaultLabels: [...document.querySelectorAll(".composer-setting option")]
       .filter((option) => option.textContent?.toLowerCase().includes("default")).length,
+    threadSettingsAbsent: document.querySelector('[aria-label="Thread settings"]') === null,
     composerSettingsVisible: [...document.querySelectorAll(".composer-setting")].every((element) => {
       const box = element.getBoundingClientRect();
       return box.left >= 0 && box.right <= window.innerWidth;
@@ -2052,10 +2054,6 @@ try {
   const mobileComposerImage = await inspectComposerImage(page);
   await page.screenshot({ path: `${outputDirectory}/mobile-attachment.png`, fullPage: true });
   await page.getByRole("button", { name: "Remove visual-fixture.png" }).click();
-  await page.getByRole("button", { name: "Thread settings", exact: true }).click();
-  const mobileDialog = await inspectThreadDialog(page);
-  await page.screenshot({ path: `${outputDirectory}/mobile-new-thread.png`, fullPage: true });
-  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Open threads" }).click();
   await page.waitForTimeout(250);
   const sidebarBox = await page.locator(".sidebar--open").boundingBox();
@@ -2160,6 +2158,7 @@ try {
     dialog: `${outputDirectory}/mobile-first-turn-dialog.png`,
     armedDraft: `${outputDirectory}/mobile-first-turn-auto.png`,
   });
+  const mobileDialog = mobileOneTurnAutoRun.dialog;
 
   const result = {
     desktop: {
@@ -2234,6 +2233,7 @@ try {
     !desktop.autoRunDisabled ||
     desktop.autoRunChecked ||
     desktop.defaultLabels > 0 ||
+    !desktop.threadSettingsAbsent ||
     desktop.faviconHrefs.join(",") !== "/favicon.ico,/favicon.svg" ||
     faviconAssets.ico.status !== 200 ||
     !["image/x-icon", "image/vnd.microsoft.icon"].includes(faviconAssets.ico.contentType) ||
@@ -2364,6 +2364,7 @@ try {
     !mobileBefore.autoRunDisabled ||
     mobileBefore.autoRunChecked ||
     mobileBefore.defaultLabels > 0 ||
+    !mobileBefore.threadSettingsAbsent ||
     !mobileBefore.composerSettingsVisible ||
     mobileLongToolbarTitle.some((sample) => (
       !sample.titleEllipsized ||
