@@ -8,6 +8,7 @@ import { BrowserFileAttachmentStore } from "./utils/browserFileAttachmentStore";
 import { BrowserImagePreviewStore } from "./utils/browserImagePreviewStore";
 import { sessionFileAttachmentKey } from "./utils/sessionFileAttachments";
 import { sessionImagePreviewKey } from "./utils/sessionImagePreviews";
+import { formatTimestamp } from "./utils/protocol";
 
 const { Blob: NodeBlob, File: NodeFile } = process.getBuiltinModule("buffer") as {
   Blob: typeof Blob;
@@ -1759,6 +1760,30 @@ describe("App thread settings lifecycle", () => {
     expect(socket.rpc.mock.calls.filter(([method]) => method === "thread/read")).toHaveLength(1);
   });
 
+  it("clears the session completion-time override across a disconnect", async () => {
+    installBootstrapFixture();
+    const { rerender } = render(<App />);
+    const row = await screen.findByRole("button", { name: "Existing thread" });
+    const recencyText = row.querySelector(".thread-meta")?.textContent;
+    const completedAt = 1_800_000_700;
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-disconnect", status: "completed", completedAt, items: [] },
+      },
+    }));
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(completedAt)));
+
+    socket.connection = "disconnected";
+    socket.retryAttempt = 1;
+    rerender(<App />);
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent).toBe(recencyText));
+  });
+
   it("restores a missed plan update from the read-only reconnect snapshot", async () => {
     let recovering = false;
     const baseRpc = socket.rpc.getMockImplementation();
@@ -2745,6 +2770,194 @@ describe("App thread settings lifecycle", () => {
       .querySelector(".thread-meta")?.textContent;
     expect(titlesAfter).toEqual(["Existing thread", "Other thread"]);
     expect(activityAfter).toBe(activityBefore);
+  });
+
+  it("shows turn completion time after completion without changing thread-list order", async () => {
+    const baseRpc = socket.rpc.getMockImplementation();
+    const listThread = {
+      ...existingThread,
+      createdAt: 100,
+      updatedAt: 300,
+      recencyAt: 300,
+    };
+    const otherThread = {
+      ...existingThread,
+      id: "thread-other",
+      name: "Other thread",
+      createdAt: 150,
+      updatedAt: 200,
+      recencyAt: 200,
+    };
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        return Promise.resolve({ data: [listThread, otherThread], nextCursor: null });
+      }
+      return baseRpc?.(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Existing thread" });
+    const row = screen.getByRole("button", { name: "Existing thread" });
+    const recencyText = row.querySelector(".thread-meta")?.textContent;
+    expect(Array.from(document.querySelectorAll(".thread-title")).map((node) => node.textContent))
+      .toEqual(["Existing thread", "Other thread"]);
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/started",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-next", status: "inProgress", startedAt: 1_800_000_400, items: [] },
+      },
+    }));
+    expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(1_800_000_400));
+
+    const completedAt = 1_800_000_500;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: {
+          id: "turn-next",
+          status: "completed",
+          completedAt,
+          items: [],
+        },
+      },
+    }));
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(completedAt)));
+    expect(Array.from(document.querySelectorAll(".thread-title")).map((node) => node.textContent))
+      .toEqual(["Existing thread", "Other thread"]);
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/started",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-after", status: "inProgress", startedAt: 1_800_000_550, items: [] },
+      },
+    }));
+    expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(1_800_000_550));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-after", status: "completed", completedAt: null, items: [] },
+      },
+    }));
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent).toBe(recencyText));
+  });
+
+  it("falls back to server recency when a running turn has no valid start time", async () => {
+    installBootstrapFixture();
+    render(<App />);
+    const row = await screen.findByRole("button", { name: "Existing thread" });
+    const recencyText = row.querySelector(".thread-meta")?.textContent;
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/started",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-no-start", status: "inProgress", startedAt: null, items: [] },
+      },
+    }));
+    expect(row.querySelector(".thread-meta")?.textContent).toBe(recencyText);
+  });
+
+  it("clears a running-time override when completion metadata is missing", async () => {
+    installBootstrapFixture();
+    render(<App />);
+    const row = await screen.findByRole("button", { name: "Existing thread" });
+    const recencyText = row.querySelector(".thread-meta")?.textContent;
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/started",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-missing-completion", status: "inProgress", startedAt: 1_800_000_450, items: [] },
+      },
+    }));
+    expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(1_800_000_450));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: { threadId: existingThread.id, turnId: "turn-missing-completion" },
+    }));
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent).toBe(recencyText));
+  });
+
+  it("preserves completion time when the start response arrives after completion", async () => {
+    let resolveTurnStart!: (result: unknown) => void;
+    let markTurnStartRequested!: () => void;
+    const turnStartRequested = new Promise<void>((resolve) => {
+      markTurnStartRequested = resolve;
+    });
+    const turnStartResult = new Promise<unknown>((resolve) => {
+      resolveTurnStart = resolve;
+    });
+    const listThread = {
+      ...existingThread,
+      createdAt: 100,
+      updatedAt: 300,
+      recencyAt: 300,
+    };
+    const baseRpc = socket.rpc.getMockImplementation()!;
+    socket.rpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === "thread/list" && !(params as { archived?: boolean } | undefined)?.archived) {
+        return Promise.resolve({ data: [listThread], nextCursor: null });
+      }
+      if (method === "turn/start") {
+        markTurnStartRequested();
+        return turnStartResult;
+      }
+      return baseRpc(method, params);
+    });
+    installBootstrapFixture();
+    render(<App />);
+
+    const row = await screen.findByRole("button", { name: "Existing thread" });
+    fireEvent.change(screen.getByLabelText("Message Codex"), { target: { value: "race" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await turnStartRequested;
+
+    const completedAt = 1_800_000_600;
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/completed",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-race", status: "completed", completedAt, items: [] },
+      },
+    }));
+    await waitFor(() => expect(row.querySelector(".thread-meta")?.textContent)
+      .toContain(formatTimestamp(completedAt)));
+
+    await act(async () => {
+      resolveTurnStart({ turn: { id: "turn-race", status: "inProgress", items: [] } });
+      await turnStartResult;
+    });
+    expect(row.querySelector(".thread-meta")?.textContent).toContain(formatTimestamp(completedAt));
+
+    act(() => socket.onNotification?.({
+      type: "notification",
+      method: "turn/started",
+      params: {
+        threadId: existingThread.id,
+        turn: { id: "turn-race", status: "inProgress", startedAt: 1_800_000_590, items: [] },
+      },
+    }));
+    expect(row.querySelector(".thread-meta")?.textContent).toContain(formatTimestamp(completedAt));
   });
 
   it("keeps archive and permanent delete unavailable for an active thread", async () => {

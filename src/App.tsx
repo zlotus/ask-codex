@@ -46,6 +46,7 @@ import {
   parsePlanRevision,
   readString,
   sandboxMode,
+  timestampMilliseconds,
 } from "./utils/protocol";
 import { loadStoredToken, saveStoredToken } from "./utils/tokenStorage";
 import {
@@ -131,6 +132,7 @@ const MAX_SKILLS_PROJECT_CWDS = 16;
 const MAX_THREAD_USAGE_SNAPSHOTS = 32;
 const MAX_ACTIVE_TURN_LAUNCH_CONTEXTS = 32;
 const MAX_RECENT_COMPLETED_TURNS = 64;
+const MAX_THREAD_TIMESTAMP_OVERRIDES = 64;
 const MAX_ACTIVITY_EVENTS = 48;
 const MAX_RATE_LIMIT_UPDATE_EVENTS = 64;
 const THREAD_HYDRATION_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
@@ -216,6 +218,51 @@ function rememberRecentCompletedTurn(turns: Set<string>, threadId: string, turnI
     if (oldestIdentity === undefined) break;
     turns.delete(oldestIdentity);
   }
+}
+
+function normalizedTurnTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 &&
+    timestampMilliseconds(value) !== null
+    ? value
+    : undefined;
+}
+
+function normalizedStartedAt(turn: CodexTurn | null): number | undefined {
+  return normalizedTurnTimestamp(turn?.startedAt);
+}
+
+function normalizedCompletedAt(turn: CodexTurn | null): number | undefined {
+  return normalizedTurnTimestamp(turn?.completedAt);
+}
+
+type ThreadTimestampOverrideAction =
+  | { type: "remember"; threadId: string; timestamp: number | undefined }
+  | { type: "clear" };
+
+function threadTimestampOverridesReducer(
+  current: Map<string, number>,
+  action: ThreadTimestampOverrideAction,
+): Map<string, number> {
+  if (action.type === "clear") {
+    return current.size === 0 ? current : new Map();
+  }
+  const existing = current.get(action.threadId);
+  if (action.timestamp === undefined) {
+    if (existing === undefined && !current.has(action.threadId)) return current;
+    const next = new Map(current);
+    next.delete(action.threadId);
+    return next;
+  }
+  if (existing === action.timestamp) return current;
+  const next = new Map(current);
+  next.delete(action.threadId);
+  next.set(action.threadId, action.timestamp);
+  while (next.size > MAX_THREAD_TIMESTAMP_OVERRIDES) {
+    const oldestThreadId = next.keys().next().value as string | undefined;
+    if (oldestThreadId === undefined) break;
+    next.delete(oldestThreadId);
+  }
+  return next;
 }
 
 function reasoningPartIndex(value: unknown): number | null {
@@ -310,6 +357,14 @@ export default function App() {
     () => new Map<string, ThreadTokenUsage>(),
   );
   const [recentActivities, setRecentActivities] = useState<ThreadActivityEvent[]>([]);
+  // Thread summaries do not include the last turn's start/completion time. Keep a
+  // bounded, session-only display override; it falls back to server recency when
+  // the protocol does not provide a valid lifecycle timestamp.
+  const [threadTimestampOverrides, dispatchThreadTimestampOverride] = useReducer(
+    threadTimestampOverridesReducer,
+    undefined,
+    () => new Map<string, number>(),
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [loadingThreads, setLoadingThreads] = useState(false);
@@ -418,6 +473,13 @@ export default function App() {
     [projectCwdsKey],
   );
   const projectCwds = projectSelection.cwds;
+
+  const rememberThreadTimestamp = useCallback((
+    threadId: string,
+    timestamp: number | undefined,
+  ): void => {
+    dispatchThreadTimestampOverride({ type: "remember", threadId, timestamp });
+  }, []);
 
   useEffect(() => {
     selectedThreadIdRef.current = state.selectedThreadId;
@@ -845,6 +907,7 @@ export default function App() {
           });
           pendingCanonicalThreadIdsRef.current.delete(threadId);
           forgetActiveTurnLaunchContext(threadId);
+          rememberThreadTimestamp(threadId, undefined);
           invalidateSelectedThread(threadId);
           removeLocalAttachmentsForThread(threadId);
           dispatch({ type: "deleteThread", threadId });
@@ -885,12 +948,19 @@ export default function App() {
       }
       case "turn/started": {
         const turn = normalizeTurn(params.turn);
-        if (turn) dispatch({ type: "upsertTurn", turn, threadId });
+        const completedBeforeStartNotification = threadId && turn?.id
+          ? recentCompletedTurnsRef.current.has(turnIdentity(threadId, turn.id))
+          : false;
+        if (threadId && !completedBeforeStartNotification) {
+          rememberThreadTimestamp(threadId, normalizedStartedAt(turn));
+        }
+        if (turn && !completedBeforeStartNotification) dispatch({ type: "upsertTurn", turn, threadId });
         return;
       }
       case "turn/completed": {
         const turn = normalizeTurn(params.turn);
         const completedTurnId = turn?.id ?? turnId;
+        if (threadId) rememberThreadTimestamp(threadId, normalizedCompletedAt(turn));
         if (threadId && completedTurnId) {
           rememberRecentCompletedTurn(recentCompletedTurnsRef.current, threadId, completedTurnId);
           forgetActiveTurnLaunchContext(threadId, completedTurnId);
@@ -995,6 +1065,7 @@ export default function App() {
     forgetActiveTurnLaunchContext,
     invalidateSelectedThread,
     rememberAuthoritativeThreadCwd,
+    rememberThreadTimestamp,
     removeLocalAttachmentsForThread,
   ]);
 
@@ -1092,6 +1163,7 @@ export default function App() {
     if (connection !== "connected") {
       dispatch({ type: "clearActiveReasoningItems" });
       dispatch({ type: "clearRequests" });
+      dispatchThreadTimestampOverride({ type: "clear" });
     }
   }, [connection]);
 
@@ -1980,6 +2052,8 @@ export default function App() {
         }
       }
       assertSelectionUnchanged();
+      // A new direct turn must not inherit the previous turn's display time.
+      rememberThreadTimestamp(thread.id, undefined);
       turnStartAttempted = true;
       const result = await rpc("turn/start", {
         threadId: thread.id,
@@ -2001,8 +2075,19 @@ export default function App() {
       turnAccepted = true;
       const turn = extractTurn(result);
       const completedBeforeStartResult = turn
-        ? recentCompletedTurnsRef.current.delete(turnIdentity(thread.id, turn.id))
+        ? recentCompletedTurnsRef.current.has(turnIdentity(thread.id, turn.id))
         : false;
+      const completedAt = normalizedCompletedAt(turn);
+      // A completion notification can arrive before the turn/start response. Preserve
+      // its timestamp when the late response is only the earlier in-progress snapshot.
+      if (thread.id && !completedBeforeStartResult) {
+        const startedAt = normalizedStartedAt(turn);
+        if (completedAt !== undefined || startedAt !== undefined) {
+          rememberThreadTimestamp(thread.id, completedAt ?? startedAt);
+        } else {
+          rememberThreadTimestamp(thread.id, undefined);
+        }
+      }
       if (turn?.status === "inProgress" && !completedBeforeStartResult) {
         rememberActiveTurnLaunchContext(thread.id, {
           turnId: turn.id,
@@ -2037,6 +2122,7 @@ export default function App() {
     refreshThreads,
     rememberAuthoritativeThreadCwd,
     rememberActiveTurnLaunchContext,
+    rememberThreadTimestamp,
     rememberFileAttachments,
     rememberImagePreviews,
     rpc,
@@ -2140,6 +2226,8 @@ export default function App() {
     }
     setMessageQueueBusyItemId(item.id);
     try {
+      // A queued send starts a new turn and must not inherit an older completion time.
+      rememberThreadTimestamp(threadId, undefined);
       const result = await rpc("messageQueue/send", {
         id: item.id,
         revision: item.revision,
@@ -2147,7 +2235,19 @@ export default function App() {
       });
       const turn = extractTurn(result);
       if (!turn) throw new Error("Gateway did not confirm the saved message turn");
-      if (selectedThreadIdRef.current === threadId) {
+      const completedBeforeStartResult = recentCompletedTurnsRef.current.has(
+        turnIdentity(threadId, turn.id),
+      );
+      const completedAt = normalizedCompletedAt(turn);
+      if (!completedBeforeStartResult) {
+        const startedAt = normalizedStartedAt(turn);
+        if (completedAt !== undefined || startedAt !== undefined) {
+          rememberThreadTimestamp(threadId, completedAt ?? startedAt);
+        } else {
+          rememberThreadTimestamp(threadId, undefined);
+        }
+      }
+      if (selectedThreadIdRef.current === threadId && !completedBeforeStartResult) {
         dispatch({ type: "upsertTurn", turn, threadId });
       }
       void refreshThreads();
@@ -2162,6 +2262,7 @@ export default function App() {
     loadingThread,
     refreshMessageQueue,
     refreshThreads,
+    rememberThreadTimestamp,
     resyncError,
     resyncing,
     rpc,
@@ -2359,13 +2460,21 @@ export default function App() {
       threadListMutationEpochRef.current += 1;
       pendingCanonicalThreadIdsRef.current.delete(threadId);
       invalidateSelectedThread(threadId);
+      rememberThreadTimestamp(threadId, undefined);
       removeLocalAttachmentsForThread(threadId);
       dispatch({ type: "deleteThread", threadId });
       showToast("Thread permanently deleted", "success");
     } catch (error) {
       showToast(errorMessage(error));
     }
-  }, [invalidateSelectedThread, isThreadActive, removeLocalAttachmentsForThread, rpc, showToast]);
+  }, [
+    invalidateSelectedThread,
+    isThreadActive,
+    rememberThreadTimestamp,
+    removeLocalAttachmentsForThread,
+    rpc,
+    showToast,
+  ]);
 
   const resolveRequest = useCallback((id: string | number, result: unknown) => {
     try {
@@ -2440,6 +2549,7 @@ export default function App() {
         skillsLoaded={skillsLoaded}
         skillsError={skillsError}
         skillsTruncated={projectSelection.truncated}
+        threadTimestampOverrides={threadTimestampOverrides}
         isThreadActive={isThreadActive}
         onSearch={setSearch}
         onSelect={(threadId) => void selectThread(threadId)}

@@ -47,6 +47,7 @@ export interface SidebarProps {
   skillsLoaded: boolean;
   skillsError: string | null;
   skillsTruncated: boolean;
+  threadTimestampOverrides?: ReadonlyMap<string, number>;
   isThreadActive: (threadId: string) => boolean;
   onSearch: (value: string) => void;
   onSelect: (threadId: string) => void;
@@ -220,6 +221,11 @@ export function Sidebar(props: SidebarProps) {
     : viewThreads;
   const threadGroups = groupThreadsByCwd(visibleThreads);
   const visibleSkills = filterSkillsDirectory(props.skills, normalizedSearch);
+
+  function threadTimestamp(thread: CodexThread): number | string | undefined {
+    return props.threadTimestampOverrides?.get(thread.id) ??
+      threadRecencyTimestamp(thread);
+  }
 
   function clearLongPress() {
     if (longPressRef.current?.timer) clearTimeout(longPressRef.current.timer);
@@ -781,7 +787,7 @@ export function Sidebar(props: SidebarProps) {
                           </span>
                           <span className="thread-meta" aria-hidden="true">
                             <span className={`thread-dot thread-dot--${threadStatus(thread).toLowerCase()}`} />
-                            {formatTimestamp(threadRecencyTimestamp(thread)) || thread.id.slice(0, 8)}
+                            {formatTimestamp(threadTimestamp(thread)) || thread.id.slice(0, 8)}
                           </span>
                         </button>
                         <button

@@ -2,7 +2,7 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-12
+最后审阅：2026-08-13
 
 ## 当前里程碑
 
@@ -42,6 +42,13 @@ steering 不携带策略，也不使用实验性 API。
   保留在侧边栏，直到 active 或
   archived 官方列表确认其元数据；并发列表刷新只采用最新结果，轮次完成后会主动补全
   名称、预览和时间，因此稀疏状态通知不会使条目消失或退化为 UUID。
+- 侧边栏线程时间的显示与排序分离：进行中的线程优先显示当前轮有效的
+  `turn/started.startedAt`，缺失时回退到服务端 `recencyAt`（再回退
+  `updatedAt`/`createdAt`）；当前浏览器收到有效 `turn/completed` 后临时显示该轮的
+  `completedAt`。新轮次开始、缺失生命周期时间、断线重连或线程删除时清除覆盖并回退。该覆盖
+  仅保留最近 64 个线程于当前页面会话，不调用后台 `thread/resume`；刷新页面、断线期间错过通知
+  或换设备后仍回退到服务端 recency，已连接浏览器则会接收网关广播的完成通知。列表顺序始终由
+  `recencyAt` 决定。
 - Active/Archived 双视图按精确 cwd 分组，并在每组中先显示置顶线程，再保持其他线程的
   原有顺序。统一线程动作菜单支持桌面端右键、移动端 550 毫秒长按和所有端的 `...`
   入口；重命名、置顶和取消置顶即使在线程有运行中轮次时也可使用。空闲的 Active 或
@@ -278,10 +285,10 @@ steering 不携带策略，也不使用实验性 API。
 
 ## 验证
 
-当前工作树已于 2026-08-11 使用 Node.js `v24.18.0`、npm `12.0.2` 和 Codex CLI
-`0.147.0` 执行以下验证：
+以下验证记录分别来自 2026-08-11 和 2026-08-13，使用 Node.js `v24.18.0`、npm
+`12.0.2` 和 Codex CLI `0.147.0`：
 
-- 在仓库外运行不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
+- 2026-08-11 在仓库外运行不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
   `TurnStartParams` 同时包含 `approvalPolicy`、`approvalsReviewer` 和完整 `sandboxPolicy`；
   `AskForApproval` 包含 `untrusted` 与 `on-request`，线程 start/resume/fork 响应和 settings 通知
   也提供权威 sandbox。OpenAI 官方文档把 `untrusted + read-only` 列为始终询问组合，把
@@ -291,15 +298,14 @@ steering 不携带策略，也不使用实验性 API。
   `thread/inject_items`，但 schema 没有给出足以授权未知写重放的幂等作用域、持久期和冲突语义，
   因此实现未提交前者，也未调用后者。普通文件输入此前完成的真实协议验证仍有效；没有仅为
   本轮自动化检查创建真实 turn 或持久测试 fork。
-- `npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
-- `server/rpc-policy.test.ts`、`server/server-request-policy.test.ts`、
-  `src/components/ApprovalPanel.test.tsx` 和 `src/App.test.tsx` 的 243 项测试通过，覆盖逐 turn 最终
+- 2026-08-13，`npm run typecheck`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
+- 2026-08-13，`server/rpc-policy.test.ts`、`server/server-request-policy.test.ts`、
+  `src/components/ApprovalPanel.test.tsx` 和 `src/App.test.tsx` 的定向测试通过，覆盖逐 turn 最终
   策略重建、图标决策顺序、协议允许的审批结果、细粒度权限与 MCP 响应收窄、跨会话查看和
   完成先于启动响应的竞态。完整 `NODE_ENV=test npm test` 在允许绑定回环套接字的已批准环境中
-  通过：41 个文件、696 项测试。
-- `npm run check:visual` 的桌面端与移动端生产夹具通过。它覆盖长命令、长细粒度权限与 MCP 表单、
-  整轮 diff 的紧凑无框边界、桌面分栏横向滚动与换行切换、固定决策位置、连续处理坐标，以及
-  320/390 像素长标题与 Ready 状态互不遮挡；移动端审批卡片利用可用面板高度且底部留白为
-  8 像素，连续处理前后按钮坐标 `deltaX=0`、`deltaY=0`，且没有浏览器 console 或 page error。
-- 使用 Markdown AST 解析了仓库中的 66 个 Markdown 文件，检查的 148 个相对链接和图片目标
+  通过：41 个文件、701 项测试。
+- 2026-08-13，`npm run check:visual` 已在临时生产预览上通过。桌面端和移动端的 Changes/失败
+  Command 断言、图片 containment、审批卡布局、可用高度、连续处理坐标（`deltaX=0`、`deltaY=0`）
+  均通过，且没有浏览器 console 或 page error。
+- 2026-08-11 使用 Markdown AST 解析了仓库中的 66 个 Markdown 文件，检查的 148 个相对链接和图片目标
   均存在。

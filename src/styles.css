@@ -1694,12 +1694,13 @@ pre {
 .turn-diff {
   margin: 12px 0 0;
   overflow: hidden;
-  color: #555b55;
-  background: transparent;
+  color: #43586b;
+  background: #f2f6fa;
   border: 0;
-  border-top: 1px solid var(--line-soft);
-  border-bottom: 1px solid var(--line-soft);
+  border-top: 1px solid #c8d6e2;
+  border-bottom: 1px solid #c8d6e2;
   border-radius: 0;
+  box-shadow: inset 3px 0 0 #6b8eaf;
 }
 
 .reasoning-block > .reasoning-summary,
@@ -1715,11 +1716,16 @@ pre {
 }
 
 .turn-diff[open] > summary {
-  border-bottom: 1px solid var(--line-soft);
+  background: #e8f0f7;
+  border-bottom: 1px solid #c8d6e2;
 }
 
 .turn-diff > summary > svg {
   flex: 0 0 auto;
+}
+
+.turn-diff > summary > svg:first-child {
+  color: #4f7699;
 }
 
 .turn-diff > summary .details-chevron {
@@ -1809,15 +1815,6 @@ details[open] > summary .details-chevron {
 
 .tool-activity[open] > summary {
   border-bottom: 1px solid var(--line-soft);
-}
-
-.tool-activity--failed > summary,
-.tool-activity--failed > .tool-activity-summary {
-  padding-right: 7px;
-  padding-left: 8px;
-  color: #82463d;
-  background: rgba(247, 228, 223, 0.68);
-  box-shadow: inset 3px 0 0 var(--coral);
 }
 
 .tool-activity-main,
@@ -2453,14 +2450,6 @@ details[open] > summary .details-chevron {
   cursor: pointer;
 }
 
-.activity-group--failed > .activity-group-summary {
-  padding-right: 7px;
-  padding-left: 8px;
-  color: #82463d;
-  background: rgba(247, 228, 223, 0.68);
-  box-shadow: inset 3px 0 0 var(--coral);
-}
-
 .activity-group[open] > .activity-group-summary {
   border-bottom: 1px solid var(--line-soft);
 }
@@ -2613,8 +2602,9 @@ details[open] > summary .details-chevron {
 }
 
 .turn-diff > summary {
-  padding: 7px 2px;
-  color: #555b55;
+  padding: 7px 2px 7px 8px;
+  color: #3f5d76;
+  font-weight: 700;
 }
 
 .turn-footer {

@@ -2,7 +2,7 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-08-13
 
 ## Current Milestone
 
@@ -64,6 +64,17 @@ The implementation currently provides:
   metadata. Concurrent list refreshes apply only the latest result, and turn
   completion hydrates the name, preview, and time so a sparse status notification
   cannot make the entry disappear or degrade to a UUID.
+- Sidebar display time is separate from list ordering: while a turn is running,
+  the current browser prefers a valid `turn/started.startedAt`, falling back to
+  server `recencyAt` (then `updatedAt`/`createdAt`); after a valid
+  `turn/completed`, it temporarily displays that turn's `completedAt`. A new
+  turn, missing lifecycle time, disconnect, reconnect, or deletion clears the
+  override and falls back. The override is bounded to the latest 64 threads in
+  the current page session and never invokes background `thread/resume`; after
+  reload, or when a notification was missed while disconnected or on another
+  device, it falls back to server recency. A connected browser receives the
+  gateway's broadcast completion notification. Thread ordering always remains
+  controlled by `recencyAt`.
 - Active and Archived group threads by exact cwd and place pinned threads first
   within each group while preserving the existing order of the rest. One thread
   action menu opens from desktop right-click, a 550 ms mobile long press, or the
@@ -443,10 +454,10 @@ commitment.
 
 ## Verification
 
-The following checks were run on the current worktree on 2026-08-11 with
+The following verification records come from 2026-08-11 and 2026-08-13, using
 Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
-- `codex app-server generate-ts` was run outside the repository without
+- On 2026-08-11, `codex app-server generate-ts` was run outside the repository without
   `--experimental`, confirming that stable `TurnStartParams` contains
   `approvalPolicy`, `approvalsReviewer`, and the complete `sandboxPolicy`.
   `AskForApproval` includes `untrusted` and `on-request`, while thread
@@ -462,23 +473,20 @@ Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
   submits neither. Prior live protocol validation for ordinary file input also
   remains applicable. No real turn or persistent test fork was created solely
   for this round of automated checks.
-- `npm run typecheck`, `npm run lint`, `npm run build`, and `git diff --check`
-  passed.
-- The 243 tests across `server/rpc-policy.test.ts`,
+- On 2026-08-13, `npm run typecheck`, `npm run lint`, `npm run build`, and
+  `git diff --check` passed.
+- On 2026-08-13, the focused tests across `server/rpc-policy.test.ts`,
   `server/server-request-policy.test.ts`, `src/components/ApprovalPanel.test.tsx`,
   and `src/App.test.tsx` passed. They cover final per-turn policy rebuilding,
   icon-decision order, protocol-offered approval results, narrowed granular
   permission and MCP responses, cross-session viewing, and the race where
   completion precedes the start response. A complete `NODE_ENV=test npm test`
-  run passed 41 files and 696 tests in an approved environment that permits
+  run passed 41 files and 701 tests in an approved environment that permits
   loopback binding.
-- `npm run check:visual` passed its desktop and mobile production fixtures. They
-  cover long commands, granular permission requests, and MCP forms; compact
-  unframed whole-turn diffs; desktop split-diff overflow and wrapping; stable
-  decision and repeated-click positions; and non-overlapping long titles and
-  Ready status at 320/390 pixels. Mobile approval cards use the available panel
-  height with an 8-pixel bottom gap, and button coordinates remained at
-  `deltaX=0`, `deltaY=0` across consecutive decisions, with no browser console
-  or page errors.
-- Markdown AST parsing covered all 66 Markdown files in the repository, and all
+- On 2026-08-13, `npm run check:visual` passed against a temporary production
+  preview. Desktop and mobile Changes/failed-Command assertions, image
+  containment, approval-card layout, available-height checks, and consecutive
+  decision coordinates (`deltaX=0`, `deltaY=0`) all passed, with no browser
+  console or page errors.
+- On 2026-08-11, Markdown AST parsing covered all 66 Markdown files in the repository, and all
   148 checked relative-link and image targets exist.

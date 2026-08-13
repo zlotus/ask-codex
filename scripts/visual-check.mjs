@@ -170,6 +170,16 @@ const fixtureTurns = [
         changes: [{ path: "src/client.ts", kind: { type: "update", move_path: null }, diff: filePatch }],
       },
       {
+        id: "failed-command",
+        type: "commandExecution",
+        status: "failed",
+        command: "npm run unavailable-check",
+        aggregatedOutput: "Visual fixture command failed as expected.",
+        cwd: "/workspace/ask-codex",
+        exitCode: 1,
+        durationMs: 120,
+      },
+      {
         id: "collab-agent",
         type: "collabAgentToolCall",
         tool: "spawnAgent",
@@ -645,6 +655,20 @@ async function inspectRichLayout(page) {
     const commandIcon = commandHeader?.querySelector(".tool-activity-icon-copy > svg");
     const commandLabel = commandHeader?.querySelector(".tool-activity-title > strong");
     const commandSummary = commandHeader?.querySelector(".command-summary");
+    const failedActivitySummaries = [...document.querySelectorAll(
+      ".tool-activity--failed > summary, .tool-activity--failed > .tool-activity-summary, " +
+      ".activity-group--failed > .activity-group-summary",
+    )];
+    const failedActivityAccentBars = failedActivitySummaries.filter((summary) => (
+      window.getComputedStyle(summary).boxShadow !== "none"
+    )).length;
+    const failedActivityBackgrounds = failedActivitySummaries.filter((summary) => (
+      window.getComputedStyle(summary).backgroundColor !== "rgba(0, 0, 0, 0)"
+    )).length;
+    const failedActivityStatusPills = failedActivitySummaries.filter((summary) => (
+      summary.querySelector(":scope > .tool-activity-state > .status-pill--failed, " +
+        ":scope > .activity-group-state > .status-pill--failed")
+    )).length;
     return {
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       clipped,
@@ -675,6 +699,10 @@ async function inspectRichLayout(page) {
           ? commandSummary.scrollWidth > commandSummary.clientWidth
           : false,
       },
+      failedActivitySummaries: failedActivitySummaries.length,
+      failedActivityAccentBars,
+      failedActivityBackgrounds,
+      failedActivityStatusPills,
       reasonBlocks: document.querySelectorAll(".tool-reasons").length,
       scrollingToolOutputs: [...document.querySelectorAll(".tool-activity .code-block-content")]
         .filter((element) => element.scrollHeight > element.clientHeight).length,
@@ -710,9 +738,11 @@ async function inspectTurnDiffLayout(page, screenshotPath) {
     const body = element.querySelector(":scope > .diff-viewer, :scope > .diff-raw-fallback");
     const bodyBox = body?.getBoundingClientRect();
     const bodyStyle = body ? window.getComputedStyle(body) : null;
+    const summaryStyle = summary ? window.getComputedStyle(summary) : null;
     const chevronBox = summary?.querySelector(".details-chevron")?.getBoundingClientRect();
     return {
-      backgroundTransparent: style.backgroundColor === "rgba(0, 0, 0, 0)",
+      backgroundColor: style.backgroundColor,
+      accentBar: style.boxShadow.includes("107, 142, 175"),
       sideBordersRemoved: Number.parseFloat(style.borderLeftWidth) === 0 &&
         Number.parseFloat(style.borderRightWidth) === 0,
       topBottomDividers: Number.parseFloat(style.borderTopWidth) === 1 &&
@@ -720,6 +750,8 @@ async function inspectTurnDiffLayout(page, screenshotPath) {
       squareChrome: Number.parseFloat(style.borderRadius) === 0,
       compactOuterSpacing: Number.parseFloat(style.marginTop) + Number.parseFloat(style.marginBottom) <= 12,
       summaryHeight: summaryBox?.height ?? 0,
+      summaryColor: summaryStyle?.color ?? "",
+      summaryFontWeight: summaryStyle?.fontWeight ?? "",
       chevronRightGap: chevronBox ? box.right - chevronBox.right : Number.POSITIVE_INFINITY,
       bodyEdgeAligned: Boolean(bodyBox) && Math.abs((bodyBox?.left ?? 0) - box.left) <= 1 &&
         Math.abs((bodyBox?.right ?? 0) - box.right) <= 1,
@@ -766,7 +798,8 @@ async function inspectTurnDiffLayout(page, screenshotPath) {
 
 function turnDiffChromeInvalid(inspection) {
   const chrome = inspection.chrome;
-  return !chrome.backgroundTransparent ||
+  return chrome.backgroundColor !== "rgb(242, 246, 250)" ||
+    !chrome.accentBar ||
     !chrome.sideBordersRemoved ||
     !chrome.topBottomDividers ||
     !chrome.squareChrome ||
@@ -774,6 +807,8 @@ function turnDiffChromeInvalid(inspection) {
     chrome.summaryHeight < 37 ||
     chrome.summaryHeight > 40 ||
     chrome.chevronRightGap > 5 ||
+    chrome.summaryColor !== "rgb(63, 93, 118)" ||
+    chrome.summaryFontWeight !== "700" ||
     !chrome.bodyEdgeAligned ||
     !chrome.bodyUnframed;
 }
@@ -2501,6 +2536,10 @@ try {
     desktopRich.commandHeaderLayout.iconWidth < 14.5 ||
     desktopRich.commandHeaderLayout.labelClipped ||
     !desktopRich.commandHeaderLayout.summaryTruncated ||
+    desktopRich.failedActivitySummaries !== 2 ||
+    desktopRich.failedActivityAccentBars !== 0 ||
+    desktopRich.failedActivityBackgrounds !== 0 ||
+    desktopRich.failedActivityStatusPills !== desktopRich.failedActivitySummaries ||
     desktopRich.reasonBlocks === 0 ||
     desktopRich.scrollingToolOutputs === 0 ||
     desktopRich.toolOutputTruncations === 0 ||
@@ -2577,6 +2616,10 @@ try {
     mobileRich.commandHeaderLayout.iconWidth < 14.5 ||
     mobileRich.commandHeaderLayout.labelClipped ||
     !mobileRich.commandHeaderLayout.summaryTruncated ||
+    mobileRich.failedActivitySummaries !== 2 ||
+    mobileRich.failedActivityAccentBars !== 0 ||
+    mobileRich.failedActivityBackgrounds !== 0 ||
+    mobileRich.failedActivityStatusPills !== mobileRich.failedActivitySummaries ||
     mobileRich.scrollingToolOutputs === 0 ||
     mobileRich.toolOutputTruncations === 0 ||
     mobileRich.turnFooters < 2 ||
