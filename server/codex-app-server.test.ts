@@ -399,6 +399,108 @@ describe("CodexAppServer", () => {
     client.close();
   });
 
+  it("accepts stdout lines larger than the former production guard", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const output = captureJsonLines(fakeProcess.stdin);
+    const client = new CodexAppServer({ spawnCodex: () => fakeProcess });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/unbounded" } });
+    await starting;
+
+    const request = client.request("model/list", {});
+    await vi.waitFor(() => expect(output).toHaveLength(3));
+    fakeProcess.send({
+      id: 2,
+      result: { data: ["x".repeat(8 * 1024 * 1024 + 1)] },
+    });
+
+    await expect(request).resolves.toMatchObject({
+      data: [expect.stringMatching(/^x+$/)],
+    });
+    expect(client.status).toBe("ready");
+    expect(fakeProcess.killed).toBe(false);
+    client.close();
+  });
+
+  it("reports large stdout line composition without retaining its content", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const diagnostics: unknown[] = [];
+    const client = new CodexAppServer({
+      spawnCodex: () => fakeProcess,
+      stdoutDiagnosticThresholdBytes: 128,
+      onStdoutLineDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/diagnostic" } });
+    await starting;
+    const request = client.request("model/list", {});
+    await vi.waitFor(() => expect(diagnostics).toHaveLength(0));
+    fakeProcess.send({
+      id: 2,
+      result: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "item-1",
+          type: "commandExecution",
+          aggregatedOutput: "x".repeat(512),
+        },
+      },
+    });
+
+    await expect(request).resolves.toMatchObject({ threadId: "thread-1" });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      direction: "response",
+      method: "model/list",
+      byteLength: expect.any(Number),
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+      itemType: "commandExecution",
+      largestString: expect.objectContaining({
+        path: "$.result.item.aggregatedOutput",
+        characters: 512,
+        category: "commandOutput",
+      }),
+      hasImageData: false,
+      hasBase64Data: false,
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("x".repeat(100));
+    client.close();
+  });
+
+  it("uses the bounded request context when a large RPC result omits identifiers", async () => {
+    const fakeProcess = new FakeCodexProcess();
+    const diagnostics: unknown[] = [];
+    const client = new CodexAppServer({
+      spawnCodex: () => fakeProcess,
+      stdoutDiagnosticThresholdBytes: 128,
+      onStdoutLineDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const starting = client.start();
+    fakeProcess.send({ id: 1, result: { userAgent: "codex-cli/context" } });
+    await starting;
+    const request = client.request("thread/turns/list", {
+      threadId: "thread-context",
+      limit: 16,
+      sortDirection: "desc",
+    });
+    await vi.waitFor(() => expect(diagnostics).toHaveLength(0));
+    fakeProcess.send({ id: 2, result: { data: ["x".repeat(512)] } });
+
+    await expect(request).resolves.toMatchObject({ data: [expect.stringMatching(/^x+$/)] });
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      method: "thread/turns/list",
+      threadId: "thread-context",
+    });
+    client.close();
+  });
+
   it("parses highly fragmented stdout lines without repeated concatenation", async () => {
     const fakeProcess = new FakeCodexProcess();
     const output = captureJsonLines(fakeProcess.stdin);

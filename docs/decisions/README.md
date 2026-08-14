@@ -29,6 +29,7 @@
 | [0023](0023-per-turn-manual-and-auto-execution-environments.md) | 由 0024 取代 | 每个直接 turn 由网关独立固定手动或自动审批与 sandbox 组合。 |
 | [0024](0024-codex-aligned-manual-and-one-turn-auto.md) | 已接受 | 默认手动模式对齐 Codex 常规权限，一次性自动模式广泛放行并保留必要的人工确认。 |
 | [0025](0025-prioritize-chrome-less-mobile-launch-over-pwa-installation.md) | 已接受 | 移动端优先保留无地址栏启动，暂不发布 PWA Manifest。 |
+| [0026](0026-unbounded-app-server-jsonl-and-bounded-browser-projection.md) | 已接受 | app-server stdout JSONL 不设固定行上限，浏览器消息继续有界投影。 |
 
 英文索引见 [README.en.md](README.en.md)。
 

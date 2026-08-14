@@ -2,7 +2,7 @@
 
 [简体中文](progress.md) | **English**
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 ## Current Milestone
 
@@ -27,6 +27,14 @@ user. Completion or a failed start restores manual mode. Changing modes no
 longer first mutates the sandbox through `thread/resume`. Creation, resume, and
 fork remain fixed to `on-request`; queue sends explicitly materialize manual,
 steering carries no policy, and no experimental API is used.
+Under ADR 0026, app-server stdout now accepts any valid JSONL line by default
+instead of terminating the shared child at the former 8 MiB wrapper limit.
+Lines above 1 MiB produce structure-only diagnostics with no body content. The
+browser WebSocket retains its 1 MiB message budget; oversized command and turn
+completion, history, and `turn/start` results are reduced before sanitization
+and serialization to bounded summaries or turn shells while preserving
+completion state, streamed content, omission metadata, and Plan-unavailable
+semantics.
 
 ## Current Baseline
 
@@ -454,8 +462,8 @@ commitment.
 
 ## Verification
 
-The following verification records come from 2026-08-11 and 2026-08-13, using
-Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
+The following verification records come from 2026-08-11, 2026-08-13, and
+2026-08-14, using Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
 
 - On 2026-08-11, `codex app-server generate-ts` was run outside the repository without
   `--experimental`, confirming that stable `TurnStartParams` contains
@@ -488,5 +496,26 @@ Node.js `v24.18.0`, npm `12.0.2`, and Codex CLI `0.147.0`:
   containment, approval-card layout, available-height checks, and consecutive
   decision coordinates (`deltaX=0`, `deltaY=0`) all passed, with no browser
   console or page errors.
+- On 2026-08-14, current bindings were regenerated outside the repository with
+  `codex app-server generate-ts --experimental`, confirming that stdio carries
+  one JSON-RPC message per JSONL line and complete `ThreadItem`
+  `commandExecution.aggregatedOutput` can travel with a `Turn` in completion
+  notifications, `turn/start`, and history results. Official OpenAI app-server
+  documentation specifies no 8 MiB line limit. `npm run typecheck`,
+  `npm run lint`, `npm run build`, and `git diff --check` passed; a complete
+  `NODE_ENV=test npm test` run passed 41 files and 709 tests. One full-suite run
+  executed concurrently with typecheck and lint hit a pre-existing Skills
+  asynchronous call-count timing failure; the focused test passed on rerun and
+  the complete suite then passed when rerun alone. The public `4444` service was
+  neither restarted nor modified.
+- On 2026-08-14, live diagnostics from the still-running `4444` service recorded
+  `thread/turns/list` responses of `1,121,360` and `1,511,553` bytes and a
+  `thread/resume` response of `1,578,787` bytes. In each, the largest string was
+  `$.result.data[6].items[5].result.content[0].text` at `291,861` UTF-8 bytes,
+  with no image or base64 marker. The matching thread rollout contains a
+  `mcp_tool_call_end` result of `291,667` characters: an OpenAI Docs MCP JSON
+  document that history reads wrapped again. This explains the post-refresh
+  summary and confirms the payload was not the Sol-5.6 256K model context or an
+  image transfer.
 - On 2026-08-11, Markdown AST parsing covered all 66 Markdown files in the repository, and all
   148 checked relative-link and image targets exist.

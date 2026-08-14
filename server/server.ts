@@ -98,7 +98,81 @@ const WS_AUTH_TIMEOUT_MS = 5_000;
 const MAX_RESYNC_METHOD_CHARACTERS = 128;
 const MAX_RESYNC_ID_CHARACTERS = 256;
 const MAX_THREAD_SANDBOX_AUTHORITIES = 4_096;
+const MAX_OVERSIZED_NOTIFICATION_TEXT_CHARACTERS = 20_000;
+const MAX_OVERSIZED_NOTIFICATION_ERROR_CHARACTERS = 2_000;
+const MAX_NOTIFICATION_SIZE_SCAN_NODES = 100_000;
+const NOTIFICATION_SIZE_MARGIN_BYTES = 16 * 1024;
+const MAX_COMPACT_RPC_TURNS = 16;
+const MAX_COMPACT_RPC_PAGE_TURNS = 100;
+const MAX_COMPACT_RPC_ITEMS = 16;
+const MAX_COMPACT_RPC_TEXT_CHARACTERS = 1_024;
+const MAX_COMPACT_RPC_CURSOR_CHARACTERS = 4_096;
+
+function logLargeStdoutLine(diagnostic: {
+  byteLength: number;
+  direction: string;
+  method?: string;
+  id?: string | number;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  itemType?: string;
+  largestString?: {
+    path: string;
+    characters: number;
+    utf8Bytes: number;
+    category: string;
+  };
+  topLevelStringBytes: Array<{ field: string; utf8Bytes: number }>;
+  hasImageData: boolean;
+  hasBase64Data: boolean;
+  scannedNodes: number;
+  scanTruncated: boolean;
+  parseError?: boolean;
+}): void {
+  // Deliberately log metadata only; command/MCP contents and credentials stay out of logs.
+  console.error(`[ask-codex] large app-server stdout JSONL line ${JSON.stringify(diagnostic)}`);
+}
+
+function logOversizedServerMessage(message: ServerMessage, byteLength: number, estimated = false): void {
+  const params = message.type === "notification" || message.type === "request"
+    ? message.params
+    : undefined;
+  const record = isRecord(params) ? params : {};
+  const item = isRecord(record.item) ? record.item : {};
+  const turn = isRecord(record.turn) ? record.turn : {};
+  const id = message.type === "request" ? message.id : undefined;
+  const metadata = {
+    byteLength,
+    ...(estimated ? { estimated: true } : {}),
+    messageType: message.type,
+    ...(message.type === "notification" || message.type === "request"
+      ? { method: message.method.slice(0, MAX_RESYNC_METHOD_CHARACTERS) }
+      : {}),
+    ...(id === undefined ? {} : { id }),
+    ...(typeof record.threadId === "string" ? { threadId: record.threadId.slice(0, MAX_RESYNC_ID_CHARACTERS) } : {}),
+    ...(typeof record.turnId === "string"
+      ? { turnId: record.turnId.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+      : typeof turn.id === "string"
+        ? { turnId: turn.id.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+        : {}),
+    ...(typeof record.itemId === "string"
+      ? { itemId: record.itemId.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+      : typeof item.id === "string"
+        ? { itemId: item.id.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+        : {}),
+    ...(typeof item.type === "string" ? { itemType: item.type.slice(0, 128) } : {}),
+  };
+  console.error(`[ask-codex] oversized browser message ${JSON.stringify(metadata)}`);
+}
 export { ALLOWED_BROWSER_RPC_METHODS } from "./rpc-policy.js";
+
+class OversizedCodexResultError extends Error {
+  constructor(readonly method: string) {
+    super("Codex response exceeded the 1 MiB gateway message limit");
+    this.name = "OversizedCodexResultError";
+  }
+}
 
 export interface AskCodexConfig {
   host: string;
@@ -511,6 +585,670 @@ function resyncRequiredNotification(
   };
 }
 
+function boundedOversizedNotificationText(value: unknown, maximum: number): string | undefined {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, maximum)
+    : undefined;
+}
+
+function boundedOversizedNotificationNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
+}
+
+function boundedOversizedNotificationBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function boundedOversizedNotificationOmissions(
+  value: unknown,
+): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const output: Record<string, number> = {};
+  for (const [key, count] of Object.entries(value).slice(0, 32)) {
+    if (
+      key.length <= 128 &&
+      Number.isSafeInteger(count) &&
+      (count as number) >= 0
+    ) {
+      output[key] = count as number;
+    }
+  }
+  return output;
+}
+
+function omittedCountForValue(value: unknown): number {
+  if (typeof value === "string") return Math.min(Number.MAX_SAFE_INTEGER, value.length);
+  if (Array.isArray(value)) return value.length;
+  return value === undefined ? 0 : 1;
+}
+
+function addOversizedNotificationOmission(
+  omissions: Record<string, number>,
+  key: string,
+  value: unknown,
+): void {
+  if (typeof value !== "string" || value.length <= MAX_OVERSIZED_NOTIFICATION_TEXT_CHARACTERS) {
+    return;
+  }
+  omissions[key] = Math.min(Number.MAX_SAFE_INTEGER, value.length);
+}
+
+function copyOversizedNotificationString(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  key: string,
+  omissions: Record<string, number>,
+): void {
+  const value = source[key];
+  if (typeof value !== "string") return;
+  if (value.length > MAX_OVERSIZED_NOTIFICATION_TEXT_CHARACTERS) {
+    addOversizedNotificationOmission(omissions, key, value);
+    return;
+  }
+  target[key] = value;
+}
+
+function compactOversizedItem(
+  method: string,
+  params: Record<string, unknown>,
+): ServerMessage | null {
+  const source = isRecord(params.item) ? params.item : params;
+  const id = typeof source.id === "string"
+    ? source.id
+    : typeof params.itemId === "string" ? params.itemId : undefined;
+  const type = typeof source.type === "string" ? source.type : undefined;
+  if (!id || !type) return null;
+
+  const item: Record<string, unknown> = {
+    id: id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+    type: type.slice(0, 128),
+    status: typeof source.status === "string"
+      ? source.status.slice(0, 128)
+      : method === "item/completed" ? "completed" : "inProgress",
+  };
+  const omissions = boundedOversizedNotificationOmissions(source.streamOmittedCharacters);
+
+  // Keep identifiers and small display metadata, but never replace already streamed
+  // content with a short suffix/prefix from a compact completion payload.
+  for (const key of [
+    "command",
+    "cwd",
+    "processId",
+    "source",
+    "server",
+    "serverName",
+    "tool",
+    "toolName",
+    "namespace",
+    "query",
+    "name",
+    "phase",
+  ] as const) {
+    copyOversizedNotificationString(item, source, key, omissions);
+  }
+  for (const key of ["exitCode", "durationMs"] as const) {
+    const value = boundedOversizedNotificationNumber(source[key]);
+    if (value !== undefined) item[key] = value;
+  }
+  for (const key of ["success", "readOnlyHint"] as const) {
+    const value = boundedOversizedNotificationBoolean(source[key]);
+    if (value !== undefined) item[key] = value;
+  }
+
+  for (const key of [
+    "aggregatedOutput",
+    "output",
+    "text",
+    "summaryText",
+    "contentText",
+    "prompt",
+    "arguments",
+    "result",
+    "error",
+    "summary",
+    "content",
+    "commandActions",
+    "contentItems",
+    "agentsStates",
+  ] as const) {
+    const value = source[key];
+    if (typeof value === "string") {
+      if (value.length <= MAX_OVERSIZED_NOTIFICATION_TEXT_CHARACTERS) item[key] = value;
+      else addOversizedNotificationOmission(omissions, key, value);
+    } else if (Array.isArray(value) && value.length > 0) {
+      // The exact JSON size is intentionally not retained in browser state; a
+      // positive count tells the UI that this field was omitted from the lifecycle
+      // projection while preserving the streamed prefix, when one exists.
+      omissions[key] = omittedCountForValue(value);
+    } else if (value !== undefined && isRecord(value)) {
+      omissions[key] = omittedCountForValue(value);
+    }
+  }
+  const fileDownloads = Array.isArray(source.askCodexFileDownloads)
+    ? source.askCodexFileDownloads
+        .slice(0, 32)
+        .flatMap((entry) => {
+          if (!isRecord(entry)) return [];
+          const href = typeof entry.href === "string" ? entry.href.slice(0, 4_096) : undefined;
+          const capabilityId = typeof entry.capabilityId === "string"
+            ? entry.capabilityId.slice(0, 128)
+            : undefined;
+          return href && capabilityId ? [{ href, capabilityId }] : [];
+        })
+    : [];
+  if (fileDownloads.length > 0) item.askCodexFileDownloads = fileDownloads;
+  if (Object.keys(omissions).length > 0) item.streamOmittedCharacters = omissions;
+
+  const output: Record<string, unknown> = {
+    ...(typeof params.threadId === "string" ? { threadId: params.threadId.slice(0, MAX_RESYNC_ID_CHARACTERS) } : {}),
+    ...(typeof params.turnId === "string" ? { turnId: params.turnId.slice(0, MAX_RESYNC_ID_CHARACTERS) } : {}),
+    ...(typeof params.startedAtMs === "number" && Number.isSafeInteger(params.startedAtMs)
+      ? { startedAtMs: params.startedAtMs }
+      : {}),
+    ...(typeof params.completedAtMs === "number" && Number.isSafeInteger(params.completedAtMs)
+      ? { completedAtMs: params.completedAtMs }
+      : {}),
+    item,
+  };
+  return { type: "notification", method, params: output };
+}
+
+function oversizedItemNotification(
+  method: string,
+  params: Record<string, unknown>,
+): ServerMessage | null {
+  return compactOversizedItem(method, params);
+}
+
+function oversizedTurnNotification(
+  method: string,
+  params: Record<string, unknown>,
+): ServerMessage | null {
+  const source = isRecord(params.turn) ? params.turn : params;
+  const id = typeof source.id === "string"
+    ? source.id
+    : typeof params.turnId === "string" ? params.turnId : undefined;
+  if (!id) return null;
+  const status = typeof source.status === "string"
+    ? source.status.slice(0, 128)
+    : typeof params.status === "string"
+      ? params.status.slice(0, 128)
+      : method === "turn/completed" ? "completed" : "inProgress";
+  const turn: Record<string, unknown> = {
+    id: id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+    status,
+    items: [],
+    itemsView: "notLoaded",
+  };
+  for (const key of ["startedAt", "completedAt", "durationMs"] as const) {
+    const value = boundedOversizedNotificationNumber(source[key]);
+    if (value !== undefined) turn[key] = value;
+  }
+  const error = boundedOversizedNotificationText(source.error, MAX_OVERSIZED_NOTIFICATION_ERROR_CHARACTERS);
+  if (error !== undefined) turn.error = error;
+  return {
+    type: "notification",
+    method,
+    params: {
+      ...(typeof params.threadId === "string" ? { threadId: params.threadId.slice(0, MAX_RESYNC_ID_CHARACTERS) } : {}),
+      turnId: id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+      turn,
+    },
+  };
+}
+
+function recoverableOversizedNotification(
+  message: Extract<ServerMessage, { type: "notification" }>,
+): ServerMessage | null {
+  if (!isRecord(message.params)) return null;
+  if (message.method === "turn/started" || message.method === "turn/completed") {
+    return oversizedTurnNotification(message.method, message.params);
+  }
+  if (message.method === "item/started" || message.method === "item/completed") {
+    return oversizedItemNotification(message.method, message.params);
+  }
+  return null;
+}
+
+interface SizeScanState {
+  nodes: number;
+  active: Set<object>;
+}
+
+function estimatedJsonStringBytes(value: string, limit: number): number {
+  let total = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (
+      codeUnit === 0x22 ||
+      codeUnit === 0x5c ||
+      codeUnit === 0x08 ||
+      codeUnit === 0x09 ||
+      codeUnit === 0x0a ||
+      codeUnit === 0x0c ||
+      codeUnit === 0x0d
+    ) {
+      total += 2;
+    } else if (codeUnit <= 0x1f) {
+      total += 6;
+    } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        total += 4;
+        index += 1;
+      } else {
+        total += 6;
+      }
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      total += 6;
+    } else if (codeUnit <= 0x7f) {
+      total += 1;
+    } else if (codeUnit <= 0x7ff) {
+      total += 2;
+    } else {
+      total += 3;
+    }
+    if (total > limit) return limit + 1;
+  }
+  return total;
+}
+
+function estimatedJsonBytes(
+  value: unknown,
+  limit: number,
+  state: SizeScanState = { nodes: 0, active: new Set() },
+): number {
+  if (limit < 0 || state.nodes >= MAX_NOTIFICATION_SIZE_SCAN_NODES) return limit + 1;
+  state.nodes += 1;
+  if (value === null) return 4;
+  if (typeof value === "string") return estimatedJsonStringBytes(value, limit);
+  if (typeof value === "number") return Number.isFinite(value) ? 24 : 4;
+  if (typeof value === "boolean") return 5;
+  if (typeof value !== "object") return 4;
+  if (state.active.has(value)) return limit + 1;
+  state.active.add(value);
+  let total = Array.isArray(value) ? 2 : 2;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) total += 1;
+      const child = estimatedJsonBytes(value[index], limit - total, state);
+      total += child;
+      if (total > limit) break;
+    }
+  } else {
+    let index = 0;
+    for (const [key, childValue] of Object.entries(value)) {
+      if (index > 0) total += 1;
+      total += estimatedJsonStringBytes(key, limit - total) + 1;
+      if (total > limit) break;
+      total += estimatedJsonBytes(childValue, limit - total, state);
+      index += 1;
+      if (total > limit) break;
+    }
+  }
+  state.active.delete(value);
+  return total;
+}
+
+function notificationMayExceedGatewayLimit(
+  method: string,
+  params: unknown,
+  emittedAtMs: number | undefined,
+  gatewayReceivedAtMs: number,
+): boolean {
+  const limit = MAX_SERVER_MESSAGE_BYTES - NOTIFICATION_SIZE_MARGIN_BYTES;
+  return estimatedJsonBytes({
+    type: "notification",
+    method,
+    params,
+    ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+    gatewayReceivedAtMs,
+  }, limit) > limit;
+}
+
+function boundedRpcProjectionString(value: unknown, maximum = MAX_COMPACT_RPC_TEXT_CHARACTERS): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value.slice(0, maximum) : undefined;
+}
+
+function boundedRpcProjectionInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
+}
+
+function compactTurnError(value: unknown): unknown {
+  if (typeof value === "string") {
+    return boundedRpcProjectionString(value, MAX_OVERSIZED_NOTIFICATION_ERROR_CHARACTERS);
+  }
+  if (!isRecord(value)) return undefined;
+  const message = boundedRpcProjectionString(
+    value.message,
+    MAX_OVERSIZED_NOTIFICATION_ERROR_CHARACTERS,
+  );
+  return message === undefined ? undefined : { message };
+}
+
+function compactRpcItem(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.type !== "string") {
+    return null;
+  }
+  const item: Record<string, unknown> = {
+    id: value.id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+    type: value.type.slice(0, 128),
+  };
+  for (const key of ["status", "command", "cwd", "processId", "source", "server", "tool", "namespace"] as const) {
+    const projected = boundedRpcProjectionString(value[key]);
+    if (projected !== undefined) item[key] = projected;
+  }
+  for (const key of ["exitCode", "durationMs"] as const) {
+    const projected = boundedRpcProjectionInteger(value[key]);
+    if (projected !== undefined) item[key] = projected;
+  }
+  for (const key of ["success", "readOnlyHint"] as const) {
+    if (typeof value[key] === "boolean") item[key] = value[key];
+  }
+
+  const omissions = boundedOversizedNotificationOmissions(value.streamOmittedCharacters);
+  const largeFields = [
+    "aggregatedOutput",
+    "output",
+    "text",
+    "summary",
+    "content",
+    "arguments",
+    "result",
+    "error",
+    "commandActions",
+    "contentItems",
+    "agentsStates",
+  ] as const;
+  for (const key of largeFields) {
+    const source = value[key];
+    if (typeof source === "string") {
+      // Command output is already streamed separately. Never duplicate it in a
+      // compact history response; keep only an omission count.
+      if (key !== "aggregatedOutput" && key !== "output") {
+        const projected = boundedRpcProjectionString(source);
+        if (projected !== undefined) item[key] = projected;
+      }
+      if (source.length > MAX_COMPACT_RPC_TEXT_CHARACTERS || key === "aggregatedOutput" || key === "output") {
+        omissions[key] = Math.max(
+          omissions[key] ?? 0,
+          key === "aggregatedOutput" || key === "output"
+            ? source.length
+            : source.length - MAX_COMPACT_RPC_TEXT_CHARACTERS,
+        );
+      }
+    } else if (Array.isArray(source)) {
+      const projected = source
+        .slice(0, 16)
+        .flatMap((entry) => typeof entry === "string" ? [entry.slice(0, MAX_COMPACT_RPC_TEXT_CHARACTERS)] : []);
+      if (projected.length > 0) item[key] = projected;
+      if (source.length > projected.length) {
+        omissions[key] = Math.max(omissions[key] ?? 0, source.length - projected.length);
+      }
+    } else if (source !== undefined) {
+      omissions[key] = Math.max(omissions[key] ?? 0, omittedCountForValue(source));
+    }
+  }
+  if (Object.keys(omissions).length > 0) item.streamOmittedCharacters = omissions;
+  return item;
+}
+
+function compactRpcTurn(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const items = Array.isArray(value.items)
+    ? value.items.slice(0, MAX_COMPACT_RPC_ITEMS).flatMap((entry) => {
+        const item = compactRpcItem(entry);
+        return item ? [item] : [];
+      })
+    : [];
+  const turn: Record<string, unknown> = {
+    id: value.id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+    items,
+    itemsView: "summary",
+    status: typeof value.status === "string" ? value.status.slice(0, 128) : "inProgress",
+  };
+  for (const key of ["startedAt", "completedAt", "durationMs"] as const) {
+    const projected = boundedRpcProjectionInteger(value[key]);
+    if (projected !== undefined) turn[key] = projected;
+  }
+  const error = compactTurnError(value.error);
+  if (error !== undefined) turn.error = error;
+  if (Array.isArray(value.items) && value.items.length > items.length) {
+    turn.streamOmittedItems = value.items.length - items.length;
+  }
+  return turn;
+}
+
+function compactRpcTurnShell(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const turn: Record<string, unknown> = {
+    id: value.id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+    items: [],
+    itemsView: "summary",
+    status: typeof value.status === "string" ? value.status.slice(0, 128) : "inProgress",
+  };
+  for (const key of ["startedAt", "completedAt", "durationMs"] as const) {
+    const projected = boundedRpcProjectionInteger(value[key]);
+    if (projected !== undefined) turn[key] = projected;
+  }
+  const error = compactTurnError(value.error);
+  if (error !== undefined) turn.error = error;
+  if (Array.isArray(value.items) && value.items.length > 0) {
+    turn.streamOmittedItems = value.items.length;
+  }
+  return turn;
+}
+
+function compactRpcThreadMetadata(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  const thread: Record<string, unknown> = {
+    id: value.id.slice(0, MAX_RESYNC_ID_CHARACTERS),
+  };
+  for (const key of [
+    "cwd",
+    "name",
+    "preview",
+    "model",
+    "modelProvider",
+    "historyMode",
+    "source",
+    "cliVersion",
+    "status",
+  ] as const) {
+    const projected = boundedRpcProjectionString(value[key], key === "preview" ? 10_000 : MAX_COMPACT_RPC_TEXT_CHARACTERS);
+    if (projected !== undefined) thread[key] = projected;
+  }
+  for (const key of ["createdAt", "updatedAt", "recencyAt"] as const) {
+    const projected = boundedRpcProjectionInteger(value[key]);
+    if (projected !== undefined) thread[key] = projected;
+  }
+  for (const key of ["isPinned", "ephemeral", "canAcceptDirectInput"] as const) {
+    if (typeof value[key] === "boolean") thread[key] = value[key];
+  }
+  if (isRecord(value.status) && typeof value.status.type === "string") {
+    thread.status = {
+      type: value.status.type.slice(0, 128),
+      ...(Array.isArray(value.status.activeFlags)
+        ? {
+            activeFlags: value.status.activeFlags
+              .slice(0, 32)
+              .flatMap((entry) => typeof entry === "string" ? [entry.slice(0, 128)] : []),
+          }
+        : {}),
+    };
+  }
+  return thread;
+}
+
+function compactRpcThread(value: unknown): Record<string, unknown> | null {
+  const thread = compactRpcThreadMetadata(value);
+  if (!thread || !isRecord(value)) return thread;
+  if (Array.isArray(value.turns)) {
+    thread.turns = value.turns.slice(-MAX_COMPACT_RPC_TURNS).flatMap((entry) => {
+      const turn = compactRpcTurn(entry);
+      return turn ? [turn] : [];
+    });
+    if (value.turns.length > MAX_COMPACT_RPC_TURNS) {
+      thread.turnsOmitted = value.turns.length - MAX_COMPACT_RPC_TURNS;
+    }
+  }
+  return thread;
+}
+
+function compactRpcThreadShell(value: unknown): Record<string, unknown> | null {
+  const thread = compactRpcThreadMetadata(value);
+  if (!thread) return null;
+  if (!isRecord(value) || !Array.isArray(value.turns)) return thread;
+  thread.turns = value.turns.slice(-MAX_COMPACT_RPC_TURNS).flatMap((entry) => {
+    const turn = compactRpcTurnShell(entry);
+    return turn ? [turn] : [];
+  });
+  return thread;
+}
+
+function compactRpcTurnsPage(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || !Array.isArray(value.data)) return null;
+  if (value.data.length > MAX_COMPACT_RPC_PAGE_TURNS) return null;
+  if (value.data.length > MAX_COMPACT_RPC_TURNS) return compactRpcTurnsPageShell(value);
+  const data = value.data.slice(0, MAX_COMPACT_RPC_TURNS).flatMap((entry) => {
+    const turn = compactRpcTurn(entry);
+    return turn ? [turn] : [];
+  });
+  return {
+    data,
+    nextCursor: boundedRpcProjectionString(value.nextCursor, MAX_COMPACT_RPC_CURSOR_CHARACTERS) ?? null,
+    backwardsCursor: boundedRpcProjectionString(value.backwardsCursor, MAX_COMPACT_RPC_CURSOR_CHARACTERS) ?? null,
+  };
+}
+
+function compactRpcTurnsPageShell(value: unknown): Record<string, unknown> | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.data) ||
+    value.data.length > MAX_COMPACT_RPC_PAGE_TURNS
+  ) {
+    return null;
+  }
+  return {
+    data: value.data.flatMap((entry) => {
+      const turn = compactRpcTurnShell(entry);
+      return turn ? [turn] : [];
+    }),
+    nextCursor: boundedRpcProjectionString(value.nextCursor, MAX_COMPACT_RPC_CURSOR_CHARACTERS) ?? null,
+    backwardsCursor: boundedRpcProjectionString(value.backwardsCursor, MAX_COMPACT_RPC_CURSOR_CHARACTERS) ?? null,
+  };
+}
+
+function compactOversizedRpcResult(
+  method: string,
+  result: unknown,
+): unknown | null {
+  if (!isRecord(result)) return null;
+  if (method === "thread/read" || method === "thread/resume") {
+    const thread = compactRpcThread(result.thread);
+    if (!thread) return null;
+    const output: Record<string, unknown> = { thread };
+    for (const key of [
+      "model",
+      "modelProvider",
+      "serviceTier",
+      "cwd",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "reasoningEffort",
+    ] as const) {
+      const projected = boundedRpcProjectionString(result[key]);
+      if (projected !== undefined) output[key] = projected;
+    }
+    if (isRecord(result.sandbox) && typeof result.sandbox.type === "string") {
+      output.sandbox = { type: result.sandbox.type.slice(0, 128) };
+    }
+    const initialTurnsPage = compactRpcTurnsPage(result.initialTurnsPage);
+    if (initialTurnsPage) output.initialTurnsPage = initialTurnsPage;
+    for (const key of ["turnsBackwardsCursor", "itemsBackwardsCursor"] as const) {
+      const projected = boundedRpcProjectionString(result[key], MAX_COMPACT_RPC_CURSOR_CHARACTERS);
+      if (projected !== undefined) output[key] = projected;
+    }
+    return output;
+  }
+  if (method === "thread/turns/list") return compactRpcTurnsPage(result);
+  if (method === "turn/start") {
+    const turn = compactRpcTurn(result.turn);
+    return turn ? { turn } : null;
+  }
+  return null;
+}
+
+function compactOversizedRpcResultShell(
+  method: string,
+  result: unknown,
+): unknown | null {
+  if (!isRecord(result)) return null;
+  if (method === "thread/read" || method === "thread/resume") {
+    const thread = compactRpcThreadShell(result.thread);
+    if (!thread) return null;
+    const output: Record<string, unknown> = { thread };
+    for (const key of [
+      "model",
+      "modelProvider",
+      "serviceTier",
+      "cwd",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "reasoningEffort",
+    ] as const) {
+      const projected = boundedRpcProjectionString(result[key]);
+      if (projected !== undefined) output[key] = projected;
+    }
+    if (isRecord(result.sandbox) && typeof result.sandbox.type === "string") {
+      output.sandbox = { type: result.sandbox.type.slice(0, 128) };
+    }
+    const initialTurnsPage = compactRpcTurnsPageShell(result.initialTurnsPage);
+    if (initialTurnsPage) output.initialTurnsPage = initialTurnsPage;
+    for (const key of ["turnsBackwardsCursor", "itemsBackwardsCursor"] as const) {
+      const projected = boundedRpcProjectionString(result[key], MAX_COMPACT_RPC_CURSOR_CHARACTERS);
+      if (projected !== undefined) output[key] = projected;
+    }
+    return output;
+  }
+  if (method === "thread/turns/list") return compactRpcTurnsPageShell(result);
+  if (method === "turn/start") {
+    const turn = compactRpcTurnShell(result.turn);
+    return turn ? { turn } : null;
+  }
+  return null;
+}
+
+function rpcResultMayExceedGatewayLimit(method: string, result: unknown): boolean {
+  const limit = MAX_SERVER_MESSAGE_BYTES - NOTIFICATION_SIZE_MARGIN_BYTES;
+  return estimatedJsonBytes({ type: "rpcResult", id: "result", result }, limit) > limit;
+}
+
+function serverMessageMayExceedGatewayLimit(message: ServerMessage): boolean {
+  const limit = MAX_SERVER_MESSAGE_BYTES - NOTIFICATION_SIZE_MARGIN_BYTES;
+  return estimatedJsonBytes(message, limit) > limit;
+}
+
+function logOversizedRpcResult(method: string): void {
+  console.error(`[ask-codex] oversized app-server RPC result ${JSON.stringify({
+    method: method.slice(0, MAX_RESYNC_METHOD_CHARACTERS),
+    action: "compactProjection",
+  })}`);
+}
+
+function boundedRpcResultForProcessing(method: string, result: unknown): unknown {
+  if (!rpcResultMayExceedGatewayLimit(method, result)) return result;
+  logOversizedRpcResult(method);
+  const compact = compactOversizedRpcResult(method, result);
+  if (compact === null) throw new OversizedCodexResultError(method);
+  if (!rpcResultMayExceedGatewayLimit(method, compact)) return compact;
+  const shell = compactOversizedRpcResultShell(method, result);
+  if (shell === null || rpcResultMayExceedGatewayLimit(method, shell)) {
+    throw new OversizedCodexResultError(method);
+  }
+  return shell;
+}
+
 export class AskCodexServer {
   readonly app = express();
   readonly httpServer = createServer(this.app);
@@ -544,6 +1282,7 @@ export class AskCodexServer {
     readonly config: AskCodexConfig,
     readonly codex: CodexGateway = new CodexAppServer({
       command: process.env.CODEX_BIN || "codex",
+      onStdoutLineDiagnostic: logLargeStdoutLine,
     }),
     attachments?: AttachmentStore,
     fileDownloads?: FileDownloadStore,
@@ -1046,6 +1785,103 @@ export class AskCodexServer {
         const turnId = turnIdFromNotification(params);
         if (threadId && turnId) this.completeAttachmentTurn(threadId, turnId);
       }
+      if (method === "turn/plan/updated") {
+        const planObservation = this.turnPlans.observeNotification(method, params, {
+          emittedAtMs,
+          gatewayReceivedAtMs,
+        });
+        if (planObservation.recoveryRequired) {
+          this.broadcast({
+            type: "notification",
+            method: "gateway/resyncRequired",
+            params: {
+              reason: "planUnavailable",
+              lostMethod: method,
+              ...(planObservation.threadId === undefined ? {} : { threadId: planObservation.threadId }),
+              ...(planObservation.turnId === undefined ? {} : { turnId: planObservation.turnId }),
+            },
+            ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+            gatewayReceivedAtMs,
+          });
+          return;
+        }
+        this.broadcast({
+          type: "notification",
+          method,
+          params: planObservation.projectedParams,
+          ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+          gatewayReceivedAtMs,
+        });
+        return;
+      }
+      const oversized = notificationMayExceedGatewayLimit(
+        method,
+        params,
+        emittedAtMs,
+        gatewayReceivedAtMs,
+      );
+      if (oversized) {
+        const sourceMessage: Extract<ServerMessage, { type: "notification" }> = {
+          type: "notification",
+          method,
+          params,
+          ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+          gatewayReceivedAtMs,
+        };
+        const compact = recoverableOversizedNotification(sourceMessage);
+        if (compact?.type === "notification") {
+          const compactParams = sanitizeBrowserNotificationParams(method, compact.params);
+          const planObservation = this.turnPlans.observeNotification(method, compactParams, {
+            emittedAtMs,
+            gatewayReceivedAtMs,
+          });
+          if (planObservation.recoveryRequired) {
+            this.broadcast({
+              type: "notification",
+              method: "gateway/resyncRequired",
+              params: {
+                reason: "planUnavailable",
+                lostMethod: method,
+                ...(planObservation.threadId === undefined ? {} : { threadId: planObservation.threadId }),
+                ...(planObservation.turnId === undefined ? {} : { turnId: planObservation.turnId }),
+              },
+              ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+              gatewayReceivedAtMs,
+            });
+            return;
+          }
+          const decoratedParams = this.turnPlans.decorateNotification(
+            method,
+            this.fileDownloads.decorateNotification(method, planObservation.projectedParams),
+          );
+          this.broadcast({
+            type: "notification",
+            method,
+            params: decoratedParams,
+            ...(emittedAtMs === undefined ? {} : { emittedAtMs }),
+            gatewayReceivedAtMs,
+          });
+          return;
+        }
+        this.broadcast({
+          type: "notification",
+          method: "gateway/resyncRequired",
+          params: {
+            reason: "messageTooLarge",
+            lostMethod: method.slice(0, MAX_RESYNC_METHOD_CHARACTERS),
+            ...(isRecord(params) && typeof params.threadId === "string"
+              ? { threadId: params.threadId.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+              : {}),
+            ...(isRecord(params) && typeof params.turnId === "string"
+              ? { turnId: params.turnId.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+              : {}),
+            ...(isRecord(params) && typeof params.itemId === "string"
+              ? { itemId: params.itemId.slice(0, MAX_RESYNC_ID_CHARACTERS) }
+              : {}),
+          },
+        });
+        return;
+      }
       const projectedParams = sanitizeBrowserNotificationParams(method, params);
       const planObservation = this.turnPlans.observeNotification(method, projectedParams, {
         emittedAtMs,
@@ -1195,8 +2031,9 @@ export class AskCodexServer {
         codexParams,
         requestCodexErrorRevision,
       );
+      const resultForProcessing = boundedRpcResultForProcessing(message.method, rawResult);
       if (message.method === "turn/start" && attachmentLeases.length > 0) {
-        const turnId = turnIdFromStartResult(rawResult);
+        const turnId = turnIdFromStartResult(resultForProcessing);
         if (existingThreadId && turnId) {
           this.holdAttachmentLeases(existingThreadId, turnId, attachmentLeases);
           attachmentLeases = [];
@@ -1205,13 +2042,13 @@ export class AskCodexServer {
       const canDecorateFileDownloads = this.fileDownloads.observeRpcResult(
         message.method,
         sanitizedParams,
-        rawResult,
+        resultForProcessing,
         fileDownloadAuthorityRevision,
       );
-      this.turnPlans.observeRpcResult(message.method, sanitizedParams, rawResult);
+      this.turnPlans.observeRpcResult(message.method, sanitizedParams, resultForProcessing);
       const projectedResult = sanitizeBrowserRpcResult(
         message.method,
-        rawResult,
+        resultForProcessing,
         sanitizedParams,
       );
       const fileDecoratedResult = canDecorateFileDownloads
@@ -1434,20 +2271,21 @@ export class AskCodexServer {
         let projectedResult: unknown;
         try {
           setFailureOutcomeKnown(false);
-          const rawResult = await this.codex.requestWithResultObserver(
+          await this.codex.requestWithResultObserver(
             "turn/start",
             turnParams,
             (result) => {
               resultObserved = true;
-              const turnId = turnIdFromStartResult(result);
+              const resultForProcessing = boundedRpcResultForProcessing("turn/start", result);
+              const turnId = turnIdFromStartResult(resultForProcessing);
               if (!turnId) {
                 throw new Error("Codex app-server returned an invalid turn/start result");
               }
-              this.turnPlans.observeRpcResult("turn/start", turnParams, result);
+              this.turnPlans.observeRpcResult("turn/start", turnParams, resultForProcessing);
               projectedResult = this.turnPlans.decorateRpcResult(
                 "turn/start",
                 turnParams,
-                sanitizeBrowserRpcResult("turn/start", result, turnParams),
+                sanitizeBrowserRpcResult("turn/start", resultForProcessing, turnParams),
               );
               confirmedItem = this.messageQueue.confirm(item.id, claimId, turnId);
               setFailureOutcomeKnown(true);
@@ -1459,7 +2297,6 @@ export class AskCodexServer {
           if (!resultObserved || !confirmedItem) {
             throw new Error("Codex app-server returned an invalid turn/start result");
           }
-          void rawResult;
         } catch (error) {
           if (error instanceof CodexRpcError && !resultObserved) {
             setFailureOutcomeKnown(true);
@@ -1880,6 +2717,15 @@ export class AskCodexServer {
       return false;
     }
 
+    if (serverMessageMayExceedGatewayLimit(message)) {
+      logOversizedServerMessage(message, MAX_SERVER_MESSAGE_BYTES + 1, true);
+      return this.handleUnsendableMessage(
+        client,
+        message,
+        "Codex response exceeded the 1 MiB gateway message limit",
+      );
+    }
+
     let serialized: string | undefined;
     try {
       serialized = JSON.stringify(message);
@@ -1904,6 +2750,7 @@ export class AskCodexServer {
 
     const byteLength = Buffer.byteLength(serialized, "utf8");
     if (byteLength > MAX_SERVER_MESSAGE_BYTES) {
+      logOversizedServerMessage(message, byteLength);
       return this.handleUnsendableMessage(
         client,
         message,
@@ -1914,6 +2761,7 @@ export class AskCodexServer {
   }
 
   private isOutboundMessageWithinLimit(message: ServerMessage): boolean {
+    if (serverMessageMayExceedGatewayLimit(message)) return false;
     try {
       const serialized = JSON.stringify(message);
       return serialized !== undefined &&
@@ -1931,6 +2779,21 @@ export class AskCodexServer {
     closeReason = "Server message too large",
   ): boolean {
     if (message.type === "notification") {
+      const recoverable = recoverableOversizedNotification(message);
+      if (recoverable) {
+        let serialized: string | undefined;
+        try {
+          serialized = JSON.stringify(recoverable);
+        } catch {
+          serialized = undefined;
+        }
+        if (serialized !== undefined) {
+          const byteLength = Buffer.byteLength(serialized, "utf8");
+          if (byteLength <= MAX_SERVER_MESSAGE_BYTES) {
+            return this.sendSerialized(client, serialized, byteLength);
+          }
+        }
+      }
       const fallback = JSON.stringify(resyncRequiredNotification(message));
       return this.sendSerialized(
         client,

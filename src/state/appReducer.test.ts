@@ -967,6 +967,35 @@ describe("appReducer", () => {
     }));
   });
 
+  it("preserves an omission reported by a compact oversized completion", () => {
+    const streaming = appReducer(stateWithTurn(), {
+      type: "appendItemDelta",
+      turnId: "turn-1",
+      itemId: "command-compact",
+      itemType: "commandExecution",
+      field: "aggregatedOutput",
+      delta: "visible output",
+    });
+    const completed = appReducer(streaming, {
+      type: "upsertItem",
+      turnId: "turn-1",
+      item: {
+        id: "command-compact",
+        type: "commandExecution",
+        status: "completed",
+        exitCode: 0,
+        streamOmittedCharacters: { aggregatedOutput: 123_456 },
+      },
+      lifecycle: "completed",
+    });
+
+    expect(completed.currentThread?.turns?.[0]?.items[0]).toEqual(expect.objectContaining({
+      aggregatedOutput: "visible output",
+      status: "completed",
+      streamOmittedCharacters: { aggregatedOutput: 123_456 },
+    }));
+  });
+
   it("keeps bounded approval reasons on the exact command item through completion", () => {
     const approved = appReducer(stateWithTurn(), {
       type: "recordCommandApprovalReason",

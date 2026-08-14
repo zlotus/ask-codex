@@ -251,7 +251,20 @@ describe("AskCodexServer", () => {
         return { thread: { id: threadId }, sandbox: workspaceSandbox() };
       }
       if (method === "turn/start") {
-        return { turn: { id: "turn-from-queue", status: "inProgress", items: [] } };
+        return {
+          turn: {
+            id: "turn-from-queue",
+            status: "inProgress",
+            items: [{
+              id: "command-from-queue",
+              type: "commandExecution",
+              status: "completed",
+              command: "rg --json pattern",
+              aggregatedOutput: "x".repeat(1_048_576),
+              exitCode: 0,
+            }],
+          },
+        };
       }
       return { ok: true };
     });
@@ -308,15 +321,24 @@ describe("AskCodexServer", () => {
       method: "messageQueue/send",
       params: { id: queued.id, revision: queued.revision },
     }));
-    await expect(waitForMessage(
+    const sent = await waitForMessage(
       second.messages,
       (message) => message.type === "rpcResult" && message.id === "queue-send",
-    )).resolves.toEqual(expect.objectContaining({
+    );
+    expect(sent).toEqual(expect.objectContaining({
       result: {
         item: expect.objectContaining({ status: "confirmed", confirmedTurnId: "turn-from-queue" }),
-        turn: expect.objectContaining({ id: "turn-from-queue" }),
+        turn: expect.objectContaining({
+          id: "turn-from-queue",
+          itemsView: "summary",
+          items: [expect.objectContaining({
+            id: "command-from-queue",
+            streamOmittedCharacters: { aggregatedOutput: 1_048_576 },
+          })],
+        }),
       },
     }));
+    expect(JSON.stringify(sent)).not.toContain("x".repeat(1_000));
 
     gateway.emit(
       "request",
@@ -1798,6 +1820,152 @@ describe("AskCodexServer", () => {
     );
   });
 
+  it("compacts an oversized history RPC before later lifecycle notifications", async () => {
+    const gateway = new FakeGateway();
+    gateway.request.mockImplementationOnce(async (method) => {
+      if (method !== "thread/read") return { ok: true };
+      return {
+        thread: {
+          id: "thread-history-large",
+          cwd: process.cwd(),
+          turns: [{
+            id: "turn-history-large",
+            status: "completed",
+            itemsView: "full",
+            items: [{
+              id: "command-history-large",
+              type: "commandExecution",
+              status: "completed",
+              command: "rg --json pattern",
+              aggregatedOutput: "x".repeat(1_048_576),
+              exitCode: 0,
+            }],
+          }],
+        },
+      };
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "large-history-read",
+      method: "thread/read",
+      params: { threadId: "thread-history-large", includeTurns: true },
+    }));
+    const result = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "large-history-read",
+    );
+    expect(result).toMatchObject({
+      type: "rpcResult",
+      id: "large-history-read",
+      result: {
+        thread: {
+          id: "thread-history-large",
+          turns: [{
+            id: "turn-history-large",
+            itemsView: "summary",
+            items: [{
+              id: "command-history-large",
+              type: "commandExecution",
+              command: "rg --json pattern",
+              streamOmittedCharacters: { aggregatedOutput: 1_048_576 },
+            }],
+          }],
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("x".repeat(1_000));
+
+    gateway.emit("notification", "turn/completed", {
+      threadId: "thread-history-large",
+      turn: { id: "turn-history-large", status: "completed", items: [] },
+    });
+    await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" && message.method === "turn/completed",
+    );
+  });
+
+  it("falls back to turn shells when a compact history projection is still oversized", async () => {
+    const gateway = new FakeGateway();
+    const statuses = ["interrupted", "failed", "completed"] as const;
+    const largeReasoningItems = Array.from({ length: 16 }, (_, itemIndex) => ({
+      id: `reasoning-${itemIndex}`,
+      type: "reasoning",
+      status: "completed",
+      summary: Array.from({ length: 16 }, () => "s".repeat(1_024)),
+      content: Array.from({ length: 16 }, () => "c".repeat(1_024)),
+    }));
+    gateway.request.mockResolvedValueOnce({
+      data: Array.from({ length: 3 }, (_, turnIndex) => ({
+        id: `turn-shell-${turnIndex}`,
+        status: statuses[turnIndex],
+        itemsView: "full",
+        items: largeReasoningItems,
+      })),
+      nextCursor: "next-shell-page",
+      backwardsCursor: "previous-shell-page",
+    });
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "large-history-shells",
+      method: "thread/turns/list",
+      params: {
+        threadId: "thread-history-shells",
+        limit: 3,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    }));
+    const result = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "large-history-shells",
+    );
+    expect(result).toMatchObject({
+      result: {
+        data: [
+          {
+            id: "turn-shell-0",
+            status: "interrupted",
+            items: [],
+            itemsView: "summary",
+            streamOmittedItems: 16,
+          },
+          {
+            id: "turn-shell-1",
+            status: "failed",
+            items: [],
+            itemsView: "summary",
+            streamOmittedItems: 16,
+          },
+          {
+            id: "turn-shell-2",
+            status: "completed",
+            items: [],
+            itemsView: "summary",
+            streamOmittedItems: 16,
+          },
+        ],
+        nextCursor: "next-shell-page",
+        backwardsCursor: "previous-shell-page",
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThan(1_048_576);
+  });
+
   it("returns only effective model settings from config/read", async () => {
     const gateway = new FakeGateway();
     gateway.request.mockResolvedValueOnce({
@@ -1877,6 +2045,104 @@ describe("AskCodexServer", () => {
       client.messages,
       (message) => message.type === "notification" && message.method === "turn/completed",
     );
+  });
+
+  it("keeps lifecycle metadata when an item completion carries oversized output", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    gateway.emit("notification", "item/completed", {
+      threadId: "thread-large-item",
+      turnId: "turn-large-item",
+      item: {
+        id: "command-large-item",
+        type: "commandExecution",
+        status: "completed",
+        command: "rg --json pattern",
+        aggregatedOutput: "x".repeat(1_048_576),
+        exitCode: 0,
+      },
+    });
+
+    const completed = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "item/completed" &&
+        typeof message.params === "object" && message.params !== null &&
+        "turnId" in message.params && message.params.turnId === "turn-large-item",
+    );
+    expect(completed).toMatchObject({
+      method: "item/completed",
+      params: {
+        threadId: "thread-large-item",
+        turnId: "turn-large-item",
+        item: {
+          id: "command-large-item",
+          type: "commandExecution",
+          status: "completed",
+          command: "rg --json pattern",
+          exitCode: 0,
+          streamOmittedCharacters: { aggregatedOutput: 1_048_576 },
+        },
+      },
+    });
+    expect(JSON.stringify(completed)).not.toContain("x".repeat(1_000));
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("keeps completion status when a turn completion carries oversized history", async () => {
+    const gateway = new FakeGateway();
+    const service = new AskCodexServer(config("test-token"), gateway);
+    services.push(service);
+    const { url } = await service.start();
+    const client = connect(url, "test-token");
+    await once(client.socket, "open");
+    await waitForMessage(client.messages, (message) => message.type === "status");
+
+    gateway.emit("notification", "turn/completed", {
+      threadId: "thread-large-turn",
+      turn: {
+        id: "turn-large-turn",
+        status: "completed",
+        items: [{
+          id: "agent-large-turn",
+          type: "agentMessage",
+          text: "x".repeat(1_048_576),
+        }],
+        completedAt: 1_800_000_000_000,
+        durationMs: 12_345,
+      },
+    });
+
+    const completed = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "turn/completed" &&
+        typeof message.params === "object" && message.params !== null &&
+        "turnId" in message.params && message.params.turnId === "turn-large-turn",
+    );
+    expect(completed).toMatchObject({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-large-turn",
+        turnId: "turn-large-turn",
+        turn: {
+          id: "turn-large-turn",
+          status: "completed",
+          items: [],
+          itemsView: "notLoaded",
+          completedAt: 1_800_000_000_000,
+          durationMs: 12_345,
+        },
+      },
+    });
+    expect(JSON.stringify(completed)).not.toContain("x".repeat(1_000));
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
   });
 
   it("rejects an oversized server request without routing it to browsers", async () => {
@@ -2186,6 +2452,68 @@ describe("AskCodexServer", () => {
       typeof message.params === "object" && message.params !== null &&
       "turnId" in message.params && message.params.turnId === "turn-invalid-plan"
     ))).toBe(false);
+
+    gateway.emit("notification", "turn/plan/updated", {
+      threadId: "thread-plan-timing",
+      turnId: "turn-oversized-plan",
+      plan: [{ step: "x".repeat(1_048_576), status: "pending" }],
+    });
+    const oversizedRecovery = await waitForMessage(
+      client.messages,
+      (message) => message.type === "notification" &&
+        message.method === "gateway/resyncRequired" &&
+        typeof message.params === "object" && message.params !== null &&
+        "turnId" in message.params && message.params.turnId === "turn-oversized-plan",
+    );
+    expect(oversizedRecovery).toMatchObject({
+      params: {
+        reason: "planUnavailable",
+        lostMethod: "turn/plan/updated",
+        threadId: "thread-plan-timing",
+        turnId: "turn-oversized-plan",
+      },
+    });
+    expect(client.messages.some((message) => (
+      message.type === "notification" &&
+      message.method === "turn/plan/updated" &&
+      typeof message.params === "object" && message.params !== null &&
+      "turnId" in message.params && message.params.turnId === "turn-oversized-plan"
+    ))).toBe(false);
+
+    gateway.request.mockResolvedValueOnce({
+      data: [{
+        id: "turn-oversized-plan",
+        status: "inProgress",
+        items: [],
+        itemsView: "full",
+      }],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+    client.socket.send(JSON.stringify({
+      type: "rpc",
+      id: "oversized-plan-recovery",
+      method: "thread/turns/list",
+      params: {
+        threadId: "thread-plan-timing",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    }));
+    const recovered = await waitForMessage(
+      client.messages,
+      (message) => message.type === "rpcResult" && message.id === "oversized-plan-recovery",
+    );
+    expect(recovered).toMatchObject({
+      result: {
+        data: [{
+          id: "turn-oversized-plan",
+          plan: null,
+          recoveryOmissions: ["turn/plan/updated"],
+        }],
+      },
+    });
   });
 
   it("recovers the latest plan through a turn page requested before the update", async () => {

@@ -267,9 +267,16 @@ function appendBoundedItemField(item: CodexItem, field: string, delta: string): 
 function mergeCompletedItem(existing: CodexItem, incoming: CodexItem): CodexItem {
   const merged: CodexItem = { ...existing, ...incoming };
   const omissions = itemOmissions(existing);
+  const incomingOmissions = itemOmissions(incoming);
+  for (const [key, count] of Object.entries(incomingOmissions)) {
+    const previous = omissions[key] ?? 0;
+    if (Number.isSafeInteger(count) && count >= 0) {
+      omissions[key] = Math.max(previous, count);
+    }
+  }
   for (const key of Object.keys(omissions)) {
     const field = key.replace(/\[[^\]]+\]$/, "");
-    if (incoming[field] !== undefined) delete omissions[key];
+    if (incoming[field] !== undefined && incomingOmissions[key] === undefined) delete omissions[key];
   }
   if (Object.keys(omissions).length > 0) {
     merged.streamOmittedCharacters = omissions;

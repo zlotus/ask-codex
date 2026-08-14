@@ -2,7 +2,7 @@
 
 **简体中文** | [English](progress.en.md)
 
-最后审阅：2026-08-13
+最后审阅：2026-08-14
 
 ## 当前里程碑
 
@@ -18,6 +18,10 @@ P3 持久 Activity 审计，尚未开始。手动/自动执行环境现在按 tu
 但仍需明确确认的稳定请求继续交给用户；结束或启动失败后恢复手动默认。模式不再先通过
 `thread/resume` 改 sandbox。线程创建、恢复和 fork 固定 `on-request`，队列明确物化 manual，
 steering 不携带策略，也不使用实验性 API。
+app-server stdout 现按 ADR 0026 默认接受任意合法 JSONL 行，不再因旧的 8 MiB wrapper 上限终止
+共享子进程；超过 1 MiB 的行只记录不含正文的结构诊断。浏览器 WebSocket 仍保持 1 MiB 消息预算，
+超大命令完成、轮次完成、历史和 `turn/start` 结果在清洗与序列化前降级为有界摘要或轮次壳，
+并保留完成状态、已流式内容、omission 与 Plan 不可恢复语义。
 
 ## 当前基线
 
@@ -285,8 +289,8 @@ steering 不携带策略，也不使用实验性 API。
 
 ## 验证
 
-以下验证记录分别来自 2026-08-11 和 2026-08-13，使用 Node.js `v24.18.0`、npm
-`12.0.2` 和 Codex CLI `0.147.0`：
+以下验证记录分别来自 2026-08-11、2026-08-13 和 2026-08-14，使用 Node.js
+`v24.18.0`、npm `12.0.2` 和 Codex CLI `0.147.0`：
 
 - 2026-08-11 在仓库外运行不带 `--experimental` 的 `codex app-server generate-ts`，确认稳定
   `TurnStartParams` 同时包含 `approvalPolicy`、`approvalsReviewer` 和完整 `sandboxPolicy`；
@@ -307,5 +311,18 @@ steering 不携带策略，也不使用实验性 API。
 - 2026-08-13，`npm run check:visual` 已在临时生产预览上通过。桌面端和移动端的 Changes/失败
   Command 断言、图片 containment、审批卡布局、可用高度、连续处理坐标（`deltaX=0`、`deltaY=0`）
   均通过，且没有浏览器 console 或 page error。
+- 2026-08-14，用 `codex app-server generate-ts --experimental` 在仓库外重新生成当前 bindings，
+  确认 stdio 是一条 JSON-RPC 消息一行的 JSONL，完整 `ThreadItem` 中
+  `commandExecution.aggregatedOutput` 可随 `Turn` 出现在完成通知、`turn/start` 和历史结果中。
+  OpenAI 官方 app-server 文档没有规定 8 MiB 行上限。`npm run typecheck`、`npm run lint`、
+  `npm run build` 和 `git diff --check` 通过；完整 `NODE_ENV=test npm test` 通过 41 个文件、709 项
+  测试。一次与 typecheck、lint 并行的全量测试中，既有 Skills 异步调用次数断言出现一次时序失败；
+  该用例单独重跑通过，完整测试随后单独重跑也全部通过。没有重启或修改公网 `4444` 服务。
+- 2026-08-14，在仍运行的 `4444` 服务终端捕获到真实大行诊断：`thread/turns/list` 响应分别为
+  `1,121,360`、`1,511,553` 字节，`thread/resume` 为 `1,578,787` 字节；最大字符串均是
+  `$.result.data[6].items[5].result.content[0].text`（UTF-8 `291,861` 字节），无图片或 base64
+  标记。对应 thread rollout 的 `mcp_tool_call_end` 结果是 `291,667` 字符的 OpenAI Docs MCP
+  JSON 文本；同一 MCP 结果被历史读取接口重复包装。该证据解释了刷新后出现的 summary，并确认它
+  不是 Sol-5.6 的 256K 模型上下文或图片传输。
 - 2026-08-11 使用 Markdown AST 解析了仓库中的 66 个 Markdown 文件，检查的 148 个相对链接和图片目标
   均存在。
