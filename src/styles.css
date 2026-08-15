@@ -997,6 +997,10 @@ pre {
   color: #4f745d;
 }
 
+.toolbar-fullscreen-button {
+  display: none;
+}
+
 .conversation-scroll {
   min-height: 0;
   overflow-x: hidden;
@@ -4196,6 +4200,10 @@ details[open] > summary .details-chevron {
   .toolbar {
     height: 44px;
     padding: 0 7px;
+  }
+
+  .toolbar-fullscreen-button {
+    display: inline-grid;
   }
 
   .toolbar-title {

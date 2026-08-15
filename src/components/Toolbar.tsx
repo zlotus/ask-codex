@@ -1,4 +1,5 @@
-import { Gauge, RefreshCw, ShieldAlert } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Gauge, Maximize2, Minimize2, RefreshCw, ShieldAlert } from "lucide-react";
 import type { ConnectionState, ThreadSettings } from "../types/protocol";
 import { MobileMenuButton } from "./Sidebar";
 
@@ -39,6 +40,28 @@ export function Toolbar({
   onMenu,
 }: ToolbarProps) {
   const sandboxLabel = sandboxStatus(sandbox);
+  const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else {
+      await document.documentElement.requestFullscreen({
+        navigationUI: "hide",
+      });
+    }
+  };
   const connectedStatus = syncing ? (
     <><span className="toolbar-status-prefix">Connected · </span>Syncing</>
   ) : running ? "Working" : "Ready";
@@ -95,6 +118,19 @@ export function Toolbar({
             <span>{sandboxLabel}</span>
           </span>
         )}
+        <button
+        className="icon-button toolbar-fullscreen-button"
+        type="button"
+        title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+        aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+        onClick={() => void toggleFullscreen()}
+      >
+        {fullscreen ? (
+          <Minimize2 size={16} aria-hidden="true" />
+        ) : (
+          <Maximize2 size={16} aria-hidden="true" />
+        )}
+      </button>
         <button
           className="icon-button toolbar-usage-button"
           type="button"
